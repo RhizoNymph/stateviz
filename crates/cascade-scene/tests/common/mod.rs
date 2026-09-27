@@ -165,3 +165,9 @@ pub fn view(selection: &[&str]) -> ViewState {
 pub fn assert_close(a: f32, b: f32) {
     assert!((a - b).abs() < 0.5, "{a} != {b}");
 }
+
+/// Whether `p` lies in `r` or on its outline, allowing for rounding in
+/// where a layout engine attaches an edge.
+pub fn touches(r: cascade_layout::Rect, p: cascade_layout::Point) -> bool {
+    r.outset(cascade_layout::Insets::uniform(0.5)).contains(p)
+}

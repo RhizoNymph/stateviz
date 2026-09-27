@@ -122,10 +122,10 @@ fn transition_pills_sit_on_the_edges() {
     }
     let pending = node(&scene, "state:Order:pending");
     let paid = node(&scene, "state:Order:paid");
-    let into = arrows.iter().find(|e| pending.rect.contains(e.points[0])).expect("pending → pill");
+    let into = arrows.iter().find(|e| touches(pending.rect, e.points[0])).expect("pending → pill");
     assert_eq!(into.arrow, Arrow::None);
-    assert!(pill.rect.contains(*into.points.last().expect("end")));
-    let out = arrows.iter().find(|e| paid.rect.contains(*e.points.last().expect("end"))).expect("pill → paid");
+    assert!(touches(pill.rect, *into.points.last().expect("end")));
+    let out = arrows.iter().find(|e| touches(paid.rect, *e.points.last().expect("end"))).expect("pill → paid");
     assert_eq!(out.arrow, Arrow::End);
     // 5 transitions, 2 arrows each, plus one cross-lane link.
     assert_eq!(edges_of(&scene, EdgeKind::Transition).len(), 10);
@@ -157,8 +157,8 @@ fn cross_lane_links_join_pills_with_event_and_controller_names() {
     assert_eq!(link.target, target("rule:Fulfillment/OrderPaid#0"));
     let from = node(&scene, "transition:Order:pending->paid@capture_ok");
     let to = node(&scene, "transition:Shipment:idle->picking@start");
-    assert!(from.rect.contains(link.points[0]));
-    assert!(to.rect.contains(*link.points.last().expect("end")));
+    assert!(touches(from.rect, link.points[0]));
+    assert!(touches(to.rect, *link.points.last().expect("end")));
     // Events, controllers and sources are not drawn as nodes here.
     assert!(find_node(&scene, "event:OrderPaid").is_none());
     assert!(find_node(&scene, "handler:Fulfillment/OrderPaid").is_none());
@@ -201,7 +201,7 @@ fn collapsing_a_compound_state_hides_its_children_and_reroutes() {
     let resume = edge_to(&scene, "transition:Job:idle->running.parsing@resume");
     assert_eq!(resume.len(), 2);
     let into_running = resume.iter().find(|e| e.arrow == Arrow::End).expect("into running");
-    assert!(running.rect.contains(*into_running.points.last().expect("end")));
+    assert!(touches(running.rect, *into_running.points.last().expect("end")));
     let pill = node(&scene, "transition:Job:idle->running.parsing@resume");
     assert_eq!(pill.labels[0].text, "idle → running.parsing", "pills keep their real endpoints");
 }
@@ -220,7 +220,7 @@ fn collapsing_a_machine_makes_it_one_node() {
     assert!(find_node(&scene, "state:Order:pending").is_none());
     let fires = edges_of(&scene, EdgeKind::Fire);
     assert_eq!(fires.len(), 1, "the cross link now leaves the machine node");
-    assert!(machine.rect.contains(fires[0].points[0]));
+    assert!(touches(machine.rect, fires[0].points[0]));
 }
 
 #[test]
