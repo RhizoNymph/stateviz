@@ -7,5 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 cascade-core.workspace = true
-serde.workspace = true
+saphyr.workspace = true
 thiserror.workspace = true
+tracing.workspace = true

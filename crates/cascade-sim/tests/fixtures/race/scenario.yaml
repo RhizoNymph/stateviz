@@ -1,0 +1,6 @@
+scenario: payment captured
+instances:
+  o1: { machine: Order, fields: { orderId: "1" } }
+  s1: { machine: Shipment, fields: { orderId: "1" } }
+steps:
+  - { source: PaymentGateway, fire: Order.capture_ok, target: o1 }

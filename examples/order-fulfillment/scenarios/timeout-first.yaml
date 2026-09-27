@@ -1,0 +1,10 @@
+# The clock wins: the order times out before the payment arrives, so the
+# capture is dropped and the shipment never starts.
+scenario: timeout before payment
+instances:
+  o1: { machine: Order, fields: { orderId: "1" } }
+  s1: { machine: Shipment, fields: { orderId: "1" } }
+steps:
+  - { source: Customer, fire: Order.submit, target: o1 }
+  - { source: Clock, fire: Order.timeout, target: o1 }
+  - { source: PaymentGateway, fire: Order.capture_ok, target: o1, timing: immediate }
