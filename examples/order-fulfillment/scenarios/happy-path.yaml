@@ -1,0 +1,14 @@
+# The customer submits an order, the payment is captured, and the
+# Fulfillment controller starts the matching shipment.
+#
+#   cascade simulate examples/order-fulfillment/cascade.yaml \
+#     examples/order-fulfillment/scenarios/happy-path.yaml
+scenario: happy path
+instances:
+  o1: { machine: Order, fields: { orderId: "1" } }
+  s1: { machine: Shipment, fields: { orderId: "1" } }
+steps:
+  - { source: Customer, fire: Order.submit, target: o1 }
+  # The step payload is laid over o1's fields, so OrderPaid carries
+  # { amount: 42, orderId: 1 } and the selector finds s1.
+  - { source: PaymentGateway, fire: Order.capture_ok, target: o1, payload: { amount: "42" } }

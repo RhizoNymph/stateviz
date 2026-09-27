@@ -40,7 +40,10 @@ pub enum Lifeline {
 pub enum TraceStepKind {
     /// An external source fires a trigger at an instance.
     ExternalFire { source: LifelineIx, target: LifelineIx, trigger: TriggerId },
-    /// An instance takes a transition.
+    /// An instance takes a transition. `from` is the instance's leaf state
+    /// before and `to` the leaf it ends in (after default entry or a history
+    /// restore), so either may be nested inside the transition's declared
+    /// states.
     Transition { instance: LifelineIx, transition: TransitionId, from: StateId, to: StateId },
     /// No transition accepts the trigger in the instance's current state.
     Dropped { instance: LifelineIx, trigger: TriggerId, state: StateId },
@@ -48,7 +51,9 @@ pub enum TraceStepKind {
     Emit { instance: LifelineIx, event: EventId },
     /// A queued event reaches a controller subscribed to it.
     Deliver { controller: LifelineIx, event: EventId, handler: HandlerId },
-    /// A controller rule fires a trigger at an instance.
+    /// A controller rule fires a trigger at an instance. The fire joins the
+    /// queue; the step that delivers it (a `Transition` or `Dropped` on the
+    /// target) names this step as its cause.
     Fire { controller: LifelineIx, target: LifelineIx, rule: RuleId },
     /// A spawn rule creates a new instance.
     Spawn { controller: LifelineIx, instance: LifelineIx, rule: RuleId },

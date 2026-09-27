@@ -142,8 +142,9 @@ name = "cascade-sim"
 version = "0.1.0"
 dependencies = [
  "cascade-core",
- "serde",
+ "saphyr",
  "thiserror",
+ "tracing",
 ]
 
 [[package]]
