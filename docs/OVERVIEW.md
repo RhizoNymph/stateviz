@@ -68,8 +68,11 @@ Features Index:
     depends_on: [definition_format]
     doc: docs/features/causal-graph.md
   static_analysis:
-    description: The seven checks plus state-dependent fire notes; `cascade check` for CI.
-    entry_points: [cascade_core::analyze, cascade check]
+    description: >
+      The seven checks (dead external triggers count as invalid fires) plus
+      state-dependent fire notes, sorted deterministically; `cascade check`
+      for CI with text/JSON reports and exit codes; the pinned shop example.
+    entry_points: [cascade_core::analyze, cascade_core::analysis::has_errors, cascade check]
     depends_on: [definition_format, causal_graph]
     doc: docs/features/static-analysis.md
   layered_layout:
