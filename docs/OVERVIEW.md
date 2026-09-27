@@ -32,8 +32,11 @@ Overview:
       shapes, dashes, emphasis/dimming, badges, diff decorations), the
       cascade:// view link format, the pins sidecar, and SVG/PNG export.
     cascade-interop: >
-      XState v5 and SCXML import; SCXML, Mermaid, P and YAML export; reading a
-      file at a git revision for diff mode.
+      XState v5 and SCXML import through a shared statechart IR (names
+      sanitized, entry/exit emits attributed, a routing controller and
+      external sources synthesized so imports resolve); SCXML, Mermaid
+      (structure and causal), P skeleton and YAML export; reading a file at a
+      git revision for diff mode.
     cascade-cli: >
       The `cascade` binary: check (CI exit codes), render, export, import,
       diff, simulate, open.
@@ -88,8 +91,10 @@ Features Index:
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md
   interop_and_diff:
-    description: XState/SCXML import, SCXML/Mermaid/P/YAML export, model diff and git revision loading.
-    entry_points: [cascade_interop::import, cascade_interop::export, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade export, cascade import, cascade diff]
+    description: >
+      XState/SCXML import with warnings, SCXML/Mermaid (structure and causal)/P/YAML export,
+      model diff, ghost merge for diff mode, and git revision loading.
+    entry_points: [cascade_interop::import, cascade_interop::import_with, cascade_interop::export, cascade_interop::to_yaml, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade_core::diff::merge_for_display, cascade export, cascade import, cascade diff]
     depends_on: [definition_format]
     doc: docs/features/interop-and-diff.md
   native_app:
