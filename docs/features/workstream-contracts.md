@@ -20,7 +20,7 @@ break a signature another workstream uses without noting it in its PR.
 | Workstream (branch) | Owns | Replaces stub(s) | Relies on |
 | --- | --- | --- | --- |
 | `feat/static-analysis` | `cascade-core/src/analysis/`, `cascade-cli/src/commands/check.rs`, `examples/shop/` | `cascade_core::analyze` | `Model`, `CausalGraph` |
-| `feat/layered-layout` | `cascade-layout/src/engine.rs` (+ new modules) | `cascade_layout::layout` | nothing |
+| `feat/layered-layout` | `cascade-layout/src/engine/`, `cascade-layout/src/metrics.rs` | `cascade_layout::layout` | nothing |
 | `feat/simulator` | `cascade-sim/`, `cascade-cli/src/commands/simulate.rs` | `parse_scenario`, `simulate`, `race_orderings` | `Model`, `FindingDetail::RaceCandidate` |
 | `feat/interop-and-diff` | `cascade-interop/`, `cascade-core/src/diff.rs`, CLI `export`/`import`/`diff` | `import`, `export`, `read_at_rev`, `diff_models`, `merge_for_display` | `Definition`, `Model`, `ElementKey` |
 | `feat/view-scenes` | `cascade-scene/` (except `pins.rs`/`view_state.rs` shapes), CLI `render` | `SceneBuilder::build` for all views, `machine_styles` domains, `to_svg`, `to_png` | `layout`, `Trace`, `Finding`, `ModelDiff` |
@@ -53,6 +53,16 @@ break a signature another workstream uses without noting it in its PR.
 - **Text:** views size text with `TextMeasure`; hosts draw with a monospace
   font so `MonoMeasure` sizes match.
 
+## Integration
+
+`test/integration` merges every workstream and holds the glue that needs
+more than one of them: `cascade render` reads the `diff=` link parameter
+through `cascade_interop::read_at_rev` and `merge_for_display`, and an
+end-to-end test checks the M3 guarantee that an edit to one transition
+moves no unrelated node (`crates/cascade-scene/tests/edit_stability.rs`).
+Every stub listed above has since been replaced; the remaining
+`NotImplemented`-style errors were removed with them.
+
 ## Expected sibling conflicts
 
 Every workstream adds dependencies, so `Cargo.lock` and crate `Cargo.toml`
@@ -62,7 +72,7 @@ so branches do not share a file.
 
 ## Invariants and constraints
 
-- Stubs never panic; they return empty results or a typed
-  `NotImplemented` error.
+- Stubs never panicked; they returned empty results or a typed
+  `NotImplemented` error until their workstream replaced them.
 - Headless crates never depend on `gpui`; only `cascade-app` does, and it is
   excluded from the workspace's default members.
