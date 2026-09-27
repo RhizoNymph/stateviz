@@ -5,4 +5,26 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[[bin]]
+name = "cascade-app"
+path = "src/main.rs"
+
 [dependencies]
+cascade-core.workspace = true
+cascade-interop.workspace = true
+cascade-layout.workspace = true
+cascade-scene.workspace = true
+cascade-sim.workspace = true
+
+gpui.workspace = true
+gpui_platform.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+futures.workspace = true
+notify.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+unicode-segmentation.workspace = true

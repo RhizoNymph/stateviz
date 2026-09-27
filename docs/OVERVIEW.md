@@ -104,9 +104,15 @@ Features Index:
     depends_on: [definition_format]
     doc: docs/features/interop-and-diff.md
   native_app:
-    description: The GPUI desktop app.
-    entry_points: [cascade-app, cascade open]
-    depends_on: [view_scenes, static_analysis, simulator, interop_and_diff]
+    description: >
+      The GPUI desktop app: paints scenes with pan/zoom/fit and culling, shared
+      selection, cone tracing with a depth stepper, path queries, legend
+      entity filter, findings panel, fuzzy search, trace scenario/race picker,
+      matrix drill-down, click-to-source, pin dragging, diff mode, view links
+      via the clipboard, light/dark theme, and live reload that keeps the last
+      good model on screen.
+    entry_points: [cascade-app, cascade open, cascade_app::workspace::Workspace]
+    depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
   workstream_contracts:
     description: The interface types each crate exposes and which workstream implements each stub.
@@ -134,5 +140,10 @@ docs/features/             one doc per feature
 ## Building
 
 - `cargo test` / `cargo build` at the root cover the headless crates.
-- `cargo run -p cascade-app -- examples/order-fulfillment/cascade.yaml` builds
-  and runs the GPUI app (long first build).
+- `cargo build -p cascade-app` builds the GPUI app; `cargo run -p cascade-app
+  -- examples/order-fulfillment/cascade.yaml` runs it (needs a Wayland display
+  on Linux). GPUI comes from one pinned zed git rev (`gpui`, `gpui_platform`)
+  plus the `[patch.crates-io]` block in the root `Cargo.toml`; the first build
+  clones zed into cargo's git cache and takes a few minutes.
+- `cargo test -p cascade-app` runs the app's unit tests (pure logic; no
+  display needed).
