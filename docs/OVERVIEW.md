@@ -23,9 +23,9 @@ Overview:
       groups (lanes) stacked and routed around, orthogonal edge routing,
       stability from the previous layout, pins. Knows nothing about Cascade.
     cascade-sim: >
-      Scenario files and the simulator: instances, queued FIFO event
-      semantics, target selectors, traces; replays race candidates in both
-      orders.
+      Scenario files and the simulator: instances, one global FIFO queue of
+      events and controller fires, target selectors, traces with cause
+      links; replays race candidates with the contested fires swapped.
     cascade-scene: >
       Model + view state → Scene, a backend-neutral display list with hit
       targets, for all four views. Owns the visual encoding (Okabe-Ito hues,
@@ -78,8 +78,11 @@ Features Index:
     depends_on: []
     doc: docs/features/layered-layout.md
   simulator:
-    description: Scenario files, FIFO simulation, traces, race orderings.
-    entry_points: [cascade_sim::parse_scenario, cascade_sim::simulate, cascade_sim::race_orderings, cascade simulate]
+    description: >
+      Scenario files (parse, validate, discover), FIFO simulation with
+      selectors, spawn, history and payloads, traces with cause links and
+      stable lifelines, race candidates replayed in both orders.
+    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade simulate]
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:
