@@ -73,8 +73,13 @@ Features Index:
     depends_on: [definition_format, causal_graph]
     doc: docs/features/static-analysis.md
   layered_layout:
-    description: Layered layout with ports, lanes, orthogonal routing, stability and pins.
-    entry_points: [cascade_layout::layout]
+    description: >
+      Sugiyama-style layered layout: constrained network-simplex layering
+      with cycle breaking, port-aware crossing minimisation, L1 coordinate
+      placement, orthogonal channel routing with track assignment, lanes
+      stacked and routed around, stability from the previous layout, pins
+      with an obstacle router.
+    entry_points: [cascade_layout::layout, cascade_layout::metrics]
     depends_on: []
     doc: docs/features/layered-layout.md
   simulator:
