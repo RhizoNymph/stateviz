@@ -288,7 +288,4 @@ and review the diff.
   exclusive, and `x>0` differs from `x > 0`.
 - Race aliasing does not compare selector predicates, so two rules selecting
   by different fields are still candidates.
-- Source columns come from the parser's spans, which currently carry the
-  YAML library's 0-based columns (lines are 1-based) although `Pos`
-  documents both as 1-based. Once the parser adds 1, the columns in
-  `expected-findings.txt` shift by one and the file must be regenerated.
+
