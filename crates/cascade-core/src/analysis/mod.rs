@@ -4,18 +4,33 @@
 //! carries a typed [`FindingDetail`] naming the elements involved, so views
 //! can badge and focus them without parsing messages.
 //!
-//! Owner: the `feat/static-analysis` workstream implements [`analyze`]. The
-//! types in this module are the contract the CLI, scene builders and app
-//! code against.
+//! This module holds the contract (the types the CLI, scene builders and app
+//! code against) and the orchestration in [`analyze`]. Each check lives in
+//! its own submodule and returns its findings unsorted; `analyze` sorts
+//! them once. See `docs/features/static-analysis.md` for every heuristic.
 
+mod cycles;
+mod describe;
+mod events;
+mod invalid_fire;
+mod nondeterminism;
+mod races;
+mod reachability;
+mod scc;
+mod state_dependent;
+#[cfg(test)]
+mod tests;
+
+use std::cmp::Reverse;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
 use crate::causal::CausalGraph;
-use crate::ids::{EventId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId};
+use crate::ids::{EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId};
 use crate::key::ElementRef;
 use crate::model::Model;
+use crate::span::Pos;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -39,7 +54,8 @@ impl fmt::Display for Severity {
 #[serde(rename_all = "kebab-case")]
 pub enum Check {
     /// A controller fires a trigger that no transition in the target machine
-    /// accepts.
+    /// accepts, or an external source exposes such a trigger (a dead
+    /// command).
     InvalidFire,
     /// One state has two transitions on the same trigger without mutually
     /// exclusive guards.
@@ -122,6 +138,12 @@ pub enum FindingDetail {
         rule: RuleId,
         trigger: TriggerId,
     },
+    /// An external source can fire `trigger`, but no transition accepts it
+    /// (a dead command). Reported under [`Check::InvalidFire`].
+    DeadExternalTrigger {
+        source: ExternalId,
+        trigger: TriggerId,
+    },
     Nondeterminism {
         state: StateId,
         trigger: TriggerId,
@@ -173,7 +195,7 @@ impl FindingDetail {
 
     pub const fn check(&self) -> Check {
         match self {
-            FindingDetail::InvalidFire { .. } => Check::InvalidFire,
+            FindingDetail::InvalidFire { .. } | FindingDetail::DeadExternalTrigger { .. } => Check::InvalidFire,
             FindingDetail::Nondeterminism { .. } => Check::Nondeterminism,
             FindingDetail::CascadeCycle { .. } => Check::CascadeCycle,
             FindingDetail::UnhandledEvent { .. } => Check::UnhandledEvent,
@@ -190,6 +212,7 @@ impl FindingDetail {
             FindingDetail::InvalidFire { rule, .. }
             | FindingDetail::RaceCandidate { first: rule, .. }
             | FindingDetail::StateDependentFire { rule, .. } => ElementRef::Rule(*rule),
+            FindingDetail::DeadExternalTrigger { source, .. } => ElementRef::External(*source),
             FindingDetail::Nondeterminism { state, .. } | FindingDetail::UnreachableState { state } => {
                 ElementRef::State(*state)
             }
@@ -204,6 +227,9 @@ impl FindingDetail {
         match self {
             FindingDetail::InvalidFire { rule, trigger } => {
                 vec![ElementRef::Rule(*rule), ElementRef::Trigger(*trigger)]
+            }
+            FindingDetail::DeadExternalTrigger { source, trigger } => {
+                vec![ElementRef::External(*source), ElementRef::Trigger(*trigger)]
             }
             FindingDetail::Nondeterminism { state, transitions, .. } => std::iter::once(ElementRef::State(*state))
                 .chain(transitions.iter().map(|&t| ElementRef::Transition(t)))
@@ -234,21 +260,45 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// A finding at its check's default severity.
+    pub fn new(detail: FindingDetail, message: impl Into<String>) -> Self {
+        Self { severity: detail.check().default_severity(), detail, message: message.into() }
+    }
+
     pub const fn check(&self) -> Check {
         self.detail.check()
     }
 }
 
 /// Run every check. Findings are ordered by severity (errors first), then
-/// by check, then by the source position of their primary element.
+/// by check, then by the source position of their primary element; ties
+/// (several findings on one element) fall back to element order, so the
+/// result is fully deterministic.
 ///
-/// Stub: returns no findings until `feat/static-analysis` lands.
+/// `graph` must have been built from `model`.
 pub fn analyze(model: &Model, graph: &CausalGraph) -> Vec<Finding> {
-    let _ = (model, graph);
-    Vec::new()
+    let mut findings = Vec::new();
+    findings.extend(invalid_fire::check(model));
+    findings.extend(nondeterminism::check(model));
+    findings.extend(cycles::check(model, graph));
+    findings.extend(events::check(model));
+    findings.extend(reachability::check(model));
+    findings.extend(races::check(model, graph));
+    findings.extend(state_dependent::check(model));
+    sort_findings(model, &mut findings);
+    findings
 }
 
 /// Whether any finding is an error, i.e. whether `cascade check` fails.
 pub fn has_errors(findings: &[Finding]) -> bool {
     findings.iter().any(|f| f.severity == Severity::Error)
+}
+
+type SortKey = (Reverse<Severity>, Check, Pos, ElementRef, Vec<ElementRef>);
+
+fn sort_findings(model: &Model, findings: &mut [Finding]) {
+    findings.sort_by_cached_key(|f| -> SortKey {
+        let primary = f.detail.primary();
+        (Reverse(f.severity), f.check(), model.span_of(primary).start, primary, f.detail.subjects())
+    });
 }
