@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A microwave oven, after the W3C SCXML specification's example, without
+     the parallel door region: the door is modelled by events instead. -->
+<scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" name="microwave" initial="off" datamodel="ecmascript">
+  <datamodel>
+    <data id="cook_time" expr="5"/>
+    <data id="timer" expr="0"/>
+  </datamodel>
+
+  <state id="off">
+    <transition event="turn.on" target="on"/>
+  </state>
+
+  <state id="on">
+    <initial>
+      <transition target="idle"/>
+    </initial>
+    <onentry>
+      <send event="display.on"/>
+    </onentry>
+    <onexit>
+      <send event="display.off"/>
+    </onexit>
+
+    <transition event="turn.off" target="off"/>
+
+    <state id="idle">
+      <transition event="door.close" cond="timer &lt; cook_time" target="cooking"/>
+      <transition event="resume" target="paused_at"/>
+    </state>
+
+    <state id="cooking">
+      <onentry>
+        <raise event="light.on"/>
+      </onentry>
+      <onexit>
+        <raise event="light.off"/>
+      </onexit>
+      <transition event="door.open" target="idle"/>
+      <transition event="time" type="internal">
+        <assign location="timer" expr="timer + 1"/>
+        <if cond="timer &gt;= cook_time">
+          <raise event="done"/>
+        </if>
+      </transition>
+      <transition event="done" target="finished">
+        <send event="beep" target="#_parent"/>
+      </transition>
+    </state>
+
+    <history id="paused_at" type="shallow">
+      <transition target="idle"/>
+    </history>
+
+    <final id="finished"/>
+  </state>
+
+  <state id="light">
+    <transition event="light.on light.off" type="internal"/>
+  </state>
+</scxml>
