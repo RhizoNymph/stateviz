@@ -14,6 +14,7 @@
 mod engine;
 pub mod geometry;
 pub mod graph;
+pub mod metrics;
 pub mod options;
 pub mod result;
 
