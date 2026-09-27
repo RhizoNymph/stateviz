@@ -10,6 +10,7 @@
 pub(crate) mod chart;
 pub(crate) mod lower;
 pub(crate) mod names;
+pub(crate) mod wiring;
 
 use std::fmt;
 
