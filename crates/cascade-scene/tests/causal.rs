@@ -3,7 +3,7 @@
 mod common;
 
 use cascade_core::diff::{DiffStatus, ModelDiff};
-use cascade_core::{Direction, ElementRef, Finding, FindingDetail, Severity};
+use cascade_core::{CausalEdgeKind, Direction, ElementRef, Finding, FindingDetail, Severity};
 use cascade_layout::Point;
 use cascade_scene::{
     Arrow, Border, ConeFocus, Dash, EdgeKind, Emphasis, HitTarget, OutsideFocus, Overlay, Rgba, SceneBuilder, Shape,
@@ -108,21 +108,47 @@ fn pills_have_an_input_port_west_and_an_output_port_east() {
     let paid = node(&scene, "transition:Order:pending->paid@capture_ok");
     let emit = edges_of(&scene, EdgeKind::Emit)
         .into_iter()
-        .find(|e| paid.rect.contains(e.points[0]))
+        .find(|e| touches(paid.rect, e.points[0]))
         .expect("emit leaves the paid pill");
     assert_close(emit.points[0].x, paid.rect.right());
 }
 
 #[test]
 fn external_sources_sit_in_the_first_layer() {
+    // Engines align nodes within a layer column differently (flush left,
+    // centred), so this checks the column rather than exact x positions.
     let fx = Fixture::new(SPEC_EXAMPLE);
     let scene = fx.scene(&ViewState::default());
-    let leftmost = scene.nodes.iter().map(|n| n.rect.left()).fold(f32::INFINITY, f32::min);
-    for key in ["external:Customer", "external:PaymentGateway", "external:Clock"] {
-        assert_close(node(&scene, key).rect.left(), leftmost);
+    let sources: Vec<_> = ["external:Customer", "external:PaymentGateway", "external:Clock"]
+        .iter()
+        .map(|key| node(&scene, key).rect)
+        .collect();
+    // One column: every source overlaps every other horizontally.
+    for a in &sources {
+        for b in &sources {
+            assert!(a.left() < b.right() && b.left() < a.right(), "{a:?} and {b:?} are in different columns");
+        }
     }
-    let pill = node(&scene, "transition:Order:pending->paid@capture_ok");
-    assert!(pill.rect.left() > leftmost);
+    // The leftmost column: nothing lies entirely left of a source.
+    for n in &scene.nodes {
+        for s in &sources {
+            assert!(n.rect.right() > s.left(), "{} lies left of a source", describe(&n.target));
+        }
+    }
+    // Everything triggered or fired lies entirely right of every source.
+    let caused: std::collections::BTreeSet<String> = fx
+        .graph
+        .edges()
+        .filter(|(_, e)| matches!(e.kind, CausalEdgeKind::Trigger { .. } | CausalEdgeKind::Fire { .. }))
+        .map(|(_, e)| fx.model.key_of(fx.graph.node(e.to).element()).to_string())
+        .collect();
+    assert_eq!(caused.len(), 4, "three triggered transitions and one fired one");
+    for key in &caused {
+        let pill = node(&scene, key).rect;
+        for s in &sources {
+            assert!(pill.left() > s.right(), "{key} is not right of the sources");
+        }
+    }
 }
 
 #[test]
@@ -305,7 +331,7 @@ fn hidden_machines_collapse_to_a_stub_that_keeps_its_links() {
     let links = edges_of(&scene, EdgeKind::StubLink);
     assert_eq!(links.len(), 2, "Fulfillment fires into it; it emits Shipped");
     assert!(links.iter().all(|e| e.stroke.dash == Dash::Dotted));
-    let into = links.iter().find(|e| stub.rect.contains(*e.points.last().expect("end"))).expect("fire into stub");
+    let into = links.iter().find(|e| touches(stub.rect, *e.points.last().expect("end"))).expect("fire into stub");
     assert_eq!(into.stroke.color, OKABE_GREEN, "a rerouted fire keeps the target hue");
     assert_eq!(edges_of(&scene, EdgeKind::Fire).len(), 0);
 }
