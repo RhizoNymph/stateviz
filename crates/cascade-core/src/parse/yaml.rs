@@ -9,18 +9,14 @@ use crate::definition::{
 };
 use crate::error::{DiagnosticKind, Expected, LoadError};
 use crate::parse::grammar::{parse_target, parse_trigger_ref};
-use crate::parse::node::{Diags, as_mapping, as_sequence, is_null, span_of};
-use crate::span::{Pos, SourceSpan, Spanned};
+use crate::parse::node::{Diags, as_mapping, as_sequence, is_null, pos_of, span_of};
+use crate::span::{SourceSpan, Spanned};
 
 pub fn parse(text: &str) -> Result<Definition, LoadError> {
     let documents = match MarkedYamlOwned::load_from_str(text) {
         Ok(docs) => docs,
         Err(err) => {
-            let marker = err.marker();
-            let pos = Pos::new(
-                u32::try_from(marker.line()).unwrap_or(u32::MAX),
-                u32::try_from(marker.col()).unwrap_or(u32::MAX),
-            );
+            let pos = pos_of(*err.marker());
             return Err(LoadError::single(
                 DiagnosticKind::YamlSyntax { message: err.info().to_owned() },
                 SourceSpan::new(pos, pos),
@@ -324,6 +320,7 @@ fn parse_rule(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Optio
 mod tests {
     use super::*;
     use crate::definition::{TargetMode, TriggerRef};
+    use crate::span::Pos;
 
     const SPEC_EXAMPLE: &str = r#"
 machines:
@@ -474,6 +471,17 @@ external:
         let mut sorted = lines.clone();
         sorted.sort_unstable();
         assert_eq!(lines, sorted);
+    }
+
+    #[test]
+    fn columns_are_one_based() {
+        // `y` is the 26th character of line 4.
+        let text = "machines:\n  A:\n    states: [x]\n    transitions: [{from: y, to: x, on: go}]\n";
+        let def = parse(text).expect("parses");
+        let from = &def.machines[0].transitions[0].from[0];
+        assert_eq!(from.span.start, Pos::new(4, 26));
+        // `A` is the 3rd character of line 2.
+        assert_eq!(def.machines[0].name.span.start, Pos::new(2, 3));
     }
 
     #[test]
