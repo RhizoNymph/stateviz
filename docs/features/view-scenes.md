@@ -230,6 +230,15 @@ checks for badges, loads the pins sidecar, simulates the scenario (or, with
 builds the scene, prints its notes to stderr and writes SVG or PNG by
 extension.
 
+With `diff=<base>,<head>` in the link, `render` reads the definition at
+`base` (and at `head`, or the working tree when `head` is empty) with
+`cascade_interop::read_at_rev`, merges them with
+`cascade_core::diff::merge_for_display`, and builds the scene from the
+merged model with `SceneInput::diff` set: added elements get green outlines
+and removed ones become red ghosts. Findings are not computed in diff mode,
+because the merged model's ghosts would distort them. An unreadable
+revision or an invalid version exits with code 2.
+
 ## Visual encoding as implemented
 
 | Element | Shape | Color and line |

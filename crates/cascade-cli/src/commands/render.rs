@@ -4,6 +4,10 @@
 //! (selection, cone, filters, search, …) whose own view is overridden by
 //! `--view`. The trace view simulates `--scenario`; with `race=N` in the
 //! link it replays the N-th race candidate in both orders side by side.
+//! With `diff=<base>,<head>` in the link it renders diff mode: the file at
+//! `head` (default: the working tree) merged with the ghosts of what `base`
+//! had, decorated added/removed/changed. Findings are not drawn in diff
+//! mode, because the merged model's ghosts would distort them.
 //! Scene notes (e.g. "Pick a scenario to trace.") go to standard error.
 
 use std::path::{Path, PathBuf};
@@ -11,8 +15,11 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 
-use cascade_core::{CausalGraph, Check, Model, analyze};
-use cascade_scene::{MonoMeasure, SceneBuilder, SceneInput, Theme, ViewKind, ViewState, load_sidecar, sidecar_path};
+use cascade_core::diff::{ModelDiff, merge_for_display};
+use cascade_core::{CausalGraph, Check, Model, analyze, load_str};
+use cascade_scene::{
+    DiffRefs, MonoMeasure, SceneBuilder, SceneInput, Theme, ViewKind, ViewState, load_sidecar, sidecar_path,
+};
 use cascade_sim::Trace;
 
 use crate::commands::load_or_report;
@@ -50,8 +57,15 @@ pub fn run(args: &RenderArgs) -> anyhow::Result<ExitCode> {
     };
     view.view = args.view.parse::<ViewKind>().context("invalid --view")?;
 
+    let (model, diff) = match &view.diff {
+        Some(refs) => {
+            let (merged, diff) = diff_mode(&args.file, refs)?;
+            (merged, Some(diff))
+        }
+        None => (model, None),
+    };
     let graph = CausalGraph::build(&model);
-    let findings = analyze(&model, &graph);
+    let findings = if diff.is_some() { Vec::new() } else { analyze(&model, &graph) };
     let traces = match &args.scenario {
         Some(path) => traces(&model, &findings, path, view.race)?,
         None => Vec::new(),
@@ -67,7 +81,7 @@ pub fn run(args: &RenderArgs) -> anyhow::Result<ExitCode> {
         measure: &MonoMeasure::default(),
         sidecar: &sidecar,
         traces: &traces,
-        diff: None,
+        diff: diff.as_ref(),
     };
     let scene = SceneBuilder::new().build(&input)?;
     for note in &scene.notes {
@@ -80,6 +94,20 @@ pub fn run(args: &RenderArgs) -> anyhow::Result<ExitCode> {
     };
     std::fs::write(&args.out, bytes).with_context(|| format!("cannot write {}", args.out.display()))?;
     Ok(ExitCode::SUCCESS)
+}
+
+/// The definition at `refs.head` (or the working tree) merged with the
+/// ghosts of the definition at `refs.base`.
+fn diff_mode(file: &Path, refs: &DiffRefs) -> anyhow::Result<(Model, ModelDiff)> {
+    let old_text = cascade_interop::read_at_rev(file, &refs.base)?;
+    let new_text = match &refs.head {
+        Some(rev) => cascade_interop::read_at_rev(file, rev)?,
+        None => std::fs::read_to_string(file).with_context(|| format!("cannot read {}", file.display()))?,
+    };
+    let old = load_str(&old_text).with_context(|| format!("the definition at {} is invalid", refs.base))?;
+    let head = refs.head.as_deref().unwrap_or("the working tree");
+    let new = load_str(&new_text).with_context(|| format!("the definition at {head} is invalid"))?;
+    merge_for_display(&old, &new).context("cannot merge the two versions for display")
 }
 
 /// Simulate the scenario, or replay a race candidate in both orders.
