@@ -260,7 +260,7 @@ fn write_rule(out: &mut String, rule: &RuleDef) {
 /// A target selector in the syntax `parse_target` reads. Unlike the core
 /// `Display`, literals are quoted whenever the selector tokenizer would read
 /// them differently (e.g. a literal that starts with `event.`).
-fn selector(spec: &TargetSpec) -> String {
+pub(crate) fn selector(spec: &TargetSpec) -> String {
     let mut text = String::new();
     match spec.mode {
         TargetMode::One => {}
