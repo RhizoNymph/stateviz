@@ -9,11 +9,17 @@ use crate::span::{Pos, SourceSpan, Spanned};
 
 pub type Mapping = AnnotatedMappingOwned<MarkedYamlOwned>;
 
+/// Convert a saphyr marker to a [`Pos`]. saphyr's lines are 1-based but its
+/// columns are 0-based (despite its docs), so the column is shifted.
+pub fn pos_of(marker: saphyr::Marker) -> Pos {
+    Pos::new(
+        u32::try_from(marker.line()).unwrap_or(u32::MAX),
+        u32::try_from(marker.col()).map_or(u32::MAX, |c| c.saturating_add(1)),
+    )
+}
+
 pub fn span_of(node: &MarkedYamlOwned) -> SourceSpan {
-    let to_pos = |m: saphyr::Marker| {
-        Pos::new(u32::try_from(m.line()).unwrap_or(u32::MAX), u32::try_from(m.col()).unwrap_or(u32::MAX))
-    };
-    SourceSpan::new(to_pos(node.span.start), to_pos(node.span.end))
+    SourceSpan::new(pos_of(node.span.start), pos_of(node.span.end))
 }
 
 /// Strip tags; aliases are rejected by the caller via [`Diags::check_alias`].
