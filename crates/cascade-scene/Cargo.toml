@@ -9,6 +9,10 @@ rust-version.workspace = true
 cascade-core.workspace = true
 cascade-layout.workspace = true
 cascade-sim.workspace = true
+resvg.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+roxmltree.workspace = true

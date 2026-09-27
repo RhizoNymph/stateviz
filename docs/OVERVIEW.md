@@ -92,8 +92,8 @@ Features Index:
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:
-    description: Scene builders for the causal, structure, trace and matrix views; emphasis; view links; pins sidecar; SVG/PNG export.
-    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::ViewState::to_link, cascade_scene::to_svg, cascade render]
+    description: Scene builders for the causal, structure, trace and matrix views; the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export.
+    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md
   interop_and_diff:

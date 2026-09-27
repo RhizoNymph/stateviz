@@ -1,28 +1,36 @@
-//! Scene → image files.
-//!
-//! Owner: `feat/view-scenes` implements SVG (every shape, dash, arrow,
-//! badge, opacity) and PNG (rasterised SVG).
+//! Scene → image files: standalone SVG, and PNG rasterised from that SVG
+//! with resvg. Both draw exactly what the scene holds, the same picture the
+//! app paints.
+
+mod png;
+mod svg;
 
 use crate::scene::Scene;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
-    #[error("{0} export is not implemented yet")]
-    NotImplemented(&'static str),
+    /// A coordinate, size or width in the scene is NaN or infinite.
+    #[error("the scene has non-finite geometry")]
+    NonFinite,
+    #[error("PNG scale must be a positive finite number, got {0}")]
+    InvalidScale(f32),
+    #[error("a {width}×{height} pixel image is too large to export")]
+    TooLarge { width: u64, height: u64 },
+    #[error("writing SVG failed")]
+    Format(#[from] std::fmt::Error),
+    #[error("rasterising the SVG failed: {0}")]
+    Svg(#[from] resvg::usvg::Error),
+    #[error("encoding PNG failed: {0}")]
+    Png(#[source] Box<dyn std::error::Error + Send + Sync>),
 }
 
-/// Render a scene as a standalone SVG document.
-///
-/// Stub until `feat/view-scenes` lands.
+/// Render a scene as a standalone SVG document: every shape, border, dash,
+/// arrowhead, label, badge, overlay, opacity and the background.
 pub fn to_svg(scene: &Scene) -> Result<String, ExportError> {
-    let _ = scene;
-    Err(ExportError::NotImplemented("SVG"))
+    svg::to_svg(scene)
 }
 
 /// Render a scene as PNG bytes at `scale` device pixels per scene unit.
-///
-/// Stub until `feat/view-scenes` lands.
 pub fn to_png(scene: &Scene, scale: f32) -> Result<Vec<u8>, ExportError> {
-    let _ = (scene, scale);
-    Err(ExportError::NotImplemented("PNG"))
+    png::to_png(scene, scale)
 }
