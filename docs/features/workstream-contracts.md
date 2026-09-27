@@ -33,7 +33,10 @@ break a signature another workstream uses without noting it in its PR.
   view link, the pins sidecar or a diff.
 - **Findings:** `Finding { severity, detail: FindingDetail, message }`.
   `FindingDetail::subjects()` gives the elements to badge and `primary()`
-  the element to focus.
+  the element to focus. Match on `FindingDetail` through these methods (or
+  with a wildcard arm): `feat/static-analysis` adds
+  `DeadExternalTrigger { source, trigger }` (reported under
+  `Check::InvalidFire`).
 - **Layout:** `LayoutGraph` (validated on insert) + `LayoutOptions` +
   `LayoutHints { previous, pins }` → `LayoutResult` (node rects with
   layer/order, edge polylines with `reversed`, group rects, bounds);
