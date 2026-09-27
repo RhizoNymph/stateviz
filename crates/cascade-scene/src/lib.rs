@@ -13,6 +13,7 @@
 //! future web frontend draw the same picture.
 
 pub mod color;
+pub mod emphasis;
 pub mod export;
 pub mod pins;
 pub mod scene;
@@ -20,7 +21,7 @@ pub mod text;
 pub mod view_state;
 pub mod views;
 
-pub use color::{MachineStyle, Rgba, Theme, ThemeMode, machine_styles};
+pub use color::{MachineStyle, Rgba, Theme, ThemeMode, machine_colors, machine_styles};
 pub use export::{ExportError, to_png, to_svg};
 pub use pins::{LayoutSidecar, SidecarError, load_sidecar, save_sidecar, sidecar_path};
 pub use scene::{

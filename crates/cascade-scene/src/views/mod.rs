@@ -1,20 +1,35 @@
-//! Scene builders, one per view.
+//! Scene builders, one per view, plus the passes they share.
 //!
-//! Owner: `feat/view-scenes` implements all four views, emphasis (cones,
-//! path queries, search, entity filter stubs, collapse), badges and diff
-//! decorations. The foundation ships a plain causal view so hosts can render
-//! something before that lands.
+//! ```text
+//! ViewState ──Interaction::new──▶ Interaction (selection, cone/path focus, search)
+//!                                        │
+//! Model + CausalGraph ──view builder──▶ DraftGraph (looks + metas)
+//!        (filters: machine pair, hidden machines, collapse, hide mode)
+//!                                        │ realize (LayoutCache: same input ⇒ same layout)
+//!                                        ▼
+//!                                      Scene ──Decor::apply──▶ emphasis, badges, diff
+//! ```
+//!
+//! The trace and matrix views place items directly (no layered layout) and
+//! share only the decoration pass.
 
+mod cache;
 mod causal;
-
-use std::collections::HashMap;
+mod decorate;
+mod draft;
+mod filters;
+mod links;
+mod matrix;
+mod structure;
+mod style;
+mod trace;
 
 use cascade_core::diff::ModelDiff;
 use cascade_core::{CausalGraph, Finding, Model};
-use cascade_layout::PreviousLayout;
 use cascade_sim::Trace;
 
 use crate::color::Theme;
+use crate::emphasis::Interaction;
 use crate::pins::LayoutSidecar;
 use crate::scene::Scene;
 use crate::text::TextMeasure;
@@ -44,11 +59,12 @@ pub enum SceneError {
     Graph(#[from] cascade_layout::GraphError),
 }
 
-/// Builds scenes and remembers each view's previous layout so an edit to
-/// one transition does not move unrelated nodes.
+/// Builds scenes and remembers each view's recent layouts, so emphasis
+/// changes never relayout and an edit to one transition does not move
+/// unrelated nodes.
 #[derive(Debug, Default)]
 pub struct SceneBuilder {
-    previous: HashMap<ViewKind, PreviousLayout>,
+    cache: cache::LayoutCache,
 }
 
 impl SceneBuilder {
@@ -58,22 +74,22 @@ impl SceneBuilder {
 
     /// Forget previous layouts (e.g. when opening a different file).
     pub fn reset(&mut self) {
-        self.previous.clear();
+        self.cache.clear();
+    }
+
+    /// How many times the layout engine has actually run (cache misses).
+    /// Selection, cone, search and diff changes never add to it.
+    pub fn layouts_run(&self) -> u64 {
+        self.cache.runs()
     }
 
     pub fn build(&mut self, input: &SceneInput<'_>) -> Result<Scene, SceneError> {
+        let interaction = Interaction::new(input.model, input.graph, input.view);
         match input.view.view {
-            ViewKind::Causal => {
-                let previous = self.previous.get(&ViewKind::Causal).cloned();
-                let (scene, next) = causal::build(input, previous)?;
-                self.previous.insert(ViewKind::Causal, next);
-                Ok(scene)
-            }
-            ViewKind::Structure | ViewKind::Trace | ViewKind::Matrix => {
-                let mut scene = Scene::empty(input.view.view, input.theme.background);
-                scene.notes.push(format!("The {} view is not implemented yet.", input.view.view));
-                Ok(scene)
-            }
+            ViewKind::Causal => causal::build(input, &interaction, &mut self.cache),
+            ViewKind::Structure => structure::build(input, &interaction, &mut self.cache),
+            ViewKind::Trace => Ok(trace::build(input, &interaction)),
+            ViewKind::Matrix => Ok(matrix::build(input, &interaction)),
         }
     }
 }

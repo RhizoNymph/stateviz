@@ -157,25 +157,72 @@ pub struct MachineStyle {
 
 /// Assign every machine a style, indexed by `MachineId::index()`.
 ///
-/// Declared colors win. Undeclared machines take unused palette hues in
-/// Okabe-Ito order. Past eight machines, machines are grouped by `domain`
-/// and share their domain's hue at different lightness.
-///
-/// Stub-quality: `feat/view-scenes` owns the full domain grouping.
+/// Declared colors win. Undeclared machines take the least-used palette hue
+/// (unused hues first, in Okabe-Ito order). Up to eight machines each form
+/// their own group; past eight, machines are grouped by `domain` (a machine
+/// without a domain is a group of its own) and every undeclared machine of a
+/// group shares the group's hue. Machines that end up with the same hue get
+/// successive lightness steps in definition order, so no two machines of one
+/// hue look identical until a hue carries more than four machines.
 pub fn machine_styles(model: &Model, theme: &Theme) -> Vec<MachineStyle> {
-    let mut used: Vec<PaletteColor> = model.machines().filter_map(|(_, m)| m.color).collect();
-    let mut next_free = PaletteColor::ALL.iter().copied().cycle();
-    let mut assigned: Vec<PaletteColor> = Vec::with_capacity(model.machine_count());
+    machine_colors(model).into_iter().map(|(color, shade)| style_for(color, shade, theme)).collect()
+}
+
+/// The palette color and lightness step of every machine, indexed by
+/// `MachineId::index()`. See [`machine_styles`].
+pub fn machine_colors(model: &Model) -> Vec<(PaletteColor, u8)> {
+    let group_by_domain = model.machine_count() > PaletteColor::ALL.len();
+
+    // Groups in order of first appearance: a domain, or one machine alone.
+    let mut group_of: Vec<usize> = Vec::with_capacity(model.machine_count());
+    let mut group_keys: Vec<Option<&str>> = Vec::new();
     for (_, machine) in model.machines() {
-        let color = machine.color.unwrap_or_else(|| {
-            let fresh = PaletteColor::ALL.iter().copied().find(|c| !used.contains(c));
-            let pick = fresh.or_else(|| next_free.next()).unwrap_or(PaletteColor::Blue);
-            used.push(pick);
-            pick
+        let key = if group_by_domain { machine.domain.as_deref() } else { None };
+        let existing = key.and_then(|k| group_keys.iter().position(|g| *g == Some(k)));
+        let group = existing.unwrap_or_else(|| {
+            group_keys.push(key);
+            group_keys.len() - 1
         });
-        assigned.push(color);
+        group_of.push(group);
     }
-    assigned.into_iter().map(|color| style_for(color, 0, theme)).collect()
+
+    // A group's hue is the first declared color among its machines; groups
+    // without one take the least-used hue afterwards.
+    let mut group_color: Vec<Option<PaletteColor>> = vec![None; group_keys.len()];
+    let mut usage = [0u32; 8];
+    let slot = |c: PaletteColor| PaletteColor::ALL.iter().position(|&p| p == c).unwrap_or(0);
+    for ((_, machine), &group) in model.machines().zip(&group_of) {
+        if let Some(color) = machine.color {
+            if group_color[group].is_none() {
+                group_color[group] = Some(color);
+            }
+            usage[slot(color)] += 1;
+        }
+    }
+    for color in &mut group_color {
+        if color.is_none() {
+            let (best, _) = PaletteColor::ALL
+                .iter()
+                .enumerate()
+                .min_by_key(|(i, _)| (usage[*i], *i))
+                .unwrap_or((0, &PaletteColor::Blue));
+            usage[best] += 1;
+            *color = Some(PaletteColor::ALL[best]);
+        }
+    }
+
+    let mut shades_used = [0u8; 8];
+    model
+        .machines()
+        .zip(&group_of)
+        .map(|((_, machine), &group)| {
+            let color = machine.color.or(group_color[group]).unwrap_or(PaletteColor::Blue);
+            let shade = &mut shades_used[slot(color)];
+            let this = *shade;
+            *shade = shade.saturating_add(1);
+            (color, this)
+        })
+        .collect()
 }
 
 /// A palette hue shifted by `shade` lightness steps (0 = the hue itself).
@@ -232,5 +279,93 @@ mod tests {
         assert_ne!(styles[1].hue, styles[0].hue);
         assert_ne!(styles[2].hue, styles[1].hue);
         assert_ne!(styles[2].hue, styles[0].hue);
+    }
+
+    fn machines_yaml(entries: &[(&str, Option<&str>, Option<&str>)]) -> String {
+        let mut yaml = String::from("machines:\n");
+        for (name, color, domain) in entries {
+            let mut attrs = vec!["states: [x]".to_owned()];
+            if let Some(c) = color {
+                attrs.push(format!("color: {c}"));
+            }
+            if let Some(d) = domain {
+                attrs.push(format!("domain: {d}"));
+            }
+            yaml.push_str(&format!("  {name}: {{ {} }}\n", attrs.join(", ")));
+        }
+        yaml
+    }
+
+    #[test]
+    fn up_to_eight_machines_get_distinct_hues_and_ignore_domains() {
+        let names = ["A", "B", "C", "D", "E", "F", "G", "H"];
+        let entries: Vec<_> = names.iter().map(|n| (*n, None, Some("same"))).collect();
+        let model = cascade_core::load_str(&machines_yaml(&entries)).expect("loads");
+        let colors = machine_colors(&model);
+        let mut hues: Vec<PaletteColor> = colors.iter().map(|(c, _)| *c).collect();
+        assert!(colors.iter().all(|(_, shade)| *shade == 0));
+        hues.sort();
+        hues.dedup();
+        assert_eq!(hues.len(), 8, "{colors:?}");
+        // Automatic assignment follows Okabe-Ito order.
+        assert_eq!(colors[0].0, PaletteColor::ALL[0]);
+        assert_eq!(colors[1].0, PaletteColor::ALL[1]);
+    }
+
+    #[test]
+    fn duplicate_declared_colors_differ_in_lightness() {
+        let model = cascade_core::load_str(&machines_yaml(&[("A", Some("blue"), None), ("B", Some("blue"), None)]))
+            .expect("loads");
+        let theme = Theme::light();
+        let styles = machine_styles(&model, &theme);
+        assert_eq!(styles[0], style_for(PaletteColor::Blue, 0, &theme));
+        assert_eq!(styles[1], style_for(PaletteColor::Blue, 1, &theme));
+        assert_ne!(styles[0].hue, styles[1].hue);
+    }
+
+    #[test]
+    fn past_eight_machines_share_domain_hues_at_different_lightness() {
+        let mut entries: Vec<(String, Option<&str>, Option<&str>)> = Vec::new();
+        for i in 0..4 {
+            entries.push((format!("Sales{i}"), None, Some("sales")));
+        }
+        for i in 0..4 {
+            entries.push((format!("Ship{i}"), None, Some("shipping")));
+        }
+        entries.push(("Billing".to_owned(), Some("purple"), Some("money")));
+        entries.push(("Ledger".to_owned(), None, Some("money")));
+        let refs: Vec<(&str, Option<&str>, Option<&str>)> =
+            entries.iter().map(|(n, c, d)| (n.as_str(), *c, *d)).collect();
+        let model = cascade_core::load_str(&machines_yaml(&refs)).expect("loads");
+        let colors = machine_colors(&model);
+        let theme = Theme::light();
+        let styles = machine_styles(&model, &theme);
+
+        let sales = colors[0].0;
+        assert!(colors[..4].iter().all(|(c, _)| *c == sales));
+        assert_eq!(colors[..4].iter().map(|(_, s)| *s).collect::<Vec<_>>(), [0, 1, 2, 3]);
+        let shipping = colors[4].0;
+        assert_ne!(sales, shipping);
+        assert!(colors[4..8].iter().all(|(c, _)| *c == shipping));
+        // The declared color names the whole domain's hue.
+        assert_eq!(colors[8], (PaletteColor::Purple, 0));
+        assert_eq!(colors[9], (PaletteColor::Purple, 1));
+        assert!(![sales, shipping].contains(&PaletteColor::Purple));
+        // Same hue, different lightness: every style is distinct.
+        for i in 0..styles.len() {
+            for j in (i + 1)..styles.len() {
+                assert_ne!(styles[i].hue, styles[j].hue, "{i} vs {j}");
+            }
+        }
+    }
+
+    #[test]
+    fn past_eight_machines_without_domains_reuse_hues_with_shades() {
+        let names: Vec<String> = (0..10).map(|i| format!("M{i}")).collect();
+        let entries: Vec<_> = names.iter().map(|n| (n.as_str(), None, None)).collect();
+        let model = cascade_core::load_str(&machines_yaml(&entries)).expect("loads");
+        let colors = machine_colors(&model);
+        assert_eq!(colors[8], (colors[0].0, 1));
+        assert_eq!(colors[9], (colors[1].0, 1));
     }
 }
