@@ -93,6 +93,7 @@ dependencies = [
  "cascade-scene",
  "cascade-sim",
  "clap",
+ "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",

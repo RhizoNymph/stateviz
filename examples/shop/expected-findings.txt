@@ -1,0 +1,20 @@
+examples/shop/cascade.yaml:207:11: error[invalid-fire]: Fulfillment fires Shipment.cancel on OrderCancelled, but no Shipment transition accepts `cancel`
+examples/shop/cascade.yaml:242:3: error[invalid-fire]: Customer can fire Order.request_return, but no Order transition accepts `request_return`
+examples/shop/cascade.yaml:102:9: error[nondeterminism]: Inventory.requested has 2 transitions on `reserve` without mutually exclusive guards: Inventory: requested → reserved has no guard
+examples/shop/cascade.yaml:68:9: warning[cascade-cycle]: Order: placed → cancelled can re-trigger itself: Order: placed → cancelled ⇒ Refunds ⇒ Payment: captured → refunded ⇒ Orders ⇒ Order: placed → cancelled
+examples/shop/cascade.yaml:38:3: warning[unhandled-event]: ShipmentLost is emitted by Shipment: in_transit → lost, but no controller subscribes to it
+examples/shop/cascade.yaml:235:7: warning[orphan-controller]: Returns subscribes to ReturnRequested, but no transition emits it
+examples/shop/cascade.yaml:59:9: warning[unreachable-state]: Order.returned is never entered: no path from Order's initial state reaches it through external triggers or controller fires
+examples/shop/cascade.yaml:159:11: info[race-candidate]: PaymentAuthorized leads Billing to fire Payment.capture and FraudCheck to fire Payment.void, which may hit the same Payment instance in either order
+examples/shop/cascade.yaml:159:11: info[state-dependent-fire]: Billing fires Payment.capture on PaymentAuthorized, which Payment drops in created, authorizing, captured, voided, failed and refunded
+examples/shop/cascade.yaml:168:11: info[state-dependent-fire]: FraudCheck fires Payment.void on PaymentAuthorized, which Payment drops in created, authorizing, captured, voided, failed and refunded
+examples/shop/cascade.yaml:175:11: info[state-dependent-fire]: Orders fires Order.payment_captured on PaymentCaptured, which Order drops in cart, placed.paid, fulfilling, delivered, closed, cancelled and returned
+examples/shop/cascade.yaml:178:11: info[state-dependent-fire]: Orders fires Order.stock_reserved on StockReserved, which Order drops in cart, placed.awaiting_payment, fulfilling, delivered, closed, cancelled and returned
+examples/shop/cascade.yaml:181:11: info[state-dependent-fire]: Orders fires Order.shipment_delivered on ShipmentDelivered, which Order drops in cart, placed.awaiting_payment, placed.paid, delivered, closed, cancelled and returned
+examples/shop/cascade.yaml:187:11: info[state-dependent-fire]: Orders fires Order.cancel on PaymentRefunded, which Order drops in cart, fulfilling, delivered, closed, cancelled and returned
+examples/shop/cascade.yaml:193:11: info[state-dependent-fire]: Refunds fires Payment.refund on OrderCancelled, which Payment drops in created, authorizing, authorized, voided, failed and refunded
+examples/shop/cascade.yaml:213:11: info[state-dependent-fire]: Shipping fires Inventory.commit on ShipmentDispatched, which Inventory drops in requested, backordered and committed
+examples/shop/cascade.yaml:219:11: info[state-dependent-fire]: Tracking fires Shipment.poll_tracking on ShipmentDispatched, which Shipment drops in idle, packing, delivered and lost
+examples/shop/cascade.yaml:222:11: info[state-dependent-fire]: Tracking fires Shipment.poll_tracking on TrackingPolled, which Shipment drops in idle, packing, delivered and lost
+examples/shop/cascade.yaml:236:11: info[state-dependent-fire]: Returns fires Order.return_received on ReturnRequested, which Order drops in cart, placed.awaiting_payment, placed.paid, fulfilling, closed, cancelled and returned
+summary: 3 errors, 4 warnings, 12 info
