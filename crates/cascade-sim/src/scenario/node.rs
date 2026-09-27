@@ -11,8 +11,13 @@ use crate::error::{ScenarioDiagnostic, ScenarioErrorKind};
 
 pub type Mapping = AnnotatedMappingOwned<MarkedYamlOwned>;
 
+/// saphyr's lines are 1-based but its columns are 0-based (despite its
+/// docs); shift the column so spans match `cascade_core`'s 1-based `Pos`.
 pub fn pos(marker: saphyr::Marker) -> Pos {
-    Pos::new(u32::try_from(marker.line()).unwrap_or(u32::MAX), u32::try_from(marker.col()).unwrap_or(u32::MAX))
+    Pos::new(
+        u32::try_from(marker.line()).unwrap_or(u32::MAX),
+        u32::try_from(marker.col()).map_or(u32::MAX, |c| c.saturating_add(1)),
+    )
 }
 
 pub fn span_of(node: &MarkedYamlOwned) -> SourceSpan {
