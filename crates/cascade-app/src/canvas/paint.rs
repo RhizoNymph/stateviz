@@ -41,7 +41,23 @@ pub struct PaintInput<'a> {
     pub hover: Option<&'a HitTarget>,
     /// The node being dragged and its current top-left corner.
     pub drag: Option<(&'a ElementKey, Point)>,
+    /// A build-mode connect drag in progress.
+    pub connect: Option<&'a ConnectPaint>,
 }
+
+/// A connect drag, in screen coordinates: the rubber band from where the
+/// drag started to the pointer, every valid drop target, and the one under
+/// the pointer. Drawn in the theme's text color (weight, never hue).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectPaint {
+    pub from: ScreenPoint,
+    pub to: ScreenPoint,
+    pub targets: Vec<ScreenRect>,
+    pub hot: Option<ScreenRect>,
+}
+
+/// Outline gap around highlighted drop targets, in screen pixels.
+const DROP_PAD: f32 = 4.0;
 
 pub fn to_bounds(r: ScreenRect) -> Bounds<Pixels> {
     Bounds::new(point(px(r.x), px(r.y)), size(px(r.width.max(0.0)), px(r.height.max(0.0))))
@@ -86,6 +102,9 @@ pub fn paint_scene(input: &PaintInput<'_>, window: &mut Window, cx: &mut App) {
         {
             let offset = (top_left.x - node.rect.left(), top_left.y - node.rect.top());
             painter.node(node, offset, true, window, cx);
+        }
+        if let Some(connect) = input.connect {
+            painter.connect(connect, window);
         }
     });
 }
@@ -164,6 +183,43 @@ impl Painter<'_> {
             }
             Overlay::Text { label, opacity, .. } => self.label(label, (0.0, 0.0), *opacity, window, cx),
         }
+    }
+
+    // --- Connect drag --------------------------------------------------------
+
+    fn connect(&self, connect: &ConnectPaint, window: &mut Window) {
+        let color = hsla(self.theme.text, 1.0);
+        let faint = hsla(self.theme.text, 0.55);
+        for target in &connect.targets {
+            window.paint_quad(quad(
+                to_bounds(target.inset(-DROP_PAD)),
+                px(4.0),
+                transparent_black(),
+                px(1.5),
+                faint,
+                BorderStyle::Dashed,
+            ));
+        }
+        if let Some(hot) = connect.hot {
+            window.paint_quad(quad(
+                to_bounds(hot.inset(-DROP_PAD)),
+                px(4.0),
+                transparent_black(),
+                px(3.0),
+                color,
+                BorderStyle::Solid,
+            ));
+        }
+        let mut band = PathBuilder::stroke(px(2.0)).dash_array(&[px(6.0), px(4.0)]);
+        band.move_to(gpoint(connect.from));
+        band.line_to(gpoint(connect.to));
+        match band.build() {
+            Ok(path) => window.paint_path(path, color),
+            Err(error) => tracing::debug!(%error, "cannot build the rubber band"),
+        }
+        let r = 4.0;
+        let dot = ScreenRect::new(connect.to.x - r, connect.to.y - r, 2.0 * r, 2.0 * r);
+        window.paint_quad(fill(to_bounds(dot), color).corner_radii(Corners::all(px(r))));
     }
 
     // --- Edges -------------------------------------------------------------

@@ -1,9 +1,11 @@
-//! Pointer gestures on the canvas: click, pan, node drag.
+//! Pointer gestures on the canvas: click, pan, node drag, connect.
 //!
 //! Pure state machine over screen positions. A press on the background or
 //! with a modifier becomes a pan once the pointer moves past
-//! [`DRAG_THRESHOLD`]; a plain press on a pinnable node becomes a node drag.
-//! A release without moving is a click, classified by [`classify_click`].
+//! [`DRAG_THRESHOLD`]; a plain press on a pinnable node becomes a node drag;
+//! a press on a build-mode connect handle ([`Gesture::press_handle`])
+//! becomes a connect drag with a rubber band. A release without moving is a
+//! click, classified by [`classify_click`].
 
 use cascade_core::ElementKey;
 use cascade_layout::Point;
@@ -51,12 +53,22 @@ pub struct Draggable {
 pub enum Gesture {
     #[default]
     Idle,
-    /// Button down, not yet moved past the threshold.
-    Pressed { start: ScreenPoint, pick: Pick, draggable: Option<Draggable>, mods: Mods, clicks: usize },
+    /// Button down, not yet moved past the threshold. `handle` is the
+    /// element whose connect handle was pressed.
+    Pressed {
+        start: ScreenPoint,
+        pick: Pick,
+        draggable: Option<Draggable>,
+        mods: Mods,
+        clicks: usize,
+        handle: Option<Box<ElementKey>>,
+    },
     /// Dragging the background.
     Panning { last: ScreenPoint },
     /// Dragging a node; `zoom` is fixed for the gesture.
     Dragging { node: Draggable, start: ScreenPoint, current: ScreenPoint, zoom: f32 },
+    /// Dragging a rubber band from a connect handle.
+    Connecting { from: ElementKey, start: ScreenPoint, current: ScreenPoint },
 }
 
 /// What a pointer move means for the host.
@@ -67,6 +79,8 @@ pub enum MoveOutcome {
     Pan(f32, f32),
     /// The dragged node moved; repaint the preview.
     DragPreview,
+    /// The rubber band moved; repaint it and the drop highlight.
+    ConnectPreview,
 }
 
 /// What a release means for the host.
@@ -83,6 +97,12 @@ pub enum ReleaseOutcome {
         key: ElementKey,
         top_left: Point,
     },
+    /// A connect drag from `from` ended at `at` (screen coordinates); the
+    /// host hit tests there for the target.
+    Connect {
+        from: ElementKey,
+        at: ScreenPoint,
+    },
 }
 
 impl Gesture {
@@ -90,17 +110,34 @@ impl Gesture {
     /// modifier clicks never move nodes.
     pub fn press(start: ScreenPoint, pick: Pick, draggable: Option<Draggable>, mods: Mods, clicks: usize) -> Self {
         let draggable = draggable.filter(|_| !mods.any());
-        Gesture::Pressed { start, pick, draggable, mods, clicks }
+        Gesture::Pressed { start, pick, draggable, mods, clicks, handle: None }
+    }
+
+    /// A press on the connect handle of `element`: a drag connects, a click
+    /// selects the element.
+    pub fn press_handle(start: ScreenPoint, element: ElementKey, mods: Mods, clicks: usize) -> Self {
+        Gesture::Pressed {
+            start,
+            pick: Pick::Element(element.clone()),
+            draggable: None,
+            mods,
+            clicks,
+            handle: Some(Box::new(element)),
+        }
     }
 
     pub fn moved(&mut self, at: ScreenPoint, zoom: f32) -> MoveOutcome {
         match self {
             Gesture::Idle => MoveOutcome::Nothing,
-            Gesture::Pressed { start, draggable, .. } => {
+            Gesture::Pressed { start, draggable, handle, .. } => {
                 if start.distance(at) < DRAG_THRESHOLD {
                     return MoveOutcome::Nothing;
                 }
                 let start = *start;
+                if let Some(from) = handle.take() {
+                    *self = Gesture::Connecting { from: *from, start, current: at };
+                    return MoveOutcome::ConnectPreview;
+                }
                 match draggable.take() {
                     Some(node) => {
                         *self = Gesture::Dragging { node, start, current: at, zoom };
@@ -121,6 +158,10 @@ impl Gesture {
                 *current = at;
                 MoveOutcome::DragPreview
             }
+            Gesture::Connecting { current, .. } => {
+                *current = at;
+                MoveOutcome::ConnectPreview
+            }
         }
     }
 
@@ -131,6 +172,16 @@ impl Gesture {
             Gesture::Dragging { node, start, current, zoom } => {
                 ReleaseOutcome::Drop { top_left: drag_top_left(node.origin, start, current, zoom), key: node.key }
             }
+            Gesture::Connecting { from, current, .. } => ReleaseOutcome::Connect { from, at: current },
+        }
+    }
+
+    /// The rubber band: the element dragged from, where the drag started and
+    /// where the pointer is.
+    pub fn connect_preview(&self) -> Option<(&ElementKey, ScreenPoint, ScreenPoint)> {
+        match self {
+            Gesture::Connecting { from, start, current } => Some((from, *start, *current)),
+            _ => None,
         }
     }
 
@@ -262,5 +313,26 @@ mod tests {
     fn drag_with_zero_zoom_does_not_divide_by_zero() {
         let p = drag_top_left(Point::new(1.0, 1.0), at(0.0, 0.0), at(2.0, 2.0), 0.0);
         assert_eq!(p, Point::new(3.0, 3.0));
+    }
+
+    #[test]
+    fn dragging_a_connect_handle_draws_a_rubber_band() {
+        let from = ElementKey::State { machine: "Order".into(), path: "draft".into() };
+        let mut g = Gesture::press_handle(at(0.0, 0.0), from.clone(), Mods::default(), 1);
+        assert_eq!(g.moved(at(2.0, 0.0), 1.0), MoveOutcome::Nothing, "below the threshold");
+        assert!(g.connect_preview().is_none());
+        assert_eq!(g.moved(at(30.0, 5.0), 1.0), MoveOutcome::ConnectPreview);
+        assert_eq!(g.moved(at(60.0, 10.0), 2.0), MoveOutcome::ConnectPreview);
+        assert_eq!(g.connect_preview(), Some((&from, at(0.0, 0.0), at(60.0, 10.0))));
+        assert!(g.drag_preview().is_none());
+        assert_eq!(g.release(), ReleaseOutcome::Connect { from, at: at(60.0, 10.0) });
+        assert_eq!(g, Gesture::Idle);
+    }
+
+    #[test]
+    fn clicking_a_connect_handle_selects_its_element() {
+        let from = ElementKey::Controller { controller: "Fulfil".into() };
+        let mut g = Gesture::press_handle(at(5.0, 5.0), from.clone(), Mods::default(), 1);
+        assert_eq!(g.release(), ReleaseOutcome::Click { pick: Pick::Element(from), mods: Mods::default(), clicks: 1 });
     }
 }

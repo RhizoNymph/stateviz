@@ -7,6 +7,7 @@ use gpui::{Context, Window, div, prelude::*, px};
 
 use super::{button, caption, separator};
 use crate::commands::{Command, depth_label, key_hint};
+use crate::mode::AppMode;
 use crate::theme::chrome;
 use crate::workspace::Workspace;
 
@@ -35,7 +36,7 @@ impl Workspace {
         let hide = self.view.outside == OutsideFocus::Hide;
         let in_diff = self.view.diff.is_some();
 
-        let tabs = ViewKind::ALL.into_iter().map(|view| {
+        let tabs = ViewKind::ALL.into_iter().filter(|view| self.mode.allows(*view)).map(|view| {
             button(
                 format!("tab-{view}"),
                 with_key(tab_label(view), Command::ShowView(view)),
@@ -43,6 +44,16 @@ impl Workspace {
                 colors,
             )
             .on_click(cx.listener(move |ws, _, _, cx| ws.show_view(view, cx)))
+        });
+
+        let modes = AppMode::ALL.into_iter().map(|mode| {
+            button(
+                format!("mode-{}", mode.label()),
+                with_key(mode.label(), Command::SetMode(mode)),
+                self.mode == mode,
+                colors,
+            )
+            .on_click(cx.listener(move |ws, _, window, cx| ws.run_command(Command::SetMode(mode), window, cx)))
         });
 
         div()
@@ -56,6 +67,8 @@ impl Workspace {
             .border_b_1()
             .border_color(colors.border)
             .bg(colors.panel)
+            .children(modes)
+            .child(separator(colors))
             .children(tabs)
             .child(separator(colors))
             .child(caption("Cone", colors))
@@ -81,19 +94,21 @@ impl Workspace {
                 button("outside", if hide { "Hide  H" } else { "Dim  H" }, hide, colors)
                     .on_click(cx.listener(|ws, _, window, cx| ws.run_command(Command::ToggleOutside, window, cx))),
             )
-            .child(separator(colors))
-            .child(caption("Diff", colors))
-            .child(self.diff_base.clone())
-            .child(self.diff_head.clone())
-            .child(
-                button("diff-compare", "Compare", in_diff, colors)
-                    .on_click(cx.listener(|ws, _, window, cx| ws.start_diff(window, cx))),
-            )
-            .when(in_diff, |el| {
-                el.child(
-                    button("diff-exit", "Exit diff", false, colors)
-                        .on_click(cx.listener(|ws, _, _, cx| ws.exit_diff(cx))),
-                )
+            .when(self.mode == AppMode::View, |el| {
+                el.child(separator(colors))
+                    .child(caption("Diff", colors))
+                    .child(self.diff_base.clone())
+                    .child(self.diff_head.clone())
+                    .child(
+                        button("diff-compare", "Compare", in_diff, colors)
+                            .on_click(cx.listener(|ws, _, window, cx| ws.start_diff(window, cx))),
+                    )
+                    .when(in_diff, |el| {
+                        el.child(
+                            button("diff-exit", "Exit diff", false, colors)
+                                .on_click(cx.listener(|ws, _, _, cx| ws.exit_diff(cx))),
+                        )
+                    })
             })
             .child(separator(colors))
             .child(
