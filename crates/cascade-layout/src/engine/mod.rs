@@ -123,7 +123,7 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
         }
     }
 
-    // Which bands keep their previous layout.
+    // Which bands keep their previous layout, and how.
     let anchors: Vec<stability::Anchors> =
         bands
             .iter()
@@ -131,26 +131,54 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
                 if p.mode == Mode::Stable { stability::anchors(bg, &p, &layer_of) } else { vec![None; bg.items.len()] }
             })
             .collect();
-    let stable: Vec<bool> = anchors.iter().map(|a| a.iter().any(Option::is_some)).collect();
-
     let seed = |v: usize| if p.mode == Mode::Seeded { p.nodes[v].prev.map(|pr| pr.order) } else { None };
-    let mut occupancy: Vec<Vec<Occupancy>> = vec![Vec::new(); bands.len()];
+    let mut modes = vec![BandMode::Fresh; bands.len()];
+    let mut trials: Vec<Option<BandGraph>> = vec![None; bands.len()];
     for (b, bg) in bands.iter_mut().enumerate() {
-        if stable[b] {
-            occupancy[b] = stability::place_nodes(bg, &p, &anchors[b]);
+        if anchors[b].iter().any(Option::is_some) {
+            // Try a fresh layout first: if it reproduces the previous node
+            // positions the band is unchanged and is kept exactly.
+            let mut trial = bg.clone();
+            ordering::minimize(&mut trial, &p, &slots, &seed);
+            trials[b] = Some(trial);
+            modes[b] = BandMode::Inserted;
         } else {
             ordering::minimize(bg, &p, &slots, &seed);
         }
     }
+    if trials.iter().any(Option::is_some) {
+        let fresh: Vec<BandGraph> =
+            bands.iter().zip(&trials).map(|(bg, trial)| trial.as_ref().unwrap_or(bg).clone()).collect();
+        let keys = implicit_keys(&p, &fresh, &chain_of, &vec![false; bands.len()]);
+        let mut trial_slots = slots.clone();
+        trial_slots.order_implicit(&p, &|e, source| keys[e][usize::from(!source)]);
+        for (b, trial) in trials.iter_mut().enumerate() {
+            if let Some(mut trial) = trial.take() {
+                coordinates::assign_y(&mut trial, &p, &trial_slots);
+                if stability::reproduce_y(&mut trial, &anchors[b]) {
+                    bands[b] = trial;
+                    modes[b] = BandMode::Reproduced;
+                }
+            }
+        }
+    }
 
-    let keys = implicit_keys(&p, &bands, &chain_of, &stable);
+    let mut occupancy: Vec<Vec<Occupancy>> = vec![Vec::new(); bands.len()];
+    for (b, bg) in bands.iter_mut().enumerate() {
+        if modes[b] == BandMode::Inserted {
+            occupancy[b] = stability::place_nodes(bg, &p, &anchors[b]);
+        }
+    }
+
+    let inserted: Vec<bool> = modes.iter().map(|m| *m == BandMode::Inserted).collect();
+    let keys = implicit_keys(&p, &bands, &chain_of, &inserted);
     slots.order_implicit(&p, &|e, source| keys[e][usize::from(!source)]);
 
     for (b, bg) in bands.iter_mut().enumerate() {
-        if stable[b] {
-            stability::place_dummies(bg, &p, &slots, &mut occupancy[b]);
-        } else {
-            coordinates::assign_y(bg, &p, &slots);
+        match modes[b] {
+            BandMode::Fresh => coordinates::assign_y(bg, &p, &slots),
+            BandMode::Reproduced => {}
+            BandMode::Inserted => stability::place_dummies(bg, &p, &slots, &mut occupancy[b]),
         }
     }
 
@@ -164,12 +192,22 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
             let segs = routing::channels::collect(&ctx, b, top, bottom, &|other| other > b);
             routing::channels::assign_tracks(&segs, columns + 1).1
         };
-        if stable[b] {
+        let origin = p.bands[b].insets.left;
+        let fresh_x = match modes[b] {
+            BandMode::Fresh => {
+                coordinates::assign_x(&mut bands[b], &p.spacing, &counts, origin);
+                true
+            }
+            BandMode::Reproduced => {
+                coordinates::assign_x(&mut bands[b], &p.spacing, &counts, origin);
+                stability::reproduce_x(&mut bands[b], &anchors[b])
+            }
+            BandMode::Inserted => false,
+        };
+        if !fresh_x {
             let min_track = (es / 2.0).max(1.0);
             let min_channel: Vec<f32> = counts.iter().map(|&t| (2.0 * es).max((t as f32 + 1.0) * min_track)).collect();
             stability::place_x(&mut bands[b], &anchors[b], &p.spacing, &min_channel);
-        } else {
-            coordinates::assign_x(&mut bands[b], &p.spacing, &counts, p.bands[b].insets.left);
         }
         let entry = coordinates::channel_width(&p.spacing, counts.first().copied().unwrap_or(0), false);
         let exit = coordinates::channel_width(&p.spacing, counts.get(columns).copied().unwrap_or(0), false);
@@ -191,12 +229,26 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
             routing::port_nets(&ctx, e)
         })
     };
-    let placement = bands::stack(&p, &mut bands, &cols, &stable, &gap_tracks);
+    let kept: Vec<bool> = modes.iter().map(|m| *m != BandMode::Fresh).collect();
+    let placement = bands::stack(&p, &mut bands, &cols, &kept, &gap_tracks);
 
     let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
     let routes = routing::route_all(&ctx, &cols, &placement, &chain_of);
     let label_boxes = labels::boxes(&ctx, &routes.points, &chain_of, &cols, &routes.rerouted);
     Ok(assemble(&ctx, &layer_of, &on_cycle, &placement, routes, label_boxes))
+}
+
+/// How a band is placed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BandMode {
+    /// No previous positions: laid out from scratch.
+    Fresh,
+    /// Unchanged since the previous layout: laid out from scratch, which
+    /// reproduced the previous positions, and moved back into place.
+    Reproduced,
+    /// Changed: previous positions kept and the changes fitted into free
+    /// space.
+    Inserted,
 }
 
 /// Layers for every band, and which edges lie on a cycle.
