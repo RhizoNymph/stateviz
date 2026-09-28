@@ -52,6 +52,10 @@ enum Command {
         /// Use the dark theme.
         #[arg(long)]
         dark: bool,
+        /// Draw the build canvas: the structure view with its wiring band
+        /// (events, controllers, sources).
+        #[arg(long)]
+        edit: bool,
         /// Pixels per scene unit for PNG output.
         #[arg(long, default_value_t = 2.0)]
         scale: f32,
@@ -121,8 +125,8 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Check { file, format, deny_warnings } => commands::check::run(&file, format, deny_warnings),
-        Command::Render { file, view, state, scenario, out, dark, scale } => {
-            commands::render::run(&commands::render::RenderArgs { file, view, state, scenario, out, dark, scale })
+        Command::Render { file, view, state, scenario, out, dark, edit, scale } => {
+            commands::render::run(&commands::render::RenderArgs { file, view, state, scenario, out, dark, edit, scale })
         }
         Command::Export { file, to, out } => commands::export::run(&file, &to, out.as_deref()),
         Command::Import { file, from, out } => commands::import::run(&file, &from, out.as_deref()),

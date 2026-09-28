@@ -31,6 +31,8 @@ pub struct RenderArgs {
     pub scenario: Option<PathBuf>,
     pub out: PathBuf,
     pub dark: bool,
+    /// Build mode: the structure view with its wiring band.
+    pub edit: bool,
     pub scale: f32,
 }
 
@@ -81,7 +83,7 @@ pub fn run(args: &RenderArgs) -> anyhow::Result<ExitCode> {
         measure: &MonoMeasure::default(),
         sidecar: &sidecar,
         traces: &traces,
-        mode: cascade_scene::SceneMode::View,
+        mode: if args.edit { cascade_scene::SceneMode::Edit } else { cascade_scene::SceneMode::View },
         play: None,
         diff: diff.as_ref(),
     };
