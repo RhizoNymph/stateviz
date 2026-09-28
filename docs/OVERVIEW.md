@@ -121,11 +121,12 @@ Features Index:
     doc: docs/features/native-app.md
   build_and_play:
     description: >
-      Build systems in the app (typed edit ops with undo, saved to the YAML
-      file in place keeping comments) and play them (interactive simulator
+      Build systems in the app (typed edit ops with exact inverses for undo,
+      rename propagation and cascading removal, saved to the YAML file in
+      place keeping comments) and play them (interactive simulator
       session with instances, trigger palette, queue stepping, branchable
       timeline, record as scenario).
-    entry_points: [cascade_core::edit::apply, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes]
+    entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes]
     depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
     doc: docs/features/build-and-play.md
   workstream_contracts:
