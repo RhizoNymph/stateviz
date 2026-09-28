@@ -1,0 +1,7 @@
+# Flow fixture: everything on one line where YAML allows it.
+machines:
+  Light: { initial: red, states: [red, green, yellow], transitions: [{ from: red, to: green, on: go }, { from: green, to: yellow, on: slow }, { from: yellow, to: red, on: stop, emits: [Stopped] }] }
+  Counter: { states: [zero, some], transitions: [] }   # no transitions yet
+events: { Stopped: {} }
+controllers: {}
+external: { Timer: [Light.go, Light.slow, Light.stop] }

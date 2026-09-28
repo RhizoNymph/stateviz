@@ -51,7 +51,7 @@ fn needs_escape(c: char) -> bool {
     c.is_control() || matches!(c, '\u{2028}' | '\u{2029}' | '\u{FEFF}' | '\u{FFFE}' | '\u{FFFF}')
 }
 
-fn double_quoted(s: &str) -> String {
+pub(crate) fn double_quoted(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

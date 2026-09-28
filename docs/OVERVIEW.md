@@ -114,8 +114,10 @@ Features Index:
   interop_and_diff:
     description: >
       XState/SCXML import with warnings, SCXML/Mermaid (structure and causal)/P/YAML export,
-      model diff, ghost merge for diff mode, and git revision loading.
-    entry_points: [cascade_interop::import, cascade_interop::import_with, cascade_interop::export, cascade_interop::to_yaml, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade_core::diff::merge_for_display, cascade export, cascade import, cascade diff]
+      comment-preserving YAML patches for edit ops (span index over the file,
+      rewrite fallback flagged), model diff, ghost merge for diff mode, and
+      git revision loading.
+    entry_points: [cascade_interop::import, cascade_interop::import_with, cascade_interop::export, cascade_interop::to_yaml, cascade_interop::patch_text, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade_core::diff::merge_for_display, cascade export, cascade import, cascade diff]
     depends_on: [definition_format]
     doc: docs/features/interop-and-diff.md
   native_app:
