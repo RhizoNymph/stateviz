@@ -70,6 +70,8 @@ impl Workspace {
             measure: &measure,
             sidecar: &self.sidecar,
             traces,
+            mode: cascade_scene::SceneMode::View,
+            play: None,
             diff,
         };
         let started = Instant::now();

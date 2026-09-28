@@ -29,6 +29,11 @@ pub enum HitTarget {
     TraceStep { ordering: u8, step: u32 },
     /// A lifeline header in a trace.
     Lifeline { ordering: u8, lifeline: u32 },
+    /// Build mode: drag from here to connect `element` to something (a state
+    /// to a state makes a transition, a transition to a controller wires an
+    /// emit, a controller to a transition wires a fire, a source to a
+    /// transition exposes its trigger).
+    ConnectHandle { element: ElementKey },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

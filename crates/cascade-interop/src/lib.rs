@@ -19,6 +19,7 @@ mod git;
 mod import;
 mod mermaid;
 mod p_lang;
+pub mod patch;
 mod scxml;
 mod xstate;
 mod yaml;
@@ -29,6 +30,7 @@ pub use error::InteropError;
 pub use format::{ExportFormat, ImportFormat, UnknownFormat};
 pub use git::{GitError, read_at_rev};
 pub use import::{ImportOptions, ImportWarning, Imported, NameKind, WarningKind};
+pub use patch::{PatchError, Patched, patch_text};
 pub use yaml::to_yaml;
 
 /// Convert another format into a definition, with the default

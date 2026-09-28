@@ -81,6 +81,8 @@ pub fn run(args: &RenderArgs) -> anyhow::Result<ExitCode> {
         measure: &MonoMeasure::default(),
         sidecar: &sidecar,
         traces: &traces,
+        mode: cascade_scene::SceneMode::View,
+        play: None,
         diff: diff.as_ref(),
     };
     let scene = SceneBuilder::new().build(&input)?;

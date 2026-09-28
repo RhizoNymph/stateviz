@@ -111,6 +111,9 @@ pub enum ScenarioErrorKind {
 /// The simulator could not run a scenario against a model.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SimError {
+    /// Interactive play is not implemented yet (stub until `feat/sim-session`).
+    #[error("interactive play is not implemented yet")]
+    NotImplemented,
     /// The scenario does not match the model. Most problems are found before
     /// the run starts; a step whose target only exists if a controller
     /// spawns it is checked when the step runs.

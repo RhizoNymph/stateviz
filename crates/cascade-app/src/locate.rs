@@ -39,6 +39,7 @@ pub fn lifeline_element(lifeline: &Lifeline) -> ElementRef {
 pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option<ElementKey> {
     match target {
         HitTarget::None | HitTarget::MatrixCell { .. } => None,
+        HitTarget::ConnectHandle { element } => Some(element.clone()),
         HitTarget::Element(key) => Some(key.clone()),
         HitTarget::MachineStub { machine, .. } => Some(ElementKey::Machine { machine: machine.clone() }),
         HitTarget::TraceStep { ordering, step } => {

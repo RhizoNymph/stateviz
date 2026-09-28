@@ -42,6 +42,7 @@ mod engine;
 mod error;
 mod race;
 mod scenario;
+pub mod session;
 mod trace;
 
 use std::collections::BTreeMap;
@@ -54,6 +55,10 @@ pub use error::{ScenarioDiagnostic, ScenarioError, ScenarioErrorKind, SimError};
 pub use scenario::{
     DiscoverError, InstanceDecl, Payload, ResolvedScenario, Scenario, ScenarioFileError, Step, StepTiming, ValueEntry,
     ValueMap, discover_scenarios, load_scenario_file, parse_scenario, validate,
+};
+pub use session::{
+    ActionOutcome, AvailableFire, Branch, InstanceState, PendingId, PendingItem, PendingKind, PlayAction, PlaySession,
+    Timeline, scenario_to_yaml,
 };
 pub use trace::{Lifeline, LifelineIx, StepIx, Trace, TraceStep, TraceStepKind};
 

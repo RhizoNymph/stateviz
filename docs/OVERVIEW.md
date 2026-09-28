@@ -119,6 +119,15 @@ Features Index:
     entry_points: [cascade-app, cascade open, cascade_app::workspace::Workspace]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
+  build_and_play:
+    description: >
+      Build systems in the app (typed edit ops with undo, saved to the YAML
+      file in place keeping comments) and play them (interactive simulator
+      session with instances, trigger palette, queue stepping, branchable
+      timeline, record as scenario).
+    entry_points: [cascade_core::edit::apply, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes]
+    depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
+    doc: docs/features/build-and-play.md
   workstream_contracts:
     description: The interface types each crate exposes and which workstream implements each stub.
     entry_points: []

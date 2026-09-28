@@ -49,6 +49,10 @@ pub struct SceneInput<'a> {
     pub traces: &'a [Trace],
     /// Diff mode: statuses for the (merged) model.
     pub diff: Option<&'a ModelDiff>,
+    /// Build mode adds wiring and connect handles to the structure view.
+    pub mode: crate::play::SceneMode,
+    /// A live play session to draw over the causal and structure views.
+    pub play: Option<&'a crate::play::PlayOverlay>,
 }
 
 #[derive(Debug, thiserror::Error)]
