@@ -87,13 +87,18 @@ enum Command {
     /// Run a scenario through the simulator and print the trace.
     Simulate {
         file: PathBuf,
-        scenario: PathBuf,
+        /// The scenario to run; with `--interactive`, where to start (optional).
+        #[arg(required_unless_present = "interactive")]
+        scenario: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
         /// Print both orderings of this race candidate (numbered from 0 in
         /// `cascade check` order).
         #[arg(long)]
         race: Option<usize>,
+        /// Play step by step at a prompt (type `help` for the commands).
+        #[arg(long, conflicts_with_all = ["race", "format"])]
+        interactive: bool,
     },
     /// Open the definition in the native app.
     Open {
@@ -122,7 +127,9 @@ fn main() -> ExitCode {
         Command::Export { file, to, out } => commands::export::run(&file, &to, out.as_deref()),
         Command::Import { file, from, out } => commands::import::run(&file, &from, out.as_deref()),
         Command::Diff { file, base, head, format } => commands::diff::run(&file, &base, head.as_deref(), format),
-        Command::Simulate { file, scenario, format, race } => commands::simulate::run(&file, &scenario, format, race),
+        Command::Simulate { file, scenario, format, race, interactive } => {
+            commands::simulate::run(&file, scenario.as_deref(), format, race, interactive)
+        }
         Command::Open { file, view } => commands::open::run(&file, view.as_deref()),
     };
     match result {

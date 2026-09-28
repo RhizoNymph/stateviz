@@ -34,6 +34,18 @@
 //!   `<machine-lowercase><n>` and fires at it.
 //! - **Races.** [`race_orderings`] replays a race candidate a second time
 //!   with its two contested fires delivered in the opposite order.
+//! - **Manual steps.** Besides external fires, a scenario may deliver a
+//!   chosen queue item (`- step`, `- { step: n }`), run until quiet
+//!   (`- run`), create or remove instances mid-run, and end without
+//!   draining (`end: pause`). Saved play sessions use these.
+//!
+//! # Play
+//!
+//! [`PlaySession`] is the same simulator driven one [`PlayAction`] at a
+//! time, with a rewindable, branchable timeline. The batch [`simulate`] is a
+//! scenario turned into play actions: both run through one engine, so a
+//! session started with [`PlaySession::from_scenario`] has exactly the batch
+//! trace.
 //!
 //! See `docs/features/simulator.md` for the scenario format and details.
 
@@ -53,8 +65,9 @@ pub use describe::{causal_depths, lifeline_label, payload_text, selector_text, s
 pub use engine::STEP_LIMIT;
 pub use error::{ScenarioDiagnostic, ScenarioError, ScenarioErrorKind, SimError};
 pub use scenario::{
-    DiscoverError, InstanceDecl, Payload, ResolvedScenario, Scenario, ScenarioFileError, Step, StepTiming, ValueEntry,
-    ValueMap, discover_scenarios, load_scenario_file, parse_scenario, validate,
+    Directive, DiscoverError, InstanceDecl, Payload, ResolvedScenario, Scenario, ScenarioEnd, ScenarioEntry,
+    ScenarioFileError, Step, StepTiming, ValueEntry, ValueMap, discover_scenarios, load_scenario_file, parse_scenario,
+    validate,
 };
 pub use session::{
     ActionOutcome, AvailableFire, Branch, InstanceState, PendingId, PendingItem, PendingKind, PlayAction, PlaySession,

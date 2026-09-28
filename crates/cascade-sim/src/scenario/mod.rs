@@ -11,17 +11,24 @@
 //!   - { source: Customer, fire: Order.submit, target: o1 }
 //!   - { source: PaymentGateway, fire: Order.capture_ok, target: o1, payload: { amount: "42" } }
 //!   - { source: Clock, fire: Order.timeout, target: o1, timing: immediate }
+//!   - step                                    # deliver the queue's head
+//!   - { step: 1 }                             # deliver the item behind it first
+//!   - run                                     # deliver until the queue is empty
+//!   - { create: o2, machine: Order, fields: { orderId: "2" } }
+//!   - { remove: o2 }
+//! end: pause                                  # optional: leave the queue as it is
 //! ```
 //!
 //! [`parse_scenario`] turns text into a spanned [`Scenario`] (names are still
 //! strings); [`validate`] checks it against a [`Model`](cascade_core::Model)
 //! and produces a [`ResolvedScenario`] with typed ids, which is what the
-//! simulator runs.
+//! simulator runs. [`scenario_to_yaml`] writes a scenario back out.
 
 mod file;
 mod node;
 mod parse;
 mod validate;
+mod write;
 
 use std::collections::BTreeMap;
 
@@ -30,8 +37,9 @@ use cascade_core::span::{SourceSpan, Spanned};
 
 pub use file::{DiscoverError, ScenarioFileError, discover_scenarios, load_scenario_file};
 pub use parse::parse_scenario;
+pub(crate) use validate::{ResolvedEntry, ResolvedInstance, ResolvedStep, StepTarget, lookup_state, spawn_prefix};
 pub use validate::{ResolvedScenario, validate};
-pub(crate) use validate::{ResolvedStep, StepTarget, spawn_prefix};
+pub use write::scenario_to_yaml;
 
 /// Event payloads and instance fields: string values by name.
 pub type Payload = BTreeMap<String, String>;
@@ -42,8 +50,81 @@ pub struct Scenario {
     pub name: String,
     /// Instances in declaration order.
     pub instances: Vec<InstanceDecl>,
-    /// External triggers in the order they happen.
+    /// External triggers in the order they happen. Each carries the
+    /// [`Directive`]s written before it; see [`Scenario::entries`] for the
+    /// whole list in file order.
     pub steps: Vec<Step>,
+    /// Directives written after the last external trigger.
+    pub trailing: Vec<Directive>,
+    /// What happens to the queue after the last entry.
+    pub end: ScenarioEnd,
+}
+
+impl Scenario {
+    /// Every entry of `steps:` in file order: external fires and directives.
+    pub fn entries(&self) -> impl Iterator<Item = ScenarioEntry<'_>> + '_ {
+        self.steps
+            .iter()
+            .flat_map(|step| step.before.iter().map(ScenarioEntry::Directive).chain([ScenarioEntry::Fire(step)]))
+            .chain(self.trailing.iter().map(ScenarioEntry::Directive))
+    }
+}
+
+/// One entry of a scenario's `steps:` list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScenarioEntry<'a> {
+    Fire(&'a Step),
+    Directive(&'a Directive),
+}
+
+/// A `steps:` entry that is not an external trigger: it drives the queue by
+/// hand or changes which instances exist. Saved play sessions use these to
+/// reproduce exactly what the player did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Directive {
+    /// `- step` delivers the queue's head; `- { step: n }` delivers the item
+    /// at position `n` (0 is the head) ahead of the ones before it.
+    Deliver { choice: Option<u32>, span: SourceSpan },
+    /// `- run`: deliver queue heads until the queue is empty.
+    Run { span: SourceSpan },
+    /// `- { create: name, machine: M, fields: {…}, state: s }`: an instance
+    /// that appears mid-run. The declaration's span covers the whole entry.
+    Create(InstanceDecl),
+    /// `- { remove: name }`: the instance leaves; fires queued for it are
+    /// discarded. Its name is never reused.
+    Remove { name: Spanned<String>, span: SourceSpan },
+}
+
+impl Directive {
+    /// The whole entry.
+    pub fn span(&self) -> SourceSpan {
+        match self {
+            Directive::Deliver { span, .. } | Directive::Run { span } | Directive::Remove { span, .. } => *span,
+            Directive::Create(decl) => decl.span,
+        }
+    }
+}
+
+/// What happens after a scenario's last entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum ScenarioEnd {
+    /// Deliver queue items until the queue is empty (`end: drain`, the
+    /// default).
+    #[default]
+    Drain,
+    /// Stop with whatever is still queued (`end: pause`), as a play session
+    /// saved mid-cascade does.
+    Pause,
+}
+
+impl ScenarioEnd {
+    /// The spelling used in scenario files.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ScenarioEnd::Drain => "drain",
+            ScenarioEnd::Pause => "pause",
+        }
+    }
 }
 
 /// One machine instance present when the scenario starts.
@@ -96,6 +177,10 @@ pub struct Step {
     pub timing: StepTiming,
     /// The whole step.
     pub span: SourceSpan,
+    /// Directives written between the previous external trigger (or the
+    /// start of `steps:`) and this one, in order. They run before this
+    /// step's timing applies.
+    pub before: Vec<Directive>,
 }
 
 /// A string map whose entries remember where their key and value were

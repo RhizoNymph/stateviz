@@ -50,7 +50,14 @@ enum LifelineKey {
     Controller(ControllerId),
 }
 
-#[derive(Debug, Default)]
+/// A finished recording: the run, and each instance's lifeline (indexed by
+/// [`InstanceIx`]).
+pub(crate) struct Finished {
+    pub run: SimRun,
+    pub lifelines: Vec<LifelineIx>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct Recorder {
     steps: Vec<RawStep>,
     payloads: BTreeMap<StepRef, Payload>,
@@ -70,7 +77,10 @@ impl Recorder {
         self.payloads.insert(step, payload);
     }
 
-    pub fn finish(self, scenario: &str, instances: &[Instance]) -> SimRun {
+    /// The trace so far, with lifelines ordered for the instances that exist
+    /// now. Lifeline positions can move as participants appear, so a
+    /// `LifelineIx` is only valid for the trace it came with.
+    pub fn finish(&self, scenario: &str, instances: &[Instance]) -> Finished {
         let instance_key = |ix: InstanceIx| {
             // Every InstanceIx the engine records indexes `instances`.
             let machine = instances.get(ix.0).map(|i| i.machine);
@@ -113,7 +123,8 @@ impl Recorder {
 
         let steps = self
             .steps
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|step| TraceStep {
                 cause: step.cause.map(|c| StepIx(to_u32(c))),
                 kind: match step.kind {
@@ -152,11 +163,15 @@ impl Recorder {
 
         let final_states =
             instances.iter().enumerate().map(|(i, instance)| (inst(InstanceIx(i)), instance.leaf())).collect();
-        let payloads = self.payloads.into_iter().map(|(step, payload)| (StepIx(to_u32(step)), payload)).collect();
+        let payloads = self.payloads.iter().map(|(step, payload)| (StepIx(to_u32(*step)), payload.clone())).collect();
+        let instance_lifelines = (0..instances.len()).map(|i| inst(InstanceIx(i))).collect();
 
-        SimRun {
-            trace: Trace { scenario: scenario.to_owned(), ordering: None, lifelines, steps, final_states },
-            payloads,
+        Finished {
+            run: SimRun {
+                trace: Trace { scenario: scenario.to_owned(), ordering: None, lifelines, steps, final_states },
+                payloads,
+            },
+            lifelines: instance_lifelines,
         }
     }
 }

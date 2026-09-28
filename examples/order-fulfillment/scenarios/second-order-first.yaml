@@ -1,0 +1,20 @@
+# Two orders are paid back to back, and the second payment is handled
+# first: `{ step: 1 }` delivers the queue item behind the head (0 is the
+# head), so Fulfillment starts s2 before s1. Saved play sessions record
+# manual choices like this one.
+#
+#   cascade simulate examples/order-fulfillment/cascade.yaml \
+#     examples/order-fulfillment/scenarios/second-order-first.yaml
+scenario: second order first
+instances:
+  o1: { machine: Order, fields: { orderId: "1" } }
+  o2: { machine: Order, fields: { orderId: "2" } }
+  s1: { machine: Shipment, fields: { orderId: "1" } }
+  s2: { machine: Shipment, fields: { orderId: "2" } }
+steps:
+  - { source: Customer, fire: Order.submit, target: o1 }
+  - { source: Customer, fire: Order.submit, target: o2 }
+  - { source: PaymentGateway, fire: Order.capture_ok, target: o1 }
+  - { source: PaymentGateway, fire: Order.capture_ok, target: o2, timing: immediate }
+  - { step: 1 }   # o2's OrderPaid reaches Fulfillment first
+  - run

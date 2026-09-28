@@ -25,7 +25,9 @@ Overview:
     cascade-sim: >
       Scenario files and the simulator: instances, one global FIFO queue of
       events and controller fires, target selectors, traces with cause
-      links; replays race candidates with the contested fires swapped.
+      links; replays race candidates with the contested fires swapped. One
+      steppable engine serves batch runs and the interactive PlaySession
+      (rewind, branches, replay after edits, save as a scenario).
     cascade-scene: >
       Model + view state → Scene, a backend-neutral display list with hit
       targets, for all four views. Owns the visual encoding (Okabe-Ito hues,
@@ -90,10 +92,13 @@ Features Index:
     doc: docs/features/layered-layout.md
   simulator:
     description: >
-      Scenario files (parse, validate, discover), FIFO simulation with
-      selectors, spawn, history and payloads, traces with cause links and
-      stable lifelines, race candidates replayed in both orders.
-    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade simulate]
+      Scenario files (parse, validate, discover, write; manual queue steps,
+      mid-run create/remove, end: pause), FIFO simulation with selectors,
+      spawn, history and payloads, traces with cause links and stable
+      lifelines, race candidates replayed in both orders, and the play
+      session (actions, pending queue, available fires, seek, branches,
+      replay, to_scenario) on the same engine.
+    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::PlaySession, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:

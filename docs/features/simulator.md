@@ -1,7 +1,8 @@
 # Simulator
 
 Scenario files, the FIFO simulator that steps through them, the traces it
-records for the trace view, and replaying race candidates in both orders.
+records for the trace view, replaying race candidates in both orders, and
+the interactive play session built on the same engine.
 
 ## Scope
 
@@ -13,7 +14,12 @@ records for the trace view, and replaying race candidates in both orders.
 - Recording a `Trace`: lifelines in a stable order, steps with cause links,
   final states.
 - Replaying a race candidate with its two contested fires in both orders.
-- `cascade simulate` (text and JSON output, `--race`).
+- Manual scenario steps: delivering a chosen queue item, running until
+  quiet, creating and removing instances mid-run, ending without draining.
+- `PlaySession`: the simulator driven one action at a time, with a
+  rewindable, branchable timeline, replay against an edited model, and
+  saving as a scenario (`scenario_to_yaml`).
+- `cascade simulate` (text and JSON output, `--race`, `--interactive`).
 
 ## Non-scope
 
@@ -23,6 +29,8 @@ records for the trace view, and replaying race candidates in both orders.
 - Finding race candidates (static-analysis.md); the simulator only replays
   them.
 - Timers or delayed transitions: time is an external source such as `Clock`.
+- Drawing play state (`cascade-scene` `PlayOverlay`) and the app's play
+  mode (build-and-play.md).
 - Recorded runtime logs (a later version of the trace view).
 - Exploring every interleaving; that is what the P export is for.
 
@@ -45,7 +53,40 @@ steps:                            # required; the external triggers, in order
     target: o1                    # optional; default: the fired machine's only instance
     payload: { amount: "42" }     # optional scalar values
     timing: immediate             # optional; after-quiescence (default) | immediate
+  - step                          # deliver the queue's head
+  - { step: 1 }                   # deliver the item at position 1 (0 is the head)
+  - run                           # deliver until the queue is empty
+  - { create: o2, machine: Order, fields: { orderId: "2" }, state: pending }
+  - { remove: o2 }                # take an instance out of play
+end: pause                        # optional; drain (default) | pause
 ```
+
+`steps:` entries other than external fires are *directives*; saved play
+sessions use them to reproduce exactly what the player did:
+
+| Entry | Meaning |
+| --- | --- |
+| `- step` | Deliver the queue's head (one event or fire). |
+| `- { step: n }` | Deliver the item at position `n` of the queue (0-based, 0 is the head), ahead of the ones before it. |
+| `- run` | Deliver queue heads until the queue is empty. |
+| `- { create: name, machine: M, fields: {…}, state: s }` | An instance appears here, as in `instances:` (same checks); it takes part from this point on. |
+| `- { remove: name }` | The instance leaves play (see below). |
+| `end: pause` (top level) | After the last entry, stop with whatever is still queued instead of draining. |
+
+- Directives interleave with external fires in file order. A fire's
+  `timing` applies when the fire is reached, after the directives before
+  it.
+- In the parsed `Scenario`, external fires stay in `steps` (each with the
+  directives written before it in `Step::before`), directives after the last
+  fire are in `trailing`, and `Scenario::entries()` yields everything in
+  file order as `ScenarioEntry::Fire` / `ScenarioEntry::Directive`.
+  Existing scenario files parse exactly as before.
+- Validation walks the entries in order, tracking which instances exist at
+  each point: a fire may only target an instance declared, or created
+  before it and not removed since; a targetless fire counts the instances
+  alive at that point. Instance names are never reused: creating a name
+  that was declared or created before, even if since removed, is a
+  `DuplicateInstance`.
 
 - Scalars are read as text: `orderId: 1` and `orderId: "1"` are the same.
 - Names (instances, machines, sources, fields, payload keys) follow the
@@ -63,9 +104,9 @@ parsing and validation keep going after the first one:
 
 | Stage | Diagnostics (`ScenarioErrorKind`) |
 | --- | --- |
-| Parse | `YamlSyntax`, `EmptyDocument`, `MultipleDocuments`, `WrongType`, `UnknownKey`, `MissingKey`, `InvalidName`, `InvalidTriggerRef`, `UnknownTiming` |
+| Parse | `YamlSyntax`, `EmptyDocument`, `MultipleDocuments`, `WrongType`, `UnknownKey`, `MissingKey`, `InvalidName`, `InvalidTriggerRef`, `UnknownTiming`, `InvalidQueuePosition`, `UnknownEnd` |
 | Validate | `DuplicateInstance`, `UnknownMachine`, `UnknownField`, `UnknownState`, `AmbiguousState`, `HistoryStart`, `UnknownSource`, `UnknownTrigger`, `SourceCannotFire`, `UnknownInstance`, `TargetMachineMismatch`, `NoInstance`, `AmbiguousInstance` |
-| Run (step targets only) | `UnknownInstance`, `TargetMachineMismatch`, `NoInstance`, `AmbiguousInstance` |
+| Run (step targets and directives) | `UnknownInstance`, `TargetMachineMismatch`, `NoInstance`, `AmbiguousInstance`, `NameTaken` (a spawn took the name), `QueueEmpty`, `NoPendingItem` |
 
 ## Semantics
 
@@ -100,8 +141,17 @@ queue head = fire  ─▶ Transition | Dropped ─▶ Emit ─▶ queue
 
 A step's trigger is delivered to its target at once (recorded as
 `ExternalFire` followed by the delivery); the events the resulting
-transition emits join the back of the queue. After the last step the queue
-is drained.
+transition emits join the back of the queue. After the last entry the queue
+is drained, unless the scenario says `end: pause`.
+
+### Removing instances
+
+A removed instance leaves play: selectors, step targets and the session's
+instance list no longer see it; fires already queued for it are
+**discarded** (nothing delivers them, so their `Fire` steps have no
+delivery); events it emitted stay queued, since they were already sent. Its
+lifeline and last state stay in the trace (`final_states` keeps it), and its
+name is never given out again, by `create`, a player or a spawn.
 
 ### Delivering a trigger
 
@@ -185,9 +235,101 @@ scenario always lays out the same way:
 
 ### Step limit
 
-A run delivers at most `STEP_LIMIT` (10 000) queue items; past that it fails
-with `SimError::StepLimit`, which almost always means an unbounded cascade
-cycle.
+A run (or a play session, in total) delivers at most `STEP_LIMIT` (10 000)
+queue items; past that it fails with `SimError::StepLimit`, which almost
+always means an unbounded cascade cycle. In a session the failing action is
+rejected and changes nothing.
+
+## Play session
+
+`PlaySession` (`cascade_sim::session`) is the simulator driven one
+`PlayAction` at a time. Actions name things (machine, instance, source and
+`Machine.trigger` names), never typed ids, so a session survives model
+reloads:
+
+| Action | Effect |
+| --- | --- |
+| `AddInstance { name, machine, fields, state }` | New instance. `name: None` picks `<machine-lowercase><n>` with the smallest `n` never used; the timeline records the name it got. `state: None` is the initial state. |
+| `RemoveInstance { name }` | See *Removing instances*. |
+| `Fire { source, trigger, target, payload }` | An external fire, delivered at once; emitted events join the queue. Firing a trigger the state does not accept records a drop. |
+| `Step { choice }` | Deliver the head (`None`) or the item at position `choice` of `pending()`. |
+| `RunUntilQuiet` | Deliver heads until the queue is empty (recorded even when it was already empty). |
+
+```text
+host ──PlayAction──▶ PlaySession::apply
+                      │ exec: look names up in the Model and the core; any problem
+                      │       → SimError::Action(kind), nothing changed
+                      ▼
+                     Core (instances, queue, recorder) ──▶ trace(), payloads(),
+                                                           instances(), pending()
+scenario ──validate──▶ drive ──PlayActions──▶ the same exec ──▶ simulate / from_scenario
+```
+
+- **One engine.** The batch simulator is a scenario turned into play
+  actions (`engine::drive`): declared instances become `AddInstance`, each
+  fire becomes `Fire` (preceded by `RunUntilQuiet` when it is
+  after-quiescence and something is queued; a targetless fire names the one
+  instance it finds), directives map one to one, and the final drain is a
+  `RunUntilQuiet`. `PlaySession::from_scenario` records exactly those
+  actions, so its trace and payloads equal `simulate_run`'s.
+- **Queries.** `trace()` and `payloads()` (as `SimRun`), `instances()` (live
+  instances in lifeline order with their leaf state and fields),
+  `pending()` (the queue, head first: a stable `PendingId`, the kind, the
+  step that queued it, and a label such as `OrderPaid from o1` or
+  `Fulfillment → s1: start`), `available_fires(model)` (every external
+  source × each trigger it lists × each live instance of the trigger's
+  machine, with `accepted` from `Model::enabled_transitions` on the current
+  leaf), `timeline()`.
+- **Pending ids** are given out in queueing order and never reused within
+  a line of play, so an id names the same item for as long as it is
+  queued. Replaying the same actions gives the same ids.
+- **Lifeline indices** (`InstanceState::lifeline`, `PendingKind::Fire`) are
+  valid for the current `trace()` only: lifelines are ordered by
+  definition, so a new participant can shift them.
+- **Errors.** A rejected action changes nothing (the session applies it to
+  a copy). Name and queue problems are `SimError::Action(kind)` with the
+  same `ScenarioErrorKind`s scenarios use (`UnknownMachine`, `NameTaken`,
+  `InvalidName`, `UnknownField`, `UnknownState`, `UnknownSource`,
+  `UnknownTrigger`, `SourceCannotFire`, `UnknownInstance`,
+  `TargetMachineMismatch`, `QueueEmpty`, `NoPendingItem`, …);
+  `StepLimit` as above. Problems in a scenario given to `from_scenario` or
+  `simulate` carry the entry's source span (`SimError::Scenario`).
+
+### Timeline, rewind and branches
+
+- `Timeline { actions, position, branches }`: `actions[..position]` are
+  applied. The session keeps only the state at `position`.
+- `seek(model, p)`: forward applies the next actions to the current state;
+  backward replays `actions[..p]` from the start (deterministic, and cheap
+  for designer-sized systems; no snapshots). `p > len` is
+  `SimError::NoSuchPosition`.
+- `apply` at a position before the end forks: the whole old line is saved
+  as `Branch { fork: position, actions }` (full line, not just the tail, so
+  a branch stays meaningful whatever happens to the current line), then the
+  line is truncated and the action appended. If the action equals the next
+  one on the line, the session just moves forward instead.
+- `switch_branch(model, i)`: branch `i` becomes the current line,
+  positioned at its end; the current line takes its place in the list
+  (`fork` = the actions they share), so switching to `i` again goes back.
+  `SimError::NoSuchBranch` for a missing index.
+- `replay(new_model)`: after an edit, re-run `actions[..position]` against
+  the new model. It stops at the first action that fails, returning the
+  session positioned before it (the rest of the line kept as its future,
+  branches kept) and `Some((index, error))`: e.g. a removed transition
+  leaves nothing queued, so the next `Step` fails with `QueueEmpty`.
+
+### Saving
+
+`to_scenario(name)` writes `actions[..position]` as a scenario: leading
+`AddInstance`s become `instances:`; later ones `create`; `RemoveInstance`
+`remove`; a `Fire` into an empty queue a plain step and one while items are
+queued `timing: immediate`; `Step` `- step` / `- { step: n }`;
+`RunUntilQuiet` `- run`; and a non-empty queue at the end `end: pause`.
+`scenario_to_yaml` writes one flow-style line per entry (values always
+double-quoted, names quoted only when YAML would misread them), and parses
+back to the same scenario. `from_scenario(parse_scenario(scenario_to_yaml(
+to_scenario(s))))` has the same trace, payloads, pending items and actions
+as `s`.
 
 ## Race orderings
 
@@ -220,6 +362,7 @@ Other findings give `SimError::NotARace`.
 
 ```text
 cascade simulate <definition> <scenario> [--format text|json] [--race <n>]
+cascade simulate <definition> [scenario] --interactive
 ```
 
 Text output, one line per step, indented by causal depth, with `← n` naming
@@ -251,29 +394,45 @@ candidate (from 0, in `cascade check` order), printing both orderings (JSON:
 `{ race, as_queued, swapped }`). Scenario problems print as
 `path:line:col: error: …`; every failure exits with code 2.
 
+`--interactive` plays the system at a prompt, starting from the scenario
+when one is given: `add <Machine> [name] [@state] [field=value …]`,
+`remove <name>`, `fire <Source> <Machine.trigger> <target> [key=value …]`,
+`step [n]`, `run`, `instances`, `pending`, `fires`, `trace`, `timeline`,
+`branches`, `seek <n>`, `branch <i>`, `save <path>`, `quit`. Each action
+prints the trace lines it added; mistakes print `error: …` and play goes
+on.
+
 ## Files
 
 | File | Role | Key exports |
 | --- | --- | --- |
 | `crates/cascade-sim/src/lib.rs` | Entry points and semantics summary | `simulate`, `simulate_run`, `race_orderings`, `race_runs`, `SimRun`, `RaceTraces`, `RaceRuns` |
 | `crates/cascade-sim/src/error.rs` | Typed, spanned errors | `ScenarioError`, `ScenarioDiagnostic`, `ScenarioErrorKind`, `SimError` |
-| `crates/cascade-sim/src/scenario/mod.rs` | Scenario types | `Scenario`, `InstanceDecl`, `Step`, `StepTiming`, `ValueMap`, `ValueEntry`, `Payload` |
+| `crates/cascade-sim/src/scenario/mod.rs` | Scenario types | `Scenario` (`entries()`), `ScenarioEntry`, `Directive`, `ScenarioEnd`, `InstanceDecl`, `Step`, `StepTiming`, `ValueMap`, `ValueEntry`, `Payload` |
 | `crates/cascade-sim/src/scenario/node.rs` | Diagnostic-recording YAML accessors (saphyr) | crate-private |
-| `crates/cascade-sim/src/scenario/parse.rs` | YAML → `Scenario` | `parse_scenario` |
-| `crates/cascade-sim/src/scenario/validate.rs` | `Scenario` × `Model` → typed ids | `validate`, `ResolvedScenario` |
+| `crates/cascade-sim/src/scenario/parse.rs` | YAML → `Scenario` (fires and directives) | `parse_scenario` |
+| `crates/cascade-sim/src/scenario/validate.rs` | `Scenario` × `Model` → typed ids, entries checked in order | `validate`, `ResolvedScenario`; crate-private `ResolvedEntry`, `lookup_state` |
+| `crates/cascade-sim/src/scenario/write.rs` | `Scenario` → YAML | `scenario_to_yaml` |
 | `crates/cascade-sim/src/scenario/file.rs` | Discovery and loading | `discover_scenarios`, `load_scenario_file`, `DiscoverError`, `ScenarioFileError` |
-| `crates/cascade-sim/src/engine/mod.rs` | The run loop: queue, delivery, rules, spawn naming | `STEP_LIMIT`; crate-private `run`, `Swap`, `FireKey` |
-| `crates/cascade-sim/src/engine/instance.rs` | Instance state, taking transitions, history | crate-private `Instance`, `InstanceIx` |
+| `crates/cascade-sim/src/engine/mod.rs` | The batch run (a core driven by a scenario, FIFO or with a swap) | `STEP_LIMIT`; crate-private `run`, `Swap`, `FireKey` |
+| `crates/cascade-sim/src/engine/core.rs` | The steppable core: instances, queue with ids and labels, delivery, rules, spawn naming, removal | crate-private `Core`, `Queued`, `QueueItem` |
+| `crates/cascade-sim/src/engine/exec.rs` | One `PlayAction` → checked core operations | crate-private `exec`, `Schedule` |
+| `crates/cascade-sim/src/engine/drive.rs` | A resolved scenario → play actions, errors given the entry's span | crate-private `drive`, `Player` |
+| `crates/cascade-sim/src/engine/instance.rs` | Instance state, taking transitions, history, removed flag | crate-private `Instance`, `InstanceIx` |
 | `crates/cascade-sim/src/engine/select.rs` | Selector predicates and spawn assignments | crate-private |
-| `crates/cascade-sim/src/engine/record.rs` | Raw steps → `Trace` with ordered lifelines | crate-private `Recorder` |
+| `crates/cascade-sim/src/engine/record.rs` | Raw steps → `Trace` with ordered lifelines (and each instance's lifeline) | crate-private `Recorder`, `Finished` |
 | `crates/cascade-sim/src/engine/schedule.rs` | FIFO with one swap (pull ahead / hold / release) | crate-private `next_swapped` |
+| `crates/cascade-sim/src/session/mod.rs` | The play session: apply, seek, branches, replay, from a scenario | `PlaySession`, `PlayAction`, `ActionOutcome`, `Timeline`, `Branch`, `PendingId`, `PendingItem`, `PendingKind`, `InstanceState`, `AvailableFire`, `scenario_to_yaml` |
+| `crates/cascade-sim/src/session/view.rs` | Instances, pending items, available fires | `PlaySession::{instances, pending, is_pending, available_fires}` |
+| `crates/cascade-sim/src/session/save.rs` | Timeline → scenario | `PlaySession::to_scenario` |
 | `crates/cascade-sim/src/race.rs` | Contested pair detection, swapped replay, labels | crate-private |
 | `crates/cascade-sim/src/describe.rs` | Plain-text labels for hosts that list traces | `step_text`, `lifeline_label`, `payload_text`, `selector_text`, `causal_depths` |
 | `crates/cascade-sim/src/trace.rs` | The trace contract (unchanged shapes) | `Trace`, `TraceStep`, `TraceStepKind`, `Lifeline`, `LifelineIx`, `StepIx` |
-| `crates/cascade-sim/tests/` | Parsing, validation, FIFO/timing, selectors, history, lifelines, races, discovery, examples; `fixtures/race/` holds a two-controller race | — |
+| `crates/cascade-sim/tests/` | Parsing, validation, FIFO/timing, selectors, history, lifelines, races, discovery, examples; `scenario_steps` (directives), `session` (actions, queue, removal, limit), `session_timeline` (seek, branches, replay), `session_scenario` (batch equivalence, saving round trips); `fixtures/race/` holds a two-controller race | — |
 | `crates/cascade-cli/src/commands/simulate.rs` | `cascade simulate` | `run` |
-| `crates/cascade-cli/tests/simulate.rs` | CLI output end to end | — |
-| `examples/order-fulfillment/scenarios/` | `happy-path`, `timeout-race` (immediate clock), `timeout-first` | — |
+| `crates/cascade-cli/src/commands/simulate/play.rs` | `cascade simulate --interactive` | `run` |
+| `crates/cascade-cli/tests/simulate.rs`, `simulate_play.rs` | CLI output end to end; manual steps and the prompt | — |
+| `examples/order-fulfillment/scenarios/` | `happy-path`, `timeout-race` (immediate clock), `timeout-first`, `second-order-first` (a manual `{ step: 1 }`) | — |
 
 ## Invariants and constraints
 
@@ -292,4 +451,16 @@ candidate (from 0, in `cascade check` order), printing both orderings (JSON:
   definition order is taken and every rule fires.
 - The queue is bounded by `STEP_LIMIT` delivered items per run.
 - Race replays change only the order of the two contested fires; every other
-  item keeps its FIFO position.
+  item keeps its FIFO position. (A race replay of a scenario with manual
+  `step` entries applies the swap only to the queue items the simulator
+  schedules itself.)
+- A session driven by a scenario's actions has exactly the batch trace and
+  payloads; `to_scenario` then `from_scenario` reproduces the trace, pending
+  items and actions exactly.
+- A rejected play action (or seek or branch switch) changes nothing.
+- `Timeline::position <= Timeline::actions.len()`; every recorded
+  `AddInstance` has a name.
+- Instance names are unique across a run, removed instances included.
+- `PendingId`s are unique within a line of play and stable while queued.
+- Every `&Model` given to a session is the model it was built or last
+  replayed with (ids are not checked against another model).
