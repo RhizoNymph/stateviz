@@ -15,8 +15,29 @@
 //! Persisting an op to the YAML file without losing comments is
 //! `cascade_interop::patch`, which applies the same op to the source text.
 //!
-//! Owner: the `feat/edit-ops` workstream implements [`apply`] and
-//! [`locate_transition`]. The types are the contract.
+//! Batches are atomic and validated once, at the end: intermediate steps may
+//! pass through definitions that do not resolve (swapping two names through
+//! a temporary, removing every event declaration of a strict file).
+//!
+//! The rules (what each op cascades to, its inverse, which names it
+//! qualifies) are tabulated in `docs/features/build-and-play.md`, section
+//! "Edit operations".
+
+mod controllers;
+mod engine;
+mod events;
+mod externals;
+mod keys;
+mod lookup;
+mod machines;
+mod refs;
+mod restore;
+mod spans;
+mod states;
+mod transitions;
+mod validate;
+
+pub use spans::without_spans;
 
 use crate::color::PaletteColor;
 use crate::definition::{
@@ -223,20 +244,23 @@ pub enum EditError {
 
 /// Apply one op to a definition.
 ///
-/// Stub until `feat/edit-ops` lands.
+/// Pure: `definition` is untouched. The result always resolves; an op that
+/// would leave the definition unresolvable is rejected with
+/// [`EditError::Invalid`], and an op naming something that does not exist,
+/// reusing a taken name, using an invalid name or an out-of-range index is
+/// rejected with the matching error.
 pub fn apply(definition: &Definition, op: &EditOp) -> Result<Applied, EditError> {
-    let _ = (definition, op);
-    Err(EditError::NotImplemented)
+    let mut edited = definition.clone();
+    let effect = engine::apply_op(&mut edited, op, engine::InverseMode::Exact)?;
+    crate::resolve::resolve(edited.clone()).map_err(EditError::Invalid)?;
+    Ok(Applied { definition: edited, inverse: effect.inverse, touched: effect.touched })
 }
 
 /// Find the `transitions:` entry of a transition key: `(machine name, index
 /// in that machine's list)`. A multi-source entry (`from: [a, b]`) is found
 /// from the key of any of its expansions.
-///
-/// Stub until `feat/edit-ops` lands.
 pub fn locate_transition(definition: &Definition, key: &ElementKey) -> Option<(String, usize)> {
-    let _ = (definition, key);
-    None
+    keys::locate_transition(definition, key)
 }
 
 /// A fresh name based on `base` that is not in `taken`: `base`, `base2`,
