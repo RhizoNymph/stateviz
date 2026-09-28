@@ -7,6 +7,8 @@
 use cascade_core::{Direction, ElementKey, ElementKind};
 use cascade_scene::{ConeFocus, OutsideFocus, ViewKind, ViewState};
 
+use crate::mode::AppMode;
+
 /// Deepest finite cone depth the stepper offers; one more step is ∞.
 pub const MAX_CONE_DEPTH: u32 = 12;
 
@@ -37,6 +39,18 @@ pub enum Command {
     UnpinSelection,
     Reload,
     Quit,
+    /// Switch between View, Build and Play.
+    SetMode(AppMode),
+    Undo,
+    Redo,
+    /// Build mode: delete the selected element.
+    DeleteSelection,
+    /// Create a new definition file and open it.
+    NewFile,
+    /// Play mode: deliver the queue's head.
+    PlayStep,
+    /// Play mode: deliver until the queue is empty.
+    PlayRun,
 }
 
 /// Where a binding applies.
@@ -98,6 +112,10 @@ pub const KEYMAP: &[Binding] = &[
     canvas("/", Command::FocusSearch),
     canvas("o", Command::OpenSource),
     canvas("u", Command::UnpinSelection),
+    canvas("delete", Command::DeleteSelection),
+    canvas("backspace", Command::DeleteSelection),
+    canvas("space", Command::PlayStep),
+    canvas("r", Command::PlayRun),
     global("ctrl-f", Command::FocusSearch),
     global("cmd-f", Command::FocusSearch),
     global("ctrl-shift-c", Command::CopyLink),
@@ -110,6 +128,19 @@ pub const KEYMAP: &[Binding] = &[
     global("cmd-r", Command::Reload),
     global("ctrl-q", Command::Quit),
     global("cmd-q", Command::Quit),
+    global("ctrl-1", Command::SetMode(AppMode::View)),
+    global("cmd-1", Command::SetMode(AppMode::View)),
+    global("ctrl-2", Command::SetMode(AppMode::Build)),
+    global("cmd-2", Command::SetMode(AppMode::Build)),
+    global("ctrl-3", Command::SetMode(AppMode::Play)),
+    global("cmd-3", Command::SetMode(AppMode::Play)),
+    global("ctrl-z", Command::Undo),
+    global("cmd-z", Command::Undo),
+    global("ctrl-shift-z", Command::Redo),
+    global("cmd-shift-z", Command::Redo),
+    global("ctrl-y", Command::Redo),
+    global("ctrl-n", Command::NewFile),
+    global("cmd-n", Command::NewFile),
 ];
 
 /// Every command, for exhaustiveness checks.
@@ -140,6 +171,15 @@ pub const ALL_COMMANDS: &[Command] = &[
     Command::UnpinSelection,
     Command::Reload,
     Command::Quit,
+    Command::SetMode(AppMode::View),
+    Command::SetMode(AppMode::Build),
+    Command::SetMode(AppMode::Play),
+    Command::Undo,
+    Command::Redo,
+    Command::DeleteSelection,
+    Command::NewFile,
+    Command::PlayStep,
+    Command::PlayRun,
 ];
 
 /// The first key bound to `command`, for button hints.
@@ -163,6 +203,13 @@ pub enum HostEffect {
     UnpinSelection,
     Reload,
     Quit,
+    SetMode(AppMode),
+    Undo,
+    Redo,
+    DeleteSelection,
+    NewFile,
+    PlayStep,
+    PlayRun,
 }
 
 /// What a command did.
@@ -208,6 +255,13 @@ pub fn reduce(command: Command, state: &mut ViewState, depth: &mut Option<u32>) 
         Command::UnpinSelection => Outcome::Host(HostEffect::UnpinSelection),
         Command::Reload => Outcome::Host(HostEffect::Reload),
         Command::Quit => Outcome::Host(HostEffect::Quit),
+        Command::SetMode(mode) => Outcome::Host(HostEffect::SetMode(mode)),
+        Command::Undo => Outcome::Host(HostEffect::Undo),
+        Command::Redo => Outcome::Host(HostEffect::Redo),
+        Command::DeleteSelection => Outcome::Host(HostEffect::DeleteSelection),
+        Command::NewFile => Outcome::Host(HostEffect::NewFile),
+        Command::PlayStep => Outcome::Host(HostEffect::PlayStep),
+        Command::PlayRun => Outcome::Host(HostEffect::PlayRun),
     }
 }
 
@@ -542,5 +596,39 @@ mod tests {
         open_pair(&mut state, "Order".into(), "Shipment".into());
         assert_eq!(state.view, ViewKind::Causal);
         assert_eq!(state.machine_pair, Some(("Order".into(), "Shipment".into())));
+    }
+
+    #[test]
+    fn workbench_keys_are_bound() {
+        let find = |keys: &str| KEYMAP.iter().find(|b| b.keys == keys).map(|b| b.command);
+        assert_eq!(find("ctrl-1"), Some(Command::SetMode(AppMode::View)));
+        assert_eq!(find("cmd-2"), Some(Command::SetMode(AppMode::Build)));
+        assert_eq!(find("ctrl-3"), Some(Command::SetMode(AppMode::Play)));
+        assert_eq!(find("ctrl-z"), Some(Command::Undo));
+        assert_eq!(find("ctrl-shift-z"), Some(Command::Redo));
+        assert_eq!(find("ctrl-y"), Some(Command::Redo));
+        assert_eq!(find("delete"), Some(Command::DeleteSelection));
+        assert_eq!(find("backspace"), Some(Command::DeleteSelection));
+        assert_eq!(find("ctrl-n"), Some(Command::NewFile));
+        assert_eq!(find("space"), Some(Command::PlayStep));
+        assert_eq!(find("r"), Some(Command::PlayRun));
+    }
+
+    #[test]
+    fn workbench_commands_are_host_effects() {
+        let mut state = ViewState::default();
+        let mut depth = None;
+        for (command, effect) in [
+            (Command::SetMode(AppMode::Build), HostEffect::SetMode(AppMode::Build)),
+            (Command::Undo, HostEffect::Undo),
+            (Command::Redo, HostEffect::Redo),
+            (Command::DeleteSelection, HostEffect::DeleteSelection),
+            (Command::NewFile, HostEffect::NewFile),
+            (Command::PlayStep, HostEffect::PlayStep),
+            (Command::PlayRun, HostEffect::PlayRun),
+        ] {
+            assert_eq!(reduce(command, &mut state, &mut depth), Outcome::Host(effect));
+        }
+        assert_eq!(state, ViewState::default());
     }
 }

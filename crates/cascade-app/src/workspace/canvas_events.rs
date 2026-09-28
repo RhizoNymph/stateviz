@@ -4,6 +4,7 @@
 //! is hit tested with a pick tolerance of a few screen pixels; gestures are
 //! driven by the pure `gesture` state machine.
 
+use cascade_core::ElementKey;
 use cascade_scene::HitTarget;
 use cascade_sim::Trace;
 use gpui::{
@@ -13,9 +14,11 @@ use gpui::{
 
 use super::Workspace;
 use super::operations::pins_supported;
-use crate::canvas::paint::{PaintInput, paint_scene};
+use crate::build::connect;
+use crate::canvas::paint::{ConnectPaint, PaintInput, paint_scene};
 use crate::gesture::{ClickAction, Draggable, Gesture, Mods, MoveOutcome, Pick, ReleaseOutcome, classify_click};
 use crate::locate;
+use crate::mode::AppMode;
 use crate::viewport::{self, ScreenPoint, ScreenRect};
 
 /// Edge pick distance in screen pixels.
@@ -56,6 +59,7 @@ impl Workspace {
         let viewport = self.view.viewport;
         let hover = self.canvas.hover.clone();
         let drag = self.canvas.gesture.drag_preview().map(|(k, p)| (k.clone(), p));
+        let connect = self.connect_paint();
         let weak = cx.weak_entity();
         let surface = canvas(
             move |bounds, _window, cx| {
@@ -75,6 +79,7 @@ impl Workspace {
                     mono,
                     hover: hover.as_ref(),
                     drag: drag.as_ref().map(|(k, p)| (k, *p)),
+                    connect: connect.as_ref(),
                 };
                 paint_scene(&input, window, cx);
             },
@@ -83,6 +88,7 @@ impl Workspace {
 
         let cursor = match &self.canvas.gesture {
             Gesture::Panning { .. } | Gesture::Dragging { .. } => CursorStyle::ClosedHand,
+            Gesture::Connecting { .. } => CursorStyle::Crosshair,
             _ if self.canvas.hover.is_some() => CursorStyle::PointingHand,
             _ => CursorStyle::Arrow,
         };
@@ -146,9 +152,56 @@ impl Workspace {
         window.focus(&self.focus, cx);
         self.search.open = false;
         let at = screen_point(event.position);
-        let (pick, draggable, _) = self.pick_at(at);
-        self.canvas.gesture = Gesture::press(at, pick, draggable, mods(&event.modifiers), event.click_count);
+        let (pick, draggable, target) = self.pick_at(at);
+        let mods = mods(&event.modifiers);
+        self.canvas.gesture = match target {
+            Some(HitTarget::ConnectHandle { element })
+                if self.mode == AppMode::Build && connect::is_source(&element) && !mods.any() =>
+            {
+                Gesture::press_handle(at, element, mods, event.click_count)
+            }
+            _ => Gesture::press(at, pick, draggable, mods, event.click_count),
+        };
         cx.notify();
+    }
+
+    /// The element a connect drag would drop on at `at`.
+    fn drop_at(&self, at: ScreenPoint) -> Option<ElementKey> {
+        let (vp, canvas) = (self.effective_viewport()?, self.canvas.bounds?);
+        if !canvas.contains(at) {
+            return None;
+        }
+        let target = self.scene.hit_test(viewport::to_scene(vp, canvas, at), HIT_TOLERANCE_PX / vp.zoom)?;
+        locate::drop_key(target).cloned()
+    }
+
+    /// The rubber band and drop highlights of a connect drag, in screen
+    /// coordinates.
+    fn connect_paint(&self) -> Option<ConnectPaint> {
+        let (from, start, current) = self.canvas.gesture.connect_preview()?;
+        let (vp, canvas) = (self.effective_viewport()?, self.canvas.bounds?);
+        let targets: Vec<ScreenRect> = locate::drop_targets(&self.scene, |k| connect::can_connect(from, k))
+            .into_iter()
+            .map(|(_, rect)| viewport::rect_to_screen(vp, canvas, rect))
+            .collect();
+        let hot = self
+            .drop_at(current)
+            .filter(|k| connect::can_connect(from, k))
+            .and_then(|k| locate::locate_key(&self.scene, &k))
+            .map(|rect| viewport::rect_to_screen(vp, canvas, rect));
+        Some(ConnectPaint { from: start, to: current, targets, hot })
+    }
+
+    /// A connect drag ended: connect to what is under the pointer, or
+    /// cancel on empty canvas.
+    fn finish_connect(&mut self, from: ElementKey, at: ScreenPoint, cx: &mut Context<Self>) {
+        match self.drop_at(at) {
+            Some(to) if connect::can_connect(&from, &to) => self.connect_keys(&from, &to, cx),
+            Some(to) => {
+                self.set_status(format!("Cannot connect {from} to {to}"), false);
+            }
+            None => self.set_status("Connection cancelled", false),
+        }
     }
 
     fn canvas_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -168,7 +221,7 @@ impl Workspace {
                         cx.notify();
                     }
                 }
-                MoveOutcome::DragPreview => cx.notify(),
+                MoveOutcome::DragPreview | MoveOutcome::ConnectPreview => cx.notify(),
                 MoveOutcome::Nothing => {}
             }
             return;
@@ -185,6 +238,7 @@ impl Workspace {
             ReleaseOutcome::Nothing => {}
             ReleaseOutcome::Click { pick, mods, clicks } => self.click(classify_click(pick, mods, clicks), cx),
             ReleaseOutcome::Drop { key, top_left } => self.pin(key, top_left, cx),
+            ReleaseOutcome::Connect { from, at } => self.finish_connect(from, at, cx),
         }
         cx.notify();
     }

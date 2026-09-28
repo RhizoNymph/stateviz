@@ -8,6 +8,7 @@ use gpui::{App, Context, InteractiveElement, KeyBinding, actions};
 
 use super::Workspace;
 use crate::commands::{self, Command};
+use crate::mode::AppMode;
 use cascade_scene::ViewKind;
 
 macro_rules! command_actions {
@@ -61,6 +62,15 @@ command_actions! {
     UnpinSelection => Command::UnpinSelection,
     Reload => Command::Reload,
     Quit => Command::Quit,
+    ModeView => Command::SetMode(AppMode::View),
+    ModeBuild => Command::SetMode(AppMode::Build),
+    ModePlay => Command::SetMode(AppMode::Play),
+    Undo => Command::Undo,
+    Redo => Command::Redo,
+    DeleteSelection => Command::DeleteSelection,
+    NewFile => Command::NewFile,
+    PlayStep => Command::PlayStep,
+    PlayRun => Command::PlayRun,
 }
 
 /// Install the workspace key map.

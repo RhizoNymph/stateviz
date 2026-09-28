@@ -1,10 +1,13 @@
 //! `cascade-app`: the native GPUI app.
 //!
-//! `cascade-app <file> [--view <cascade:// link>]` opens a definition,
-//! paints its scenes, and reloads whenever the file, its pins sidecar or
-//! its scenarios change on disk.
+//! `cascade-app [--new] <file> [--view <cascade:// link>]` opens a
+//! definition (creating a starter one with `--new`), paints its scenes,
+//! reloads whenever the file, its pins sidecar or its scenarios change on
+//! disk, and lets you build the system (Build mode) and play it (Play
+//! mode).
 
 mod args;
+mod build;
 mod canvas;
 mod commands;
 mod diffmode;
@@ -14,7 +17,9 @@ mod gesture;
 mod input;
 mod link;
 mod locate;
+mod mode;
 mod panels;
+mod play;
 mod theme;
 mod trace;
 mod viewport;
@@ -49,6 +54,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.new
+        && let Err(error) = build::disk::create_new(&args.file)
+    {
+        eprintln!("cascade-app: --new: {error}");
+        return ExitCode::from(2);
+    }
+    let mode = args.initial_mode();
     let path = match std::fs::canonicalize(&args.file) {
         Ok(path) => path,
         Err(error) => {
@@ -56,10 +68,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let title = format!(
-        "Cascade — {}",
-        path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
-    );
+    let title = workspace::window_title(&path);
 
     application().run(move |cx: &mut App| {
         input::bind_keys(cx);
@@ -76,7 +85,7 @@ fn main() -> ExitCode {
                 focus: true,
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| Workspace::new(path, view, mono, window, cx)),
+            move |window, cx| cx.new(|cx| Workspace::new(path, view, mode, mono, window, cx)),
         );
         if let Err(error) = opened {
             tracing::error!(%error, "cannot open the window");
