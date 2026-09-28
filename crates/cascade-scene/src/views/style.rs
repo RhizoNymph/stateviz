@@ -204,6 +204,31 @@ impl Painter<'_> {
         }
     }
 
+    /// Edit mode's controller: one hexagon per controller, its name in bold
+    /// over a small muted line per handler ("on OrderPaid").
+    pub fn controller(&self, name: String, handlers: Vec<String>) -> NodeLook {
+        let mut lines = vec![Line {
+            text: name,
+            font_size: self.theme.font_size,
+            color: self.theme.text,
+            weight: FontWeight::Bold,
+        }];
+        lines.extend(handlers.into_iter().map(|h| self.small(h, self.theme.text_muted)));
+        // The pointed sides take up to 40% of the height each (see the SVG
+        // writer); keep the text clear of them.
+        let point = (self.block(&lines).height + 2.0 * PAD_Y) * 0.4;
+        let (size, labels) = self.boxed(lines, PAD_X, point, point, 0.0);
+        NodeLook {
+            shape: Shape::Hexagon,
+            size,
+            fill: None,
+            stroke: Stroke::solid(self.theme.controller, self.theme.stroke_width),
+            border: Border::Single,
+            labels,
+            circles: Vec::new(),
+        }
+    }
+
     /// External source: a plain rectangle with a neutral outline.
     pub fn external(&self, text: String) -> NodeLook {
         let lines = vec![self.line(text, self.theme.text)];
@@ -390,6 +415,27 @@ mod tests {
                 assert!(label.offset.x >= 0.0 && label.offset.x + w <= look.size.width + 0.01, "{label:?} in {look:?}");
                 assert!(label.offset.y >= 0.0, "{label:?}");
             }
+        }
+    }
+
+    #[test]
+    fn controller_text_clears_the_pointed_sides() {
+        let theme = Theme::light();
+        let measure = MonoMeasure::default();
+        let painter = Painter { theme: &theme, measure: &measure, styles: Vec::new() };
+        let look = painter.controller("Fulfillment".into(), vec!["on OrderPaid".into(), "on StockReserved".into()]);
+        assert_eq!(look.shape, Shape::Hexagon);
+        let texts: Vec<&str> = look.labels.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(texts, ["Fulfillment", "on OrderPaid", "on StockReserved"]);
+        assert_eq!(look.labels[0].weight, FontWeight::Bold);
+        let point = (look.size.height * 0.4).min(look.size.width / 4.0);
+        for label in &look.labels {
+            let w = measure.width(&label.text, label.font_size);
+            assert!(
+                label.offset.x >= point - 0.01 && label.offset.x + w <= look.size.width - point + 0.01,
+                "{label:?}"
+            );
+            assert!(label.offset.y >= 0.0 && label.offset.y < look.size.height);
         }
     }
 }

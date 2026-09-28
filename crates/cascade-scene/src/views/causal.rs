@@ -27,6 +27,7 @@ use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{DraftEdge, DraftGraph, DraftNode, EdgeText, Meta, RealizeCtx, realize};
 use crate::views::filters::{apply_hide, hidden_machines, machine_pair, pair_nodes};
 use crate::views::links::cycle_edges;
+use crate::views::overlays::{Placement, PlayDecor};
 use crate::views::style::{Painter, bracketed};
 use crate::views::{SceneError, SceneInput};
 
@@ -185,6 +186,10 @@ pub(super) fn build(
     let mut scene = realized.scene;
     let decor = Decor { model, theme, interaction, findings: FindingIndex::new(input.findings), diff: input.diff };
     decor.apply(&mut scene, &realized.nodes, &realized.edges, &realized.overlay_owner);
+    if let Some(play) = input.play {
+        let play_decor = PlayDecor { model, painter: &painter };
+        play_decor.apply(&mut scene, &realized.nodes, &realized.edges, play, Placement::Transitions);
+    }
     scene.bounds = scene_bounds(&scene, input.measure);
     scene.notes = notes;
     Ok(scene)

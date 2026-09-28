@@ -17,7 +17,8 @@ use cascade_layout::{Insets, Point, Rect};
 use crate::color::{Rgba, Theme};
 use crate::export::ExportError;
 use crate::scene::{
-    Arrow, Badge, Border, Dash, FontWeight, Label, Layer, Overlay, Scene, SceneEdge, SceneNode, Shape, Stroke,
+    Arrow, Badge, Border, Dash, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneEdge, SceneNode, Shape,
+    Stroke,
 };
 
 /// Space around the scene's bounds.
@@ -98,6 +99,9 @@ impl SvgWriter<'_> {
                         stroke(s)
                     )?;
                 }
+                // Connect handles are an editing affordance, not part of
+                // the picture: exports leave them out.
+                Overlay::Rect { target: HitTarget::ConnectHandle { .. }, .. } => {}
                 Overlay::Rect { rect, fill, stroke: s, radius, opacity: o, layer: l, .. } if *l == layer => {
                     let attrs = format!(
                         "{} {}",
