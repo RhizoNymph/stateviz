@@ -1,0 +1,247 @@
+# Shop: a five-machine order pipeline, the M1 acceptance example.
+#
+# A customer checks out an Order; a Payment is authorized and captured; the
+# Inventory reserves stock; a Shipment is packed and carried; a Notification
+# goes out on delivery. The design is realistic but deliberately flawed:
+# every check `cascade check` runs fires at least once, and each planted
+# problem carries a `PLANTED <check>` comment saying why it is flagged.
+#
+# examples/shop/expected-findings.txt is the exact output of
+#   cascade check examples/shop/cascade.yaml
+# and tests pin both it and the set of findings.
+#
+# About the state-dependent-fire notes: every rule whose trigger its target
+# accepts in only some states gets one (info), listing the states where the
+# fire would be dropped. In a lifecycle machine that is most rules, so they
+# are expected here; the design question each one asks is "is dropping the
+# fire in those states what we want?". The one worth a second look is
+# Refunds' `Payment.refund`: a payment that was voided or failed silently
+# drops the refund. Rules that spawn a new instance (`new …`) only get a note
+# when the new instance's initial state drops the fire, which never happens
+# here.
+system: Shop
+
+events:
+  OrderPlaced: { payload: [orderId] }
+  OrderPaid: { payload: [orderId] }
+  OrderDelivered: { payload: [orderId] }
+  OrderCancelled: { payload: [orderId] }
+  PaymentAuthorized: { payload: [orderId] }
+  PaymentCaptured: { payload: [orderId] }
+  PaymentRefunded: { payload: [orderId] }
+  StockReserved: { payload: [orderId] }
+  ShipmentDispatched: { payload: [orderId] }
+  TrackingPolled: { payload: [orderId] }
+  ShipmentDelivered: { payload: [orderId] }
+  # PLANTED unhandled-event: emitted when the carrier loses a parcel, but no
+  # controller reacts to it (no refund, no reshipment).
+  ShipmentLost: { payload: [orderId] }
+  # PLANTED orphan-controller: the Returns controller waits for this event,
+  # but no transition emits it (the return request was never modelled).
+  ReturnRequested: { payload: [orderId] }
+
+machines:
+  Order:
+    color: blue
+    fields: [orderId, customerId]
+    initial: cart
+    states:
+      - cart
+      - placed:
+          initial: awaiting_payment
+          states: [awaiting_payment, paid]
+      - fulfilling
+      - delivered
+      - closed: { kind: final }
+      - cancelled: { kind: final }
+      # PLANTED unreachable-state: only `return_received` enters `returned`,
+      # and only the orphaned Returns controller fires it.
+      - returned: { kind: final }
+    transitions:
+      - { from: cart, to: placed, on: checkout, emits: [OrderPlaced] }
+      - { from: placed.awaiting_payment, to: placed.paid, on: payment_captured, emits: [OrderPaid] }
+      - { from: placed.paid, to: fulfilling, on: stock_reserved }
+      - { from: fulfilling, to: delivered, on: shipment_delivered, emits: [OrderDelivered] }
+      - { from: delivered, to: closed, on: return_window_expired }
+      - { from: delivered, to: returned, on: return_received }
+      # Declared on the compound `placed`, so it applies to both substates.
+      - { from: placed, to: cancelled, on: cancel, emits: [OrderCancelled] }
+
+  Payment:
+    color: orange
+    fields: [orderId]
+    initial: created
+    states:
+      - created
+      - authorizing
+      - authorized
+      - captured
+      - voided: { kind: final }
+      - failed: { kind: final }
+      - refunded: { kind: final }
+    transitions:
+      - { from: created, to: authorizing, on: authorize }
+      - { from: authorizing, to: authorized, on: approved, emits: [PaymentAuthorized] }
+      - { from: authorizing, to: failed, on: declined }
+      # Two transitions on `capture`, but the guards are mutually exclusive
+      # (`else` covers the rest), so this is not nondeterminism.
+      - from: authorized
+        to: captured
+        on: capture
+        guard: "amount <= authorized_amount"
+        emits: [PaymentCaptured]
+      - { from: authorized, to: failed, on: capture, guard: else }
+      - { from: authorized, to: voided, on: void }
+      - { from: captured, to: refunded, on: refund, emits: [PaymentRefunded] }
+
+  Inventory:
+    color: green
+    fields: [orderId]
+    initial: requested
+    states:
+      - requested
+      - reserved
+      - backordered
+      - committed: { kind: final }
+    transitions:
+      # PLANTED nondeterminism: the backorder branch was added later, but the
+      # happy path never got the opposite guard, so with low stock both
+      # transitions on `reserve` apply.
+      - { from: requested, to: reserved, on: reserve, emits: [StockReserved] }
+      - { from: requested, to: backordered, on: reserve, guard: "stock < quantity" }
+      - { from: backordered, to: reserved, on: restocked, emits: [StockReserved] }
+      - { from: reserved, to: committed, on: commit }
+
+  Shipment:
+    color: vermillion
+    fields: [orderId]
+    initial: idle
+    states:
+      - idle
+      - packing
+      - in_transit
+      - delivered: { kind: final }
+      - lost: { kind: final }
+    transitions:
+      - { from: idle, to: packing, on: pack }
+      - { from: packing, to: in_transit, on: handed_over, emits: [ShipmentDispatched] }
+      # A polling loop: Tracking re-fires `poll_tracking` after every poll.
+      # Its rule is marked `bounded: true` (polling stops once the parcel
+      # arrives), which silences the cascade-cycle warning for this loop.
+      - { from: in_transit, to: in_transit, on: poll_tracking, emits: [TrackingPolled] }
+      - { from: in_transit, to: delivered, on: delivered, emits: [ShipmentDelivered] }
+      - { from: in_transit, to: lost, on: lost, emits: [ShipmentLost] }
+
+  Notification:
+    color: purple
+    fields: [orderId]
+    initial: queued
+    states:
+      - queued
+      - sending
+      - delivered: { kind: final }
+      - bounced: { kind: final }
+    transitions:
+      - { from: queued, to: sending, on: send }
+      - { from: sending, to: delivered, on: accepted }
+      - { from: sending, to: bounced, on: rejected }
+
+controllers:
+  Checkout:
+    on:
+      OrderPlaced:
+        - fire: Payment.authorize
+          target: new Payment with orderId = event.orderId
+
+  Billing:
+    on:
+      PaymentAuthorized:
+        - fire: Payment.capture
+          target: Payment where orderId == event.orderId
+
+  # PLANTED race-candidate: FraudCheck and Billing both react to
+  # PaymentAuthorized by firing into the same Payment, so whether it ends up
+  # captured or voided depends on which rule runs first.
+  FraudCheck:
+    on:
+      PaymentAuthorized:
+        - fire: Payment.void
+          target: Payment where orderId == event.orderId
+          when: "risk score above threshold"
+
+  Orders:
+    on:
+      PaymentCaptured:
+        - fire: Order.payment_captured
+          target: Order where orderId == event.orderId
+      StockReserved:
+        - fire: Order.stock_reserved
+          target: Order where orderId == event.orderId
+      ShipmentDelivered:
+        - fire: Order.shipment_delivered
+          target: Order where orderId == event.orderId
+      # PLANTED cascade-cycle (with Refunds below): cancelling an order
+      # refunds its payment, and a refunded payment cancels its order. Nobody
+      # marked the loop bounded, and nothing but the target's state stops it.
+      PaymentRefunded:
+        - fire: Order.cancel
+          target: Order where orderId == event.orderId
+
+  Refunds:
+    on:
+      OrderCancelled:
+        - fire: Payment.refund
+          target: Payment where orderId == event.orderId
+
+  Fulfillment:
+    on:
+      OrderPaid:
+        - fire: Inventory.reserve
+          target: new Inventory with orderId = event.orderId
+      StockReserved:
+        - fire: Shipment.pack
+          target: new Shipment with orderId = event.orderId
+      OrderCancelled:
+        # PLANTED invalid-fire: Shipment has no `cancel` transition, so this
+        # fire can never be accepted.
+        - fire: Shipment.cancel
+          target: Shipment where orderId == event.orderId
+
+  Shipping:
+    on:
+      ShipmentDispatched:
+        - fire: Inventory.commit
+          target: Inventory where orderId == event.orderId
+
+  Tracking:
+    on:
+      ShipmentDispatched:
+        - fire: Shipment.poll_tracking
+          target: Shipment where orderId == event.orderId
+      TrackingPolled:
+        - fire: Shipment.poll_tracking
+          target: Shipment where orderId == event.orderId
+          when: "parcel not yet delivered"
+          bounded: true
+
+  Notifier:
+    on:
+      OrderDelivered:
+        - fire: Notification.send
+          target: new Notification with orderId = event.orderId
+
+  Returns:
+    on:
+      ReturnRequested:
+        - fire: Order.return_received
+          target: Order where orderId == event.orderId
+
+external:
+  # PLANTED invalid-fire (a dead command): customers can request a return,
+  # but no Order transition accepts `request_return`.
+  Customer: [Order.checkout, Order.cancel, Order.request_return]
+  PaymentGateway: [Payment.approved, Payment.declined]
+  Warehouse: [Inventory.restocked]
+  Carrier: [Shipment.handed_over, Shipment.delivered, Shipment.lost]
+  MailProvider: [Notification.accepted, Notification.rejected]
+  Clock: [Order.return_window_expired]

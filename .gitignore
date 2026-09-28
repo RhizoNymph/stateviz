@@ -4,3 +4,6 @@
 .env.*
 *.swp
 .DS_Store
+
+# Local Claude Code state created per working directory
+.claude/

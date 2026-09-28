@@ -1,0 +1,184 @@
+//! Structure view: what phases does each machine have, and where do the
+//! cross-machine links attach?
+//!
+//! Each machine is a lane (a layout group) stacked in definition order,
+//! with a header naming the machine in its hue. Inside, states are laid out
+//! in layers with the transition pills sitting on the edges
+//! (state → pill → state).
+//!
+//! - **Nesting:** each expanded compound state gets a band of its own (a
+//!   further layout group, drawn as a nested lane titled with the state's
+//!   path) right below its machine's lane and inside its outline. The
+//!   compound state itself stays a node in its parent's band (marked
+//!   "▾ n states"), since transitions can leave or enter it as a whole.
+//!   This keeps containment visible with a single level of layout groups.
+//! - **Collapse:** a collapsed compound state keeps its node ("▸ n states"),
+//!   its descendants disappear, transitions inside it disappear and
+//!   transitions crossing its boundary attach to it (pills keep their real
+//!   endpoints in the label). A collapsed machine becomes one node in a
+//!   collapsed lane.
+//! - **Cross-lane links:** one dashed edge from the causing pill to the
+//!   caused pill in the target machine's hue, labelled "Event › Controller";
+//!   parallel links between the same endpoints merge. Pills in different
+//!   lanes connect through their South/North ports so the layout routes the
+//!   link between lanes rather than through them.
+//! - **Hidden machines** become a stub in a thin band of their own, and
+//!   their links attach to it.
+
+mod links;
+mod machines;
+
+use cascade_core::ElementRef;
+use cascade_layout::{LayoutOptions, Point, Rect};
+
+use crate::color::machine_styles;
+use crate::emphasis::Interaction;
+use crate::scene::{FontWeight, HitTarget, Label, Lane, Scene, Stroke};
+use crate::view_state::ViewKind;
+use crate::views::cache::LayoutCache;
+use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
+use crate::views::draft::{DraftGraph, RealizeCtx, realize};
+use crate::views::filters::{apply_hide, hidden_machines};
+use crate::views::style::Painter;
+use crate::views::{SceneError, SceneInput};
+
+use machines::{Collapse, Drafter, MachinePlan};
+
+/// Horizontal inset of a nested band inside its machine lane.
+const BAND_INSET: f32 = 6.0;
+
+pub(super) fn build(
+    input: &SceneInput<'_>,
+    interaction: &Interaction,
+    cache: &mut LayoutCache,
+) -> Result<Scene, SceneError> {
+    let model = input.model;
+    let theme = input.theme;
+    let painter = Painter { theme, measure: input.measure, styles: machine_styles(model, theme) };
+    let hidden = hidden_machines(model, &input.view.hidden_machines);
+    let collapse = Collapse::resolve(model, &input.view.collapsed);
+    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse };
+
+    let mut draft = DraftGraph::default();
+    let mut endpoints = vec![None; model.transition_count()];
+    let mut plans = Vec::with_capacity(model.machine_count());
+    for m in model.machine_ids() {
+        let plan = if hidden.contains(&m) {
+            drafter.hidden(&mut draft, m, &mut endpoints)
+        } else if collapse.machine(m) {
+            drafter.collapsed(&mut draft, m, &mut endpoints)
+        } else {
+            drafter.expanded(&mut draft, m, &mut endpoints)
+        };
+        plans.push(plan);
+    }
+    let stubs: Vec<_> = plans
+        .iter()
+        .filter_map(|p| match p {
+            MachinePlan::Hidden { machine, stub } => Some((*machine, *stub)),
+            MachinePlan::Collapsed { .. } | MachinePlan::Expanded { .. } => None,
+        })
+        .collect();
+    links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
+
+    let cuts = apply_hide(&mut draft, interaction);
+    let ctx = RealizeCtx {
+        view: ViewKind::Structure,
+        theme,
+        measure: input.measure,
+        sidecar: input.sidecar,
+        options: LayoutOptions { layer_spacing: 48.0, ..LayoutOptions::default() },
+    };
+    let realized = realize(draft, cuts, &ctx, cache)?;
+    let mut scene = realized.scene;
+    let decor = Decor { model, theme, interaction, findings: FindingIndex::new(input.findings), diff: input.diff };
+    decor.apply(&mut scene, &realized.nodes, &realized.edges, &realized.overlay_owner);
+
+    let group_rect = |g: usize| realized.groups.get(g).copied().flatten();
+    for plan in &plans {
+        match plan {
+            MachinePlan::Hidden { .. } => {}
+            MachinePlan::Collapsed { machine, group } => {
+                if let Some(rect) = group_rect(*group) {
+                    scene.lanes.push(machine_lane(input, &painter, *machine, rect, true));
+                }
+            }
+            MachinePlan::Expanded { machine, top, bands } => {
+                let rects: Vec<Rect> =
+                    std::iter::once(*top).chain(bands.iter().map(|(_, g)| *g)).filter_map(group_rect).collect();
+                let Some(rect) = rects.iter().copied().reduce(|a, b| a.union(&b)) else { continue };
+                scene.lanes.push(machine_lane(input, &painter, *machine, rect, false));
+                for (state, band) in bands {
+                    if let Some(rect) = group_rect(*band) {
+                        scene.lanes.push(band_lane(input, &painter, *machine, *state, rect));
+                    }
+                }
+            }
+        }
+    }
+    // A selected machine or compound state shows on its lane by weight.
+    let selected: Vec<_> = interaction.selected().iter().map(|e| model.key_of(*e)).collect();
+    for lane in &mut scene.lanes {
+        if matches!(&lane.target, HitTarget::Element(key) if selected.contains(key)) {
+            lane.stroke.width = theme.selected_stroke_width;
+        }
+    }
+    scene.bounds = scene_bounds(&scene, input.measure);
+    scene.notes = interaction.notes().to_vec();
+    Ok(scene)
+}
+
+fn machine_lane(
+    input: &SceneInput<'_>,
+    painter: &Painter<'_>,
+    machine: cascade_core::MachineId,
+    rect: Rect,
+    collapsed: bool,
+) -> Lane {
+    let theme = input.theme;
+    let style = painter.machine(machine);
+    Lane {
+        target: HitTarget::Element(input.model.key_of(ElementRef::Machine(machine))),
+        rect,
+        fill: style.hue.mix(theme.background, 0.94),
+        stroke: Stroke::solid(style.hue.mix(theme.background, 0.4), 1.0),
+        title: Label {
+            text: input.model.machine(machine).name.clone(),
+            origin: Point::new(rect.left() + 12.0, rect.top() + 5.0),
+            font_size: theme.font_size,
+            color: style.hue,
+            weight: FontWeight::Bold,
+        },
+        opacity: 1.0,
+        collapsed,
+    }
+}
+
+fn band_lane(
+    input: &SceneInput<'_>,
+    painter: &Painter<'_>,
+    machine: cascade_core::MachineId,
+    state: cascade_core::StateId,
+    rect: Rect,
+) -> Lane {
+    let theme = input.theme;
+    let style = painter.machine(machine);
+    // Inset from the machine lane's sides so the band reads as inside it.
+    let inset = BAND_INSET.min(rect.size.width / 4.0);
+    let rect = Rect::new(rect.left() + inset, rect.top(), rect.size.width - 2.0 * inset, rect.size.height);
+    Lane {
+        target: HitTarget::Element(input.model.key_of(ElementRef::State(state))),
+        rect,
+        fill: style.hue.mix(theme.background, 0.9),
+        stroke: Stroke::dashed(style.hue.mix(theme.background, 0.3), 1.0),
+        title: Label {
+            text: input.model.state(state).path.clone(),
+            origin: Point::new(rect.left() + 10.0, rect.top() + 4.0),
+            font_size: theme.small_font_size,
+            color: style.hue,
+            weight: FontWeight::Normal,
+        },
+        opacity: 1.0,
+        collapsed: false,
+    }
+}

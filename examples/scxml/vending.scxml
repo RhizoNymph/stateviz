@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- A vending machine as a parallel SCXML document: each region is a
+     machine, and they talk through <send>. -->
+<scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" name="Vending">
+  <parallel id="vending">
+    <state id="Coins" initial="Coins.empty">
+      <state id="Coins.empty">
+        <transition event="coin.inserted" target="Coins.credited"/>
+      </state>
+      <state id="Coins.credited">
+        <transition event="coin.inserted" target="Coins.credited"/>
+        <transition event="select" cond="credit &gt;= price" target="Coins.empty">
+          <send event="dispense" target="#_Dispenser"/>
+        </transition>
+        <transition event="refund" target="Coins.empty">
+          <send event="coins.returned"/>
+        </transition>
+      </state>
+    </state>
+
+    <state id="Dispenser" initial="Dispenser.ready">
+      <state id="Dispenser.ready">
+        <transition event="dispense" target="Dispenser.vending"/>
+      </state>
+      <state id="Dispenser.vending">
+        <transition event="Dispenser.item.dropped" target="Dispenser.ready">
+          <raise event="sale.completed"/>
+        </transition>
+        <transition event="jam" target="Dispenser.jammed"/>
+      </state>
+      <state id="Dispenser.jammed">
+        <transition event="serviced" target="Dispenser.ready"/>
+      </state>
+    </state>
+  </parallel>
+</scxml>

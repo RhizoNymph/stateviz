@@ -1,0 +1,34 @@
+# A real race: Fulfillment and Billing both handle OrderPaid and both fire
+# into the order's Shipment. Whichever fire arrives first decides where the
+# shipment ends up: `start` then `hold` leaves it picking (hold is dropped),
+# `hold` then `start` leaves it on hold (start is dropped).
+machines:
+  Order:
+    initial: pending
+    fields: [orderId]
+    states: [pending, paid]
+    transitions:
+      - { from: pending, to: paid, on: capture_ok, emits: [OrderPaid] }
+
+  Shipment:
+    initial: idle
+    fields: [orderId]
+    states: [idle, picking, on_hold]
+    transitions:
+      - { from: idle, to: picking, on: start }
+      - { from: idle, to: on_hold, on: hold }
+
+controllers:
+  Fulfillment:
+    on:
+      OrderPaid:
+        - fire: Shipment.start
+          target: Shipment where orderId == event.orderId
+  Billing:
+    on:
+      OrderPaid:
+        - fire: Shipment.hold
+          target: Shipment where orderId == event.orderId
+
+external:
+  PaymentGateway: [Order.capture_ok]

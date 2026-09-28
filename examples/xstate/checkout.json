@@ -1,0 +1,64 @@
+{
+  "machines": {
+    "Checkout": {
+      "id": "checkout",
+      "initial": "cart",
+      "states": {
+        "cart": {
+          "on": {
+            "ADD_ITEM": { "actions": ["addItem"] },
+            "CHECKOUT": {
+              "target": "paying",
+              "guard": "cartNotEmpty",
+              "actions": { "type": "xstate.sendTo", "to": "payment", "event": { "type": "CHARGE" } }
+            }
+          }
+        },
+        "paying": {
+          "on": {
+            "PAYMENT_OK": "confirmed",
+            "PAYMENT_FAILED": "cart"
+          }
+        },
+        "confirmed": {
+          "type": "final",
+          "entry": [{ "type": "xstate.sendTo", "to": "notifier", "event": { "type": "SEND_RECEIPT" } }]
+        }
+      }
+    },
+    "Payment": {
+      "id": "payment",
+      "initial": "idle",
+      "states": {
+        "idle": {
+          "on": { "CHARGE": "charging" }
+        },
+        "charging": {
+          "invoke": {
+            "src": "chargeCard",
+            "onDone": {
+              "target": "idle",
+              "actions": { "type": "xstate.sendParent", "event": { "type": "PAYMENT_OK" } }
+            },
+            "onError": {
+              "target": "idle",
+              "actions": { "type": "xstate.sendParent", "event": "PAYMENT_FAILED" }
+            }
+          }
+        }
+      }
+    },
+    "Notifier": {
+      "id": "notifier",
+      "initial": "ready",
+      "states": {
+        "ready": {
+          "on": { "SEND_RECEIPT": "sending" }
+        },
+        "sending": {
+          "after": { "2000": "ready" }
+        }
+      }
+    }
+  }
+}

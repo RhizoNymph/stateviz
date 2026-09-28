@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Exported by Cascade (docs/features/interop-and-diff.md). -->
+<!-- Each machine is a region of the top-level <parallel>; state ids are Machine.path and -->
+<!-- triggers are events named Machine.trigger. Emitted events are <send>s. Each controller -->
+<!-- is a region marked cascade:controller: one transition per subscribed event, one <send> -->
+<!-- per rule (inside <if> when the rule has a condition). Guards and conditions are -->
+<!-- Cascade's free text, not expressions. External sources, declared events, colors, -->
+<!-- domains, fields, selectors and bounded flags live in the cascade: namespace. -->
+<scxml xmlns="http://www.w3.org/2005/07/scxml" xmlns:cascade="urn:x-cascade:scxml" version="1.0">
+  <cascade:source name="Customer" fires="Order.submit"/>
+  <cascade:source name="PaymentGateway" fires="Order.capture_ok"/>
+  <cascade:source name="Clock" fires="Order.timeout"/>
+  <parallel id="system">
+    <state id="Order" initial="Order.draft" cascade:color="blue">
+      <state id="Order.draft">
+        <transition event="Order.submit" target="Order.pending"/>
+      </state>
+      <state id="Order.pending">
+        <transition event="Order.capture_ok" target="Order.paid">
+          <send event="OrderPaid"/>
+        </transition>
+        <transition event="Order.timeout" target="Order.cancelled">
+          <send event="OrderCancelled"/>
+        </transition>
+      </state>
+      <state id="Order.paid"/>
+      <state id="Order.cancelled"/>
+    </state>
+    <state id="Shipment" initial="Shipment.idle" cascade:color="green">
+      <state id="Shipment.idle">
+        <transition event="Shipment.start" target="Shipment.picking"/>
+      </state>
+      <state id="Shipment.picking">
+        <transition event="Shipment.handoff" target="Shipment.shipped">
+          <send event="Shipped"/>
+        </transition>
+      </state>
+      <state id="Shipment.shipped"/>
+    </state>
+    <state id="Fulfillment" cascade:controller="Fulfillment">
+      <transition event="OrderPaid">
+        <send event="Shipment.start" cascade:target="Shipment where orderId == event.orderId"/>
+      </transition>
+    </state>
+  </parallel>
+</scxml>

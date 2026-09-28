@@ -1,0 +1,40 @@
+{
+  "id": "trafficLight",
+  "initial": "green",
+  "context": { "cycles": 0 },
+  "states": {
+    "green": {
+      "entry": [{ "type": "xstate.emit", "event": { "type": "LightChanged" } }],
+      "after": { "30000": "yellow" },
+      "on": {
+        "PEDESTRIAN_WAITING": { "target": "yellow", "guard": { "type": "minimumGreenElapsed", "params": { "seconds": 10 } } }
+      }
+    },
+    "yellow": {
+      "entry": [{ "type": "xstate.emit", "event": { "type": "LightChanged" } }],
+      "after": { "5000": "red" }
+    },
+    "red": {
+      "initial": "walk",
+      "entry": [{ "type": "xstate.emit", "event": { "type": "LightChanged" } }],
+      "states": {
+        "walk": {
+          "entry": ["emit:WalkSignalOn"],
+          "after": { "15000": "countdown" }
+        },
+        "countdown": {
+          "after": { "10000": "stop" }
+        },
+        "stop": { "type": "final" }
+      },
+      "onDone": { "target": "green", "actions": ["incrementCycles"] }
+    },
+    "flashing": {
+      "description": "Degraded mode after a fault",
+      "on": { "REPAIRED": "green" }
+    }
+  },
+  "on": {
+    "FAULT": ".flashing"
+  }
+}

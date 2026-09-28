@@ -1,0 +1,78 @@
+[workspace]
+members = [
+    "crates/cascade-core",
+    "crates/cascade-layout",
+    "crates/cascade-sim",
+    "crates/cascade-scene",
+    "crates/cascade-interop",
+    "crates/cascade-cli",
+    "crates/cascade-app",
+]
+# The GPUI app needs system graphics libraries and a long first build, so plain
+# `cargo build` / `cargo test` at the root cover only the headless crates. Build
+# the app with `cargo run -p cascade-app`.
+default-members = [
+    "crates/cascade-core",
+    "crates/cascade-layout",
+    "crates/cascade-sim",
+    "crates/cascade-scene",
+    "crates/cascade-interop",
+    "crates/cascade-cli",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+rust-version = "1.90"
+
+[workspace.dependencies]
+cascade-core = { path = "crates/cascade-core" }
+cascade-layout = { path = "crates/cascade-layout" }
+cascade-sim = { path = "crates/cascade-sim" }
+cascade-scene = { path = "crates/cascade-scene" }
+cascade-interop = { path = "crates/cascade-interop" }
+
+anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
+# 0.46.0 matches the version GPUI pulls in; no raster-image or mmap features needed.
+resvg = { version = "0.46.0", default-features = false, features = ["text", "system-fonts"] }
+roxmltree = "0.21.1"
+saphyr = "0.1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.20"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# --- Native app (cascade-app only) ------------------------------------------
+# GPUI: all three come from the SAME zed git rev. `gpui_platform` is
+# unpublished and declares `gpui` as a bare path dependency, so mixing a
+# crates.io `gpui` with it compiles two incompatible copies.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "5e03f2d387e629237c10a4e4fed881b64abd8fea", default-features = false, features = [
+    "wayland",
+] }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "5e03f2d387e629237c10a4e4fed881b64abd8fea", default-features = false, features = [
+    "wayland",
+] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
+futures = "0.3.33"
+notify = "8.2.0"
+unicode-segmentation = "1.13.3"
+
+# Zed patches these to its own forks. Building gpui outside Zed's workspace
+# requires the same patches, or the dependency graph fails to resolve.
+[patch.crates-io]
+async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+async-task = { git = "https://github.com/smol-rs/async-task.git", rev = "b4486cd71e4e94fbda54ce6302444de14f4d190e" }
+calloop = { git = "https://github.com/zed-industries/calloop" }
+
+[profile.dev]
+split-debuginfo = "unpacked"
+incremental = true
+codegen-units = 16
+debug = "limited"
+
+[profile.dev.package."*"]
+opt-level = 2

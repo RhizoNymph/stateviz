@@ -1,0 +1,66 @@
+{
+  "id": "fetch",
+  "initial": "idle",
+  "context": { "retries": 0, "data": null, "error": null },
+  "states": {
+    "idle": {
+      "on": {
+        "FETCH": { "target": "loading", "actions": ["resetRetries"] }
+      }
+    },
+    "loading": {
+      "invoke": {
+        "id": "fetchData",
+        "src": "fetchData",
+        "input": { "url": "/api/items" },
+        "onDone": {
+          "target": "success",
+          "actions": ["storeData", { "type": "xstate.emit", "event": { "type": "DataLoaded" } }]
+        },
+        "onError": [
+          { "target": "retrying", "guard": { "type": "canRetry", "params": { "max": 3 } } },
+          { "target": "failure", "actions": { "type": "xstate.sendParent", "event": { "type": "FETCH_FAILED" } } }
+        ]
+      },
+      "after": {
+        "10000": { "target": "failure", "actions": "emit:FetchTimedOut" }
+      },
+      "on": {
+        "CANCEL": "idle"
+      }
+    },
+    "retrying": {
+      "entry": ["incrementRetries"],
+      "after": { "1000": "loading" }
+    },
+    "success": {
+      "initial": "fresh",
+      "states": {
+        "fresh": {
+          "after": { "60000": "stale" }
+        },
+        "stale": {
+          "entry": { "type": "xstate.raise", "event": { "type": "REFRESH" } }
+        },
+        "hist": { "type": "history", "history": "deep" }
+      },
+      "on": {
+        "REFRESH": "#fetch.loading",
+        "PAUSE": "paused"
+      }
+    },
+    "paused": {
+      "on": {
+        "RESUME": "success.hist"
+      }
+    },
+    "failure": {
+      "on": {
+        "RETRY": { "target": "loading", "actions": ["resetRetries"] }
+      }
+    }
+  },
+  "on": {
+    "RESET": ".idle"
+  }
+}

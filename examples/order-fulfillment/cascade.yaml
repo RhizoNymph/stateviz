@@ -1,0 +1,31 @@
+# The example from docs/spec.md: an order triggers a shipment through the
+# Fulfillment controller.
+machines:
+  Order:
+    color: blue
+    initial: draft
+    states: [draft, pending, paid, cancelled]
+    transitions:
+      - { from: draft,   to: pending,   on: submit }
+      - { from: pending, to: paid,      on: capture_ok, emits: [OrderPaid] }
+      - { from: pending, to: cancelled, on: timeout,    emits: [OrderCancelled] }
+
+  Shipment:
+    color: green
+    initial: idle
+    states: [idle, picking, shipped]
+    transitions:
+      - { from: idle,    to: picking, on: start }
+      - { from: picking, to: shipped, on: handoff, emits: [Shipped] }
+
+controllers:
+  Fulfillment:
+    on:
+      OrderPaid:
+        - fire: Shipment.start
+          target: Shipment where orderId == event.orderId
+
+external:
+  Customer: [Order.submit]
+  PaymentGateway: [Order.capture_ok]
+  Clock: [Order.timeout]
