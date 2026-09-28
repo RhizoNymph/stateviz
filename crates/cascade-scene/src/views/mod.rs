@@ -20,6 +20,7 @@ mod draft;
 mod filters;
 mod links;
 mod matrix;
+mod overlays;
 mod structure;
 mod style;
 mod trace;

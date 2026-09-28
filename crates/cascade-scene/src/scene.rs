@@ -255,11 +255,19 @@ impl Scene {
         }
     }
 
-    /// The topmost clickable item at `p` (scene coordinates). Nodes win over
-    /// edges, edges over overlays, overlays over lanes. `tolerance` is the
-    /// pick distance for edges in scene units.
+    /// The topmost clickable item at `p` (scene coordinates). Connect
+    /// handles win over everything (they are small, painted over their node
+    /// and straddle its edge), then nodes over edges, edges over other
+    /// overlays, overlays over lanes. `tolerance` is the pick distance for
+    /// edges in scene units.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> Option<&HitTarget> {
         let clickable = |t: &HitTarget| !matches!(t, HitTarget::None);
+        if let Some(handle) = self.overlays.iter().rev().find_map(|o| match o {
+            Overlay::Rect { rect, target: t @ HitTarget::ConnectHandle { .. }, .. } if rect.contains(p) => Some(t),
+            _ => None,
+        }) {
+            return Some(handle);
+        }
         if let Some(node) = self.nodes.iter().rev().find(|n| clickable(&n.target) && n.rect.contains(p)) {
             return Some(&node.target);
         }
@@ -357,6 +365,26 @@ mod tests {
         assert_eq!(scene.hit_test(Point::new(50.0, 52.0), 3.0), Some(&e));
         assert_eq!(scene.hit_test(Point::new(50.0, 60.0), 3.0), None);
         assert_eq!(scene.locate(&a), Some(Rect::new(0.0, 0.0, 10.0, 10.0)));
+    }
+
+    #[test]
+    fn connect_handles_win_over_the_node_they_sit_on() {
+        let state = HitTarget::Element(ElementKey::State { machine: "M".into(), path: "a".into() });
+        let handle = HitTarget::ConnectHandle { element: ElementKey::State { machine: "M".into(), path: "a".into() } };
+        let mut scene = Scene::empty(ViewKind::Structure, Rgba::hex(0xFFFFFF));
+        scene.nodes.push(node(state.clone(), Rect::new(0.0, 0.0, 40.0, 20.0)));
+        scene.overlays.push(Overlay::Rect {
+            rect: Rect::new(35.0, 5.0, 10.0, 10.0),
+            fill: None,
+            stroke: None,
+            radius: 5.0,
+            opacity: 1.0,
+            layer: Layer::Over,
+            target: handle.clone(),
+        });
+        assert_eq!(scene.hit_test(Point::new(38.0, 10.0), 3.0), Some(&handle), "inside the node too");
+        assert_eq!(scene.hit_test(Point::new(44.0, 10.0), 3.0), Some(&handle));
+        assert_eq!(scene.hit_test(Point::new(20.0, 10.0), 3.0), Some(&state));
     }
 
     #[test]

@@ -31,7 +31,8 @@ Overview:
     cascade-scene: >
       Model + view state → Scene, a backend-neutral display list with hit
       targets, for all four views. Owns the visual encoding (Okabe-Ito hues,
-      shapes, dashes, emphasis/dimming, badges, diff decorations), the
+      shapes, dashes, emphasis/dimming, badges, diff decorations, edit-mode
+      wiring and connect handles, play markers and highlights), the
       cascade:// view link format, the pins sidecar, and SVG/PNG export.
     cascade-interop: >
       XState v5 and SCXML import through a shared statechart IR (names
@@ -102,7 +103,7 @@ Features Index:
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:
-    description: Scene builders for the causal, structure, trace and matrix views; the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export.
+    description: Scene builders for the causal, structure, trace and matrix views; the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring band and connect handles) and play overlays (instance markers, active and pending items).
     entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md

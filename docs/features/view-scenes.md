@@ -17,6 +17,9 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
   pair, collapse, hide mode.
 - Layout caching and stability across rebuilds, pins from the sidecar.
 - SVG and PNG export, and `cascade render`.
+- Build and play drawing: `SceneMode::Edit` (the structure view's wiring
+  band and connect handles) and the `PlayOverlay` (instance markers,
+  active and pending items) over the causal and structure views.
 
 ## Non-scope
 
@@ -30,7 +33,7 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 ## Data and control flow
 
 ```text
-SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff }
+SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff, mode, play }
       │
       ├─ Interaction::new(model, graph, view)          selection, focus region, search hits
       │
@@ -40,10 +43,13 @@ SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff
       │        apply_hide: hide mode removes outside items, records cut links
       │     realize(draft, cuts) ──LayoutCache──▶ Scene items (+ metas aligned with them)
       │     lanes from group rects (structure)
+      │     edit mode (structure): wiring band lanes, hints, connect handles
       │
       ├─ trace / matrix: placed directly, metas kept alongside
       │
-      └─ Decor::apply(scene, metas)                    emphasis, badges, diff; bounds; notes
+      ├─ Decor::apply(scene, metas)                    emphasis, badges, diff
+      │
+      └─ PlayDecor::apply (causal, structure)          active, pending, markers; bounds; notes
 ```
 
 Every scene item carries a `Meta` while it is built: the model elements it
@@ -142,6 +148,29 @@ anything.
   compound state outlines its lane at the selected width. Reversed edges
   are never marked red here: the graph includes ordinary state cycles.
 
+### Edit mode (`views/structure/wiring.rs`, `edit.rs`)
+
+`SceneMode::Edit` changes only the structure view: pills get a second
+South port (4) for emits, the cross-lane links are replaced by a wiring
+band of two more layout groups below the lanes ("External sources", then
+"Events and controllers", neutral lanes with muted titles), with real emit,
+subscribe, fire and trigger edges, and every state, pill, controller and
+source gets a connect handle. Details, including the empty-machine hint
+and the empty-definition note, are in build-and-play.md ("Build and play
+drawing"). The layout cache is per view, so switching modes feeds one
+mode's layout to the other as the previous layout (states stay put) and
+switching back hits the cache.
+
+### Play overlay (`views/overlays/`)
+
+Drawn after decoration on the causal and structure views: instance
+marker chips (on states in the structure view; on pills leaving the
+current state in the causal view, hollow on the pills entering a dead
+end), active items (selected width plus a translucent glow ring in their
+own color), pending items (dotted outline, queue-position chips with the
+head `1` filled). It never enters the layout input, so it never
+relayouts. See build-and-play.md for the rules.
+
 ### Trace view (`views/trace.rs`)
 
 No layered layout. Each trace is a block titled with its `ordering` label
@@ -211,7 +240,9 @@ edges, nodes, over-overlays, each item a `<g class="lane|overlay|edge|node">`
 carrying its opacity. Shapes: `Rect`/`RoundedRect`/`Pill`/`Stub` as rects
 with the right radius, `Tag` and `Hexagon` as paths. `Border::Double` adds
 an inner outline, `Border::ThickLeft` a bar clipped to the shape. Dashes
-map to `stroke-dasharray`. Arrowheads are markers, one per stroke color.
+map to `stroke-dasharray`. Connect handles (`HitTarget::ConnectHandle`
+overlays) are left out; every other overlay, including play chips and
+glow rings, is written. Arrowheads are markers, one per stroke color.
 Labels use a monospace font family with the baseline 0.95 em below the
 origin (the line box is 1.3 em), text escaped; edge labels get a halo in
 the background color. Badges are red-outlined circles with the count,
@@ -262,6 +293,12 @@ revision or an invalid version exits with code 2.
 | Diff added / removed | — | Green outline / red dashed ghost at 45% opacity |
 | Selected / focused / dimmed / search | — | Selected width / middle width / 15% opacity / dotted halo; never a hue change |
 | Matrix cell | `Rect` with count | Neutral gray by count |
+| Controller (edit mode) | `Hexagon` per controller, name in bold over "on Event" lines | Dark neutral outline, no fill |
+| Wiring band (edit mode) | Lanes "External sources", "Events and controllers" | Neutral pale fill, rule-colored outline, muted title |
+| Connect handle (edit mode) | Circle on the east edge | Background fill, muted outline; not exported |
+| Instance marker | Chip on the top edge, `o1` | Machine hue fill, on-hue bold text; hollow (hue outline) on a dead end's way in (causal) |
+| Active (play) | — | Selected width; nodes also a glow ring in their own outline color at 35% alpha |
+| Pending (play) | Queue-position chip | Dotted outline; head chip filled with the text color, others hollow |
 
 ## Files
 
@@ -283,6 +320,10 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | crate-private |
 | `crates/cascade-scene/src/views/structure/machines.rs` | Per-machine drafting, nesting, collapse | crate-private |
 | `crates/cascade-scene/src/views/structure/links.rs` | Cross-lane links, stub counts | crate-private |
+| `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring band | crate-private |
+| `crates/cascade-scene/src/views/structure/edit.rs` | Band lanes, empty hints | crate-private |
+| `crates/cascade-scene/src/views/overlays/*.rs` | Connect handles, markers, active/pending, chips | `PlayDecor`, `Placement`, `add_handles` (crate) |
+| `crates/cascade-scene/src/play.rs` | Build/play inputs (contract) | `SceneMode`, `PlayOverlay`, `PlayMarker` |
 | `crates/cascade-scene/src/views/trace.rs` | Trace view | crate-private |
 | `crates/cascade-scene/src/views/matrix.rs` | Matrix view and seriation | `seriate` (crate) |
 | `crates/cascade-scene/src/export/mod.rs` | Export entry points and errors | `to_svg`, `to_png`, `ExportError` |
@@ -294,8 +335,9 @@ revision or an invalid version exits with code 2.
 
 ## Invariants and constraints
 
-- Hue means entity: only machine-owned things take a hue; emphasis changes
-  outline weight and opacity only. The exceptions are the finding red
+- Hue means entity: only machine-owned things take a hue (instance marker
+  chips included); emphasis, active and pending change outline weight,
+  dash and opacity only. The exceptions are the finding red
   (badged outlines, cycle back edges) and diff outlines, which never fill.
 - Emphasis never relayouts: the layout cache key is the layout input, and
   decoration runs after layout. Tested by comparing node rects and
@@ -312,7 +354,15 @@ revision or an invalid version exits with code 2.
   geometry and oversized images with typed errors.
 - Performance: at about 20 machines, 200 states and 50 controllers each
   view builds well under a second in a debug build (tested, including the
-  current layout engine).
+  current layout engine), edit mode included; a play overlay change costs
+  no layout. Pinning a band node with many lane-crossing edges (a busy
+  controller) goes through the engine's obstacle router and is slower
+  (about 0.35 s release for the shop's Orders controller).
+- Play overlays never relayout, and `SceneMode::View` scenes are
+  unchanged by build and play drawing (fingerprinted in
+  `tests/view_mode_golden.rs`).
+- `Scene::hit_test` checks connect handles before nodes; nothing else
+  in its order changed.
 - `Scene` and its item types are unchanged; additions are
   `SceneBuilder::layouts_run`, `cascade_scene::emphasis`,
   `machine_colors`, and a reworked `ExportError` (no `NotImplemented`).

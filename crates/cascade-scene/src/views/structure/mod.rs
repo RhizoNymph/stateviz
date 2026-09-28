@@ -24,21 +24,32 @@
 //!   link between lanes rather than through them.
 //! - **Hidden machines** become a stub in a thin band of their own, and
 //!   their links attach to it.
+//!
+//! **Edit mode** (the build canvas) keeps the lanes and replaces the
+//! cross-lane links with the wiring band below them (see `wiring`): event
+//! tags, controller hexagons and source boxes joined to the pills by real
+//! emit, subscribe, fire and trigger edges. Connectable nodes get connect
+//! handles, a machine without transitions says how to add one, and an empty
+//! definition says how to start.
 
+mod edit;
 mod links;
 mod machines;
+mod wiring;
 
 use cascade_core::ElementRef;
 use cascade_layout::{LayoutOptions, Point, Rect};
 
 use crate::color::machine_styles;
 use crate::emphasis::Interaction;
+use crate::play::SceneMode;
 use crate::scene::{FontWeight, HitTarget, Label, Lane, Scene, Stroke};
 use crate::view_state::ViewKind;
 use crate::views::cache::LayoutCache;
 use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{DraftGraph, RealizeCtx, realize};
 use crate::views::filters::{apply_hide, hidden_machines};
+use crate::views::overlays::{Placement, PlayDecor, add_handles};
 use crate::views::style::Painter;
 use crate::views::{SceneError, SceneInput};
 
@@ -57,7 +68,8 @@ pub(super) fn build(
     let painter = Painter { theme, measure: input.measure, styles: machine_styles(model, theme) };
     let hidden = hidden_machines(model, &input.view.hidden_machines);
     let collapse = Collapse::resolve(model, &input.view.collapsed);
-    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse };
+    let edit = input.mode == SceneMode::Edit;
+    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse, edit };
 
     let mut draft = DraftGraph::default();
     let mut endpoints = vec![None; model.transition_count()];
@@ -79,7 +91,13 @@ pub(super) fn build(
             MachinePlan::Collapsed { .. } | MachinePlan::Expanded { .. } => None,
         })
         .collect();
-    links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
+    let band = if edit {
+        let wiring = wiring::Wiring { model, graph: input.graph, painter: &painter };
+        Some(wiring.draft(&mut draft, &endpoints, &stubs))
+    } else {
+        links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
+        None
+    };
 
     let cuts = apply_hide(&mut draft, interaction);
     let ctx = RealizeCtx {
@@ -116,6 +134,9 @@ pub(super) fn build(
             }
         }
     }
+    if let Some(band) = &band {
+        edit::band_lanes(&mut scene, &painter, band, group_rect);
+    }
     // A selected machine or compound state shows on its lane by weight.
     let selected: Vec<_> = interaction.selected().iter().map(|e| model.key_of(*e)).collect();
     for lane in &mut scene.lanes {
@@ -123,8 +144,17 @@ pub(super) fn build(
             lane.stroke.width = theme.selected_stroke_width;
         }
     }
+    let mut notes = interaction.notes().to_vec();
+    if edit {
+        edit::hints(&mut scene, model, &painter, &plans, &mut notes);
+        add_handles(&mut scene, theme);
+    }
+    if let Some(play) = input.play {
+        let play_decor = PlayDecor { model, painter: &painter };
+        play_decor.apply(&mut scene, &realized.nodes, &realized.edges, play, Placement::States);
+    }
     scene.bounds = scene_bounds(&scene, input.measure);
-    scene.notes = interaction.notes().to_vec();
+    scene.notes = notes;
     Ok(scene)
 }
 

@@ -5,7 +5,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use cascade_core::model::StateKind;
 use cascade_core::{CausalGraph, ElementKey, ElementRef, MachineId, Model, StateId};
-use cascade_layout::{Insets, LayerConstraint};
+use cascade_layout::{Insets, LayerConstraint, Port, PortSide};
 
 use crate::emphasis::Anchor;
 use crate::scene::{Arrow, EdgeKind, HitTarget};
@@ -18,6 +18,16 @@ pub(super) const PORT_WEST: u16 = 0;
 pub(super) const PORT_EAST: u16 = 1;
 pub(super) const PORT_NORTH: u16 = 2;
 pub(super) const PORT_SOUTH: u16 = 3;
+/// Edit mode only: a second South port where emits leave for the wiring
+/// band, right of [`PORT_SOUTH`] where fires and triggers arrive.
+pub(super) const PORT_SOUTH_OUT: u16 = 4;
+
+/// Pill ports in edit mode: the standard four plus [`PORT_SOUTH_OUT`].
+fn edit_pill_ports() -> Vec<Port> {
+    let mut ports = standard_ports();
+    ports.push(Port { side: PortSide::South });
+    ports
+}
 
 /// Collapsed composite states and machines.
 pub(super) struct Collapse {
@@ -91,6 +101,8 @@ pub(super) struct Drafter<'a> {
     pub graph: &'a CausalGraph,
     pub painter: &'a Painter<'a>,
     pub collapse: &'a Collapse,
+    /// Edit mode: pills get [`PORT_SOUTH_OUT`] too.
+    pub edit: bool,
 }
 
 impl Drafter<'_> {
@@ -235,7 +247,7 @@ impl Drafter<'_> {
                 key: key.to_string(),
                 group: Some(group),
                 layer: LayerConstraint::Free,
-                ports: standard_ports(),
+                ports: if self.edit { edit_pill_ports() } else { standard_ports() },
                 look: painter.pill(label, model.trigger(tr.trigger).name.clone(), style),
                 target: HitTarget::Element(key.clone()),
                 meta: meta.clone(),
