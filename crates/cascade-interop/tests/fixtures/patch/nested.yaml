@@ -1,0 +1,47 @@
+# Nested fixture: compound states in list and mapping form.
+system: Jobs
+
+machines:
+  Job:
+    color: sky-blue
+    initial: queued
+    fields: [jobId]
+    states:
+      queued: {}
+      running:
+        initial: fetching
+        states:
+          - fetching
+          # Computing is where the work happens.
+          - computing: { kind: normal }
+          - hist: { kind: deep-history }
+      done: { kind: final }
+    transitions:
+      - { from: queued, to: running, on: start }
+      - { from: running.fetching, to: computing, on: fetched }
+      # Pausing keeps the history.
+      - { from: running, to: queued, on: pause, emits: [Paused] }
+      - { from: queued, to: running.hist, on: resume }
+      - { from: [running.computing, queued], to: done, on: finish, emits: [Finished] }
+
+  Worker:
+    initial: idle
+    states:
+      - idle
+      - busy:
+          states: [warming, working]
+    transitions:
+      - { from: idle, to: busy, on: claim }
+      - { from: busy.working, to: idle, on: release }
+
+controllers:
+  Scheduler:
+    on:
+      Paused:
+        - fire: Worker.release
+      Finished: { fire: Worker.release, when: "worker still busy" }
+
+external:
+  Operator: [Job.start, Job.pause, Job.resume]
+  Queue: Worker.claim
+  Clock: [Job.fetched, Job.finish]

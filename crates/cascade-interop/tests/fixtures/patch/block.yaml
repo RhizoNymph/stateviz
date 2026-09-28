@@ -1,0 +1,36 @@
+# Block fixture: four-space indentation and block mappings everywhere.
+system: 'Door: block style'
+
+machines:
+    Door:
+        color: green
+        states:
+            - closed
+            - open
+            - locked:
+                  kind: final
+        transitions:
+            - from: closed
+              to: open
+              on: open_door
+              emits: [Opened]
+            # Locking only works when closed.
+            - from: closed
+              to: locked
+              on: lock
+              guard: "has key"
+
+events:
+    - Opened
+
+controllers:
+    Alarm:
+        on:
+            Opened:
+                - fire: Door.lock
+                  when: after hours
+                  bounded: true
+
+external:
+    Resident:
+        - Door.open_door
