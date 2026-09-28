@@ -2,8 +2,11 @@
 //!
 //! The ungrouped band (when it has nodes) comes first, then every group in
 //! insertion order. A fresh band is placed right below the previous one's
-//! gap; a stable band keeps its previous position and only moves down if
-//! the band above now reaches into it. Each band's items are pushed off
+//! gap, sized for its cross-band tracks plus a spare. A band with previous
+//! positions stays put and only moves down if the gap above would close to
+//! less than half the group spacing, or its tracks no longer fit at half
+//! the edge spacing, so a change in one band does not move the others.
+//! Each band's items are pushed off
 //! pinned nodes before the band's rect is measured, so everything below
 //! makes room. Group rects contain their contents (and pinned members) plus
 //! padding and header, and all groups share one width, like swimlanes.
@@ -74,14 +77,27 @@ fn resolve_pins(bg: &mut BandGraph, cols: &Columns, problem: &Problem<'_>, pinne
     }
 }
 
-/// Stack the bands. `stable[b]` keeps band `b` where its items already
-/// are; `gap_tracks[k]` is the number of cross-band tracks in the gap after
-/// the `k`-th stacked band.
+/// Height a fresh layout gives the gap holding `tracks` cross-band runs:
+/// room for them plus one spare, so a later edit adding one usually fits.
+fn fresh_gap(problem: &Problem<'_>, tracks: usize) -> f32 {
+    problem.spacing.group.max((tracks as f32 + 2.0) * problem.spacing.edge)
+}
+
+/// Smallest gap a kept band tolerates above it before it moves: half the
+/// group spacing, with tracks allowed to close up to half the edge spacing.
+fn kept_gap(problem: &Problem<'_>, tracks: usize) -> f32 {
+    (problem.spacing.group / 2.0).max((tracks as f32 + 1.0) * problem.spacing.edge / 2.0)
+}
+
+/// Stack the bands. `kept[b]` keeps band `b` where its items already are
+/// (it only moves down if the band above now reaches into it);
+/// `gap_tracks[k]` is the number of cross-band tracks in the gap after the
+/// `k`-th stacked band.
 pub(crate) fn stack(
     problem: &Problem<'_>,
     bands: &mut [BandGraph],
     cols: &[Columns],
-    stable: &[bool],
+    kept: &[bool],
     gap_tracks: &[usize],
 ) -> Placement {
     let pinned: Vec<(usize, Rect)> = problem
@@ -93,13 +109,16 @@ pub(crate) fn stack(
     let pinned_rects: Vec<Rect> = pinned.iter().map(|(_, r)| *r).collect();
     let order = stacked_bands(problem);
     let mut outer: Vec<Option<Rect>> = vec![None; bands.len()];
-    let mut cursor: Option<f32> = None;
-    let spacing = problem.spacing;
+    // Bottom of the band above and the tracks in the gap below it.
+    let mut above: Option<(f32, usize)> = None;
     for (k, &b) in order.iter().enumerate() {
         let insets = problem.bands[b].insets;
+        let cursor = above.map(|(bottom, tracks)| {
+            bottom + if kept[b] { kept_gap(problem, tracks) } else { fresh_gap(problem, tracks) }
+        });
         if let Some(content) = content_box(&bands[b], &cols[b]) {
             let top = content.top() - insets.top;
-            let dy = match (cursor, stable[b]) {
+            let dy = match (cursor, kept[b]) {
                 (None, false) => -top,
                 (None, true) => 0.0,
                 (Some(c), false) => c - top,
@@ -122,12 +141,7 @@ pub(crate) fn stack(
             Rect::new(0.0, cursor.unwrap_or(0.0), insets.left + insets.right, insets.top + insets.bottom)
         });
         outer[b] = Some(rect);
-        let gap = if k + 1 < order.len() {
-            spacing.group.max((gap_tracks.get(k).copied().unwrap_or(0) as f32 + 1.0) * spacing.edge)
-        } else {
-            0.0
-        };
-        cursor = Some(rect.bottom() + gap);
+        above = Some((rect.bottom(), gap_tracks.get(k).copied().unwrap_or(0)));
     }
 
     // Groups share one width.

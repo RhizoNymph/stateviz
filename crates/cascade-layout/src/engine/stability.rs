@@ -2,8 +2,9 @@
 //!
 //! A node is *anchored* when the previous layout had it in the same layer
 //! (and near its column). Anchored nodes keep their previous position
-//! exactly; they only move when they would overlap each other (a node grew)
-//! or a column has to make room (a new wide node). Everything else is
+//! exactly; they only move when they would really collide (a node grew by
+//! more than half the node spacing, or new stubs would run into the node
+//! below) or a column has to make room (a new wide node). Everything else is
 //! placed into free space without moving anything:
 //!
 //! 1. new nodes as close as possible to the average height of their placed
@@ -13,6 +14,11 @@
 //!    stay straight; otherwise each dummy at the nearest free spot;
 //! 3. new columns next to their neighbours, and any column pushed right
 //!    only as far as needed to keep its channel open.
+//!
+//! A band whose contents did not change is not placed this way at all: a
+//! fresh layout of it reproduces the previous node positions up to one
+//! translation, and [`reproduce_y`]/[`reproduce_x`] move that fresh layout
+//! back into place, so its dummies, routes and rect come back exactly too.
 
 use crate::geometry::Point;
 
@@ -62,6 +68,45 @@ pub(crate) fn anchors(bg: &BandGraph, problem: &Problem<'_>, layer_of: &[u32]) -
     anchors
 }
 
+/// The one translation that maps every node item onto its previous
+/// position along an axis, if all node items are anchored and agree.
+fn common_shift(bg: &BandGraph, anchors: &Anchors, delta: impl Fn(f32, f32, Point) -> f32) -> Option<f32> {
+    let mut shift: Option<f32> = None;
+    for (i, it) in bg.items.iter().enumerate() {
+        if !it.is_node() {
+            continue;
+        }
+        let d = delta(it.x, it.top, anchors[i]?);
+        match shift {
+            None => shift = Some(d),
+            Some(s) if (s - d).abs() <= TOLERANCE => {}
+            Some(_) => return None,
+        }
+    }
+    shift
+}
+
+/// If a fresh placement of the band put every node at one vertical
+/// translation of its previous position (the band did not change), move it
+/// back: nodes exactly onto their previous tops, everything else by the
+/// same translation. Returns whether it did.
+pub(crate) fn reproduce_y(bg: &mut BandGraph, anchors: &Anchors) -> bool {
+    let Some(dy) = common_shift(bg, anchors, |_, top, prev| prev.y - top) else { return false };
+    for (it, anchor) in bg.items.iter_mut().zip(anchors) {
+        it.top = anchor.map_or(it.top + dy, |p| p.y);
+    }
+    true
+}
+
+/// The same along the main axis, after the fresh column placement.
+pub(crate) fn reproduce_x(bg: &mut BandGraph, anchors: &Anchors) -> bool {
+    let Some(dx) = common_shift(bg, anchors, |x, _, prev| prev.x - x) else { return false };
+    for (it, anchor) in bg.items.iter_mut().zip(anchors) {
+        it.x = anchor.map_or(it.x + dx, |p| p.x);
+    }
+    true
+}
+
 fn separation<'a>(problem: &'a Problem<'_>, is_node: bool) -> impl Fn(bool) -> f32 + 'a {
     move |other_is_node| problem.separation(is_node, other_is_node)
 }
@@ -80,15 +125,24 @@ pub(crate) fn place_nodes(bg: &mut BandGraph, problem: &Problem<'_>, anchors: &A
             let y = |i: ItemId| anchors[i].map_or(0.0, |p| p.y);
             order(a).cmp(&order(b)).then(y(a).total_cmp(&y(b))).then(a.cmp(&b))
         });
-        let mut floor = f32::NEG_INFINITY;
+        // Kept nodes only move apart when they would really collide: their
+        // stub room (margins) plus half an edge spacing, and at least half
+        // the node spacing between them. New stubs on one node therefore
+        // do not push its neighbour away.
+        let mut above: Option<ItemId> = None;
         for i in anchored {
             let Some(prev) = anchors[i] else { continue };
+            let lowest = above.map_or(f32::NEG_INFINITY, |q| {
+                let (q, it) = (&bg.items[q], &bg.items[i]);
+                let clearance =
+                    (problem.spacing.node / 2.0).max(q.margin_bottom + it.margin_top + problem.spacing.edge / 2.0);
+                q.top + q.height + clearance
+            });
             let item = &mut bg.items[i];
-            let lowest = floor + item.margin_top;
             item.top = if prev.y + TOLERANCE >= lowest { prev.y } else { lowest };
-            floor = item.box_bottom() + problem.spacing.node;
             column.insert(item.box_top(), item.box_bottom(), true);
             placed[i] = true;
+            above = Some(i);
         }
     }
 

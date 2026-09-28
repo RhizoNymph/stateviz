@@ -119,30 +119,45 @@ group's header on the real top.
        source's or target's line where every column has room.
      - A greedy pass straightens any remaining bent link without bending
        another.
-   - Stable bands (`stability.rs`). A node in the same layer as before,
-     and near its column, is *anchored* and keeps its previous top-left
-     exactly. New nodes go into the nearest free space to the average
-     height of their placed neighbours. Each chain's dummies take one line
-     clear through all their columns near the source's (or target's)
-     line, or else the nearest free spot per column. The order within a
-     column follows position.
+   - Bands with previous positions (`stability.rs`). A node in the same
+     layer as before, and near its column, is *anchored*. Each such band
+     is first laid out from scratch (a trial of the fresh pipeline).
+     - **Reproduced.** If the trial puts every node at one translation of
+       its previous position, the band did not change. The trial is moved
+       back into place: nodes onto their exact previous floats, and
+       dummies, labels and routes by the same translation, so the band and
+       its rect come back as before.
+     - **Inserted.** Otherwise the band changed. Anchored nodes keep their
+       previous top-left exactly, and only move apart where they would
+       really collide: their stub margins plus half an edge spacing, and
+       at least half the node spacing between them. New nodes go into the
+       nearest free space to the average height of their placed
+       neighbours. Each chain's dummies take one line clear through all
+       their columns near the source's (or target's) line, or else the
+       nearest free spot per column. The order within a column follows
+       position.
    - Between the two phases, unported slots are sorted by where their
-     edges head: by neighbour order in fresh bands and by neighbour height
-     in stable ones.
+     edges head: by neighbour order in fresh and reproduced bands, and by
+     neighbour height in inserted ones.
 6. **Main axis** (`coordinates.rs`, `stability.rs`, `context.rs`).
    Provisional channel tracks size the channels. An inner channel is at
    least `layer_spacing` wide and holds `(tracks + 1) × edge_spacing`.
    Columns are as wide as their widest item; nodes, dummies and labels are
-   centred. In stable bands, anchored nodes keep their `x`, new columns sit
-   next to their neighbours, and a column moves right only as far as its
-   channel needs.
+   centred. Reproduced bands are placed the fresh way and translated back
+   (falling back to the inserted rule if that doesn't reproduce every
+   node's `x`). In inserted bands, anchored nodes keep their `x`, new
+   columns sit next to their neighbours, and a column moves right only as
+   far as its channel needs.
 7. **Stacking and pins** (`bands.rs`). Bands stack top to bottom: the
    ungrouped band first (when it has nodes), then groups in insertion
-   order. Each gap is at least `group_spacing` and fits its cross-band
-   tracks.
-   - A fresh band sits right after the previous gap. A stable band stays
-     put unless the band above now reaches into it, in which case it moves
-     down.
+   order.
+   - A fresh band sits right after a gap of `group_spacing` or, if that
+     is taller, room for its cross-band tracks plus one spare, so a later
+     edit adding a track usually fits.
+   - A band with previous positions stays put. It moves down only when
+     the gap above would drop below half `group_spacing`, or its tracks
+     no longer fit even closed up to half the edge spacing. So a change
+     inside one band, or a new track in a gap, does not move other bands.
    - Each band's items are pushed off pinned nodes (per column, keeping
      order and gaps, up if that is closer and clear, otherwise down)
      before the band is measured, so everything below makes room.
@@ -193,7 +208,7 @@ group's header on the real top.
 | `engine/ordering.rs` | Crossing minimisation | `minimize`, `count_inversions` |
 | `engine/packing.rs` | 1-D placement: L1 PAV, free space, push-off | `place_l1`, `Occupancy`, `push_off` |
 | `engine/coordinates.rs` | Fresh-mode coordinates, straightening, channel widths | `assign_y`, `assign_x`, `channel_width` |
-| `engine/stability.rs` | Stable-mode placement | `anchors`, `place_nodes`, `place_dummies`, `place_x` |
+| `engine/stability.rs` | Placement with previous positions: reproducing unchanged bands, fitting changes into changed ones | `anchors`, `reproduce_y`, `reproduce_x`, `place_nodes`, `place_dummies`, `place_x` |
 | `engine/context.rs` | Shared read-only views | `Ctx`, `Columns` |
 | `engine/bands.rs` | Stacking, pins, group rects | `stack`, `Placement` |
 | `engine/tracks.rs` | Track assignment | `assign`, `TrackSeg`, `Toward` |
@@ -234,26 +249,34 @@ group's header on the real top.
   foreign group's interior, except where pins make that unavoidable (a
   pinned node overlapping an end, or a group dragged over another band).
 - **Groups.** Group rects contain their nodes plus padding and header, and
-  stack in insertion order with at least `group_spacing` between them.
-  They never overlap unless a pin drags a member over another band; pins
-  win.
+  stack in insertion order. A fresh layout keeps at least `group_spacing`
+  between them. A relayout lets a gap close to half of that before a
+  group moves. Groups never overlap unless a pin drags a member over
+  another band; pins win.
 - **Stability.** With `hints.previous` covering at least half the nodes,
   a node keeps its previous rect exactly (bit for bit) if both hold:
   - its layer is unchanged (true unless a hard constraint changed);
   - it isn't forced to move.
 
-  A node is forced to move only when:
-  - a node above it in its column grew into it (new nodes never push:
-    they go into free space);
+  A group or band whose contents did not change is reproduced exactly:
+  every node, dummy and route inside it, and its rect. A node is forced to
+  move only when:
+  - a node above it in its column grew into it, beyond the relaxed
+    clearance (new nodes never push: they go into free space, and new
+    stubs don't push a neighbour they clear);
   - a new or widened column leaves its channel too narrow, which pushes
     the column right;
-  - the band above grows into its band, or a gap needs more tracks than
-    it has room for;
+  - the band above grows so far that the gap between them would drop
+    below half `group_spacing`, or that gap's tracks no longer fit at
+    half the edge spacing;
   - a newly dragged pin lands on it.
 
   Adding or removing a node or edge therefore leaves unrelated nodes
-  where they were: new nodes keep previous layers fixed, so a new node
-  between two adjacent layers shares a layer instead of shifting
+  where they were. That includes a transition added inside one lane of
+  the structure view: every other lane keeps every node
+  (`tests/stability.rs`). In the shop example, even the edited lane's
+  existing nodes stay put. New nodes keep previous layers fixed, so a
+  new node between two adjacent layers shares a layer instead of shifting
   everything after it. Existing nodes keep their relative order within a
   layer. `SceneBuilder::reset` (a fresh layout) tidies up after many
   edits.

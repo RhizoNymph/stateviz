@@ -257,3 +257,198 @@ fn edits_to_a_large_graph_move_nothing_else() {
     assert_unrelated_unmoved(&before, &big_clone().without_node("v77"));
     assert_unrelated_unmoved(&before, &big_clone().edge("v10", "v250"));
 }
+
+/// A machine for [`shop_lanes`]: its states and `(from, to)` transitions.
+struct Machine {
+    name: &'static str,
+    states: Vec<&'static str>,
+    transitions: Vec<(&'static str, &'static str)>,
+}
+
+/// The structure view's shape: one lane per machine, states and transition
+/// pills (with West/East/North/South ports) inside, and fire edges from a
+/// pill's South port to another lane's pill North port, between adjacent
+/// and non-adjacent lanes.
+fn shop_lanes(extra_shipment_transition: bool) -> cascade_layout::LayoutGraph {
+    use cascade_layout::{EdgeEnd, Insets, LayoutEdge, LayoutGroup, LayoutNode, Port, PortSide, Size};
+    let lanes: Vec<Machine> = vec![
+        Machine {
+            name: "Order",
+            states: vec!["cart", "placed", "paid", "shipped", "delivered", "cancelled"],
+            transitions: vec![
+                ("cart", "placed"),
+                ("placed", "paid"),
+                ("paid", "shipped"),
+                ("shipped", "delivered"),
+                ("placed", "cancelled"),
+                ("paid", "cancelled"),
+            ],
+        },
+        Machine {
+            name: "Payment",
+            states: vec!["created", "authorizing", "authorized", "captured", "voided", "failed", "refunded"],
+            transitions: vec![
+                ("created", "authorizing"),
+                ("authorizing", "authorized"),
+                ("authorizing", "failed"),
+                ("authorized", "captured"),
+                ("authorized", "failed"),
+                ("authorized", "voided"),
+                ("captured", "refunded"),
+                ("failed", "created"),
+            ],
+        },
+        Machine {
+            name: "Inventory",
+            states: vec!["requested", "reserved", "backordered", "committed"],
+            transitions: vec![
+                ("requested", "reserved"),
+                ("requested", "backordered"),
+                ("backordered", "reserved"),
+                ("reserved", "committed"),
+            ],
+        },
+        Machine {
+            name: "Shipment",
+            states: vec!["idle", "packing", "in_transit", "delivered", "lost"],
+            transitions: vec![
+                ("idle", "packing"),
+                ("packing", "in_transit"),
+                ("in_transit", "in_transit"),
+                ("in_transit", "delivered"),
+                ("in_transit", "lost"),
+            ],
+        },
+        Machine {
+            name: "Notification",
+            states: vec!["queued", "sending", "delivered", "bounced"],
+            transitions: vec![("queued", "sending"), ("sending", "delivered"), ("sending", "bounced")],
+        },
+    ];
+    let mut g = cascade_layout::LayoutGraph::new();
+    for Machine { name: lane, states, transitions } in &lanes {
+        let group = g.add_group(LayoutGroup { key: (*lane).to_string(), padding: Insets::uniform(10.0), header: 24.0 });
+        for s in states {
+            let key = format!("{lane}:{s}");
+            g.add_node(LayoutNode::new(key.clone(), Size::new(40.0 + 8.0 * s.len() as f32, 29.0)).in_group(group))
+                .expect("state");
+        }
+        let mut transitions = transitions.clone();
+        if extra_shipment_transition && *lane == "Shipment" {
+            transitions.insert(0, ("packing", "lost"));
+        }
+        for (from, to) in transitions {
+            let key = format!("{lane}:{from}->{to}");
+            let sides = [PortSide::West, PortSide::East, PortSide::North, PortSide::South];
+            let pill = g
+                .add_node(
+                    LayoutNode::new(key.clone(), Size::new(60.0 + 8.0 * (from.len() + to.len()) as f32, 43.0))
+                        .in_group(group)
+                        .with_ports(sides.iter().map(|&side| Port { side }).collect()),
+                )
+                .expect("pill");
+            let s = g.node_by_key(&format!("{lane}:{from}")).expect("from");
+            let t = g.node_by_key(&format!("{lane}:{to}")).expect("to");
+            g.add_edge(LayoutEdge::new(EdgeEnd::node(s), EdgeEnd::port(pill, 0))).expect("in");
+            g.add_edge(LayoutEdge::new(EdgeEnd::port(pill, 1), EdgeEnd::node(t))).expect("out");
+        }
+    }
+    for (a, b) in [
+        ("Order:cart->placed", "Payment:created->authorizing"),
+        ("Payment:authorizing->authorized", "Order:placed->paid"),
+        ("Order:placed->paid", "Inventory:requested->reserved"),
+        ("Inventory:reserved->committed", "Shipment:idle->packing"),
+        ("Shipment:packing->in_transit", "Notification:queued->sending"),
+        ("Shipment:in_transit->delivered", "Order:shipped->delivered"),
+        ("Payment:captured->refunded", "Notification:queued->sending"),
+        ("Shipment:in_transit->lost", "Payment:captured->refunded"),
+        ("Order:paid->cancelled", "Payment:authorized->voided"),
+        ("Order:shipped->delivered", "Notification:sending->delivered"),
+    ] {
+        let a = g.node_by_key(a).expect("fire source");
+        let b = g.node_by_key(b).expect("fire target");
+        g.add_edge(LayoutEdge::new(EdgeEnd::port(a, 3), EdgeEnd::port(b, 2))).expect("fire");
+    }
+    g
+}
+
+#[test]
+fn an_edit_inside_one_lane_moves_no_node_in_another_lane() {
+    let options = LayoutOptions { layer_spacing: 48.0, ..LayoutOptions::default() };
+    let before = shop_lanes(false);
+    let r1 = run_with(&before, &options, &LayoutHints::default());
+    let after = shop_lanes(true);
+    let hints = LayoutHints { previous: Some(r1.to_previous(&before)), ..LayoutHints::default() };
+    let r2 = run_with(&after, &options, &hints);
+    if let Err(msg) = check(&after, &options, &hints, &r2, Checks { labels: false, ..Checks::ALL }) {
+        panic!("relayout invariant violated: {msg}");
+    }
+    let mut moved = Vec::new();
+    for (id, n) in after.nodes() {
+        if n.key.starts_with("Shipment:") {
+            continue;
+        }
+        let old = before.node_by_key(&n.key).expect("existing node");
+        if r1.node(old).rect != r2.node(id).rect {
+            moved.push(format!("{}: {:?} -> {:?}", n.key, r1.node(old).rect, r2.node(id).rect));
+        }
+    }
+    assert!(moved.is_empty(), "nodes outside the edited lane moved:\n{}", moved.join("\n"));
+    // Removing the transition again restores every other lane too.
+    let hints = LayoutHints { previous: Some(r2.to_previous(&after)), ..LayoutHints::default() };
+    let r3 = run_with(&before, &options, &hints);
+    for (id, n) in before.nodes() {
+        if !n.key.starts_with("Shipment:") {
+            assert_eq!(r1.node(id).rect, r3.node(id).rect, "{} moved after the removal", n.key);
+        }
+    }
+}
+
+#[test]
+fn relaying_out_unchanged_lanes_keeps_them_exactly() {
+    // No edit at all: every node, every route and every group rect comes
+    // back identical.
+    let options = LayoutOptions { layer_spacing: 48.0, ..LayoutOptions::default() };
+    let g = shop_lanes(false);
+    let r1 = run_with(&g, &options, &LayoutHints::default());
+    let hints = LayoutHints { previous: Some(r1.to_previous(&g)), ..LayoutHints::default() };
+    let r2 = run_with(&g, &options, &hints);
+    for (id, n) in g.nodes() {
+        assert_eq!(r1.node(id).rect, r2.node(id).rect, "{} moved", n.key);
+    }
+    for (gid, group) in g.groups() {
+        assert_eq!(r1.group(gid), r2.group(gid), "group {} changed", group.key);
+    }
+}
+
+#[test]
+fn new_cross_lane_edges_move_only_their_ends() {
+    use cascade_layout::{EdgeEnd, LayoutEdge};
+    let options = LayoutOptions { layer_spacing: 48.0, ..LayoutOptions::default() };
+    let before = shop_lanes(false);
+    let r1 = run_with(&before, &options, &LayoutHints::default());
+    // Three new fire edges: two into the Order/Payment gap, one skipping to
+    // Inventory through the corridor, so gaps gain tracks.
+    let added = [
+        ("Order:cart->placed", "Payment:authorized->captured"),
+        ("Order:placed->cancelled", "Payment:authorizing->failed"),
+        ("Order:paid->shipped", "Inventory:requested->backordered"),
+    ];
+    let mut after = shop_lanes(false);
+    for (a, b) in added {
+        let a = after.node_by_key(a).expect("source");
+        let b = after.node_by_key(b).expect("target");
+        after.add_edge(LayoutEdge::new(EdgeEnd::port(a, 3), EdgeEnd::port(b, 2))).expect("fire");
+    }
+    let hints = LayoutHints { previous: Some(r1.to_previous(&before)), ..LayoutHints::default() };
+    let r2 = run_with(&after, &options, &hints);
+    if let Err(msg) = check(&after, &options, &hints, &r2, Checks { labels: false, ..Checks::ALL }) {
+        panic!("relayout invariant violated: {msg}");
+    }
+    let touched: BTreeSet<&str> = added.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    for (id, n) in after.nodes() {
+        if !touched.contains(n.key.as_str()) {
+            assert_eq!(r1.node(id).rect, r2.node(id).rect, "{} moved", n.key);
+        }
+    }
+}
