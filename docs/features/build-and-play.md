@@ -40,6 +40,44 @@ Play mode
   save: PlaySession::to_scenario ──▶ scenario_to_yaml ──▶ scenarios/<name>.yaml
 ```
 
+## Play session
+
+Owned by `feat/sim-session`; details and the full error list are in
+simulator.md ("Play session").
+
+- `PlaySession::apply(model, PlayAction)` performs one action by name:
+  `AddInstance`, `RemoveInstance`, `Fire` (an external source's trigger,
+  delivered at once), `Step { choice }` (the queue head, or any pending item
+  by position, to explore orderings by hand) and `RunUntilQuiet`. A
+  rejected action changes nothing and returns `SimError::Action(kind)`.
+  `ActionOutcome::steps` is the range of trace steps the action appended,
+  which is what the overlay's `active` elements come from.
+- Semantics are the batch simulator's, through one engine: the batch
+  `simulate` turns a scenario into play actions, and
+  `PlaySession::from_scenario` records those same actions, so a session's
+  trace equals the batch trace.
+- For the host: `trace()` + `payloads()`, `instances()` (live instances in
+  lifeline order, with leaf state and fields), `pending()` (queue head
+  first, stable `PendingId`s, labels like `Fulfillment → s1: start`),
+  `available_fires(model)` (every source × trigger × instance with an
+  `accepted` flag for the palette) and `timeline()`.
+- Rewind and branch: `seek(model, p)` replays from the start when going
+  back; acting before the end saves the whole old line as a `Branch` (the
+  same action as the next one just moves forward); `switch_branch` swaps
+  the current line with a saved one, so switching twice returns.
+- After an edit: `replay(new_model)` re-runs the timeline up to its
+  position and stops at the first action that no longer applies, returning
+  its index and error; the rest of the line stays as the future.
+- Record: `to_scenario(name)` then `scenario_to_yaml` writes a scenario that
+  keeps manual choices (`- { step: n }`), runs (`- run`), mid-session
+  instance changes (`- { create: … }`, `- { remove: … }`), immediate fires
+  and `end: pause` for a session stopped mid-cascade. It parses back and
+  replays to the same trace, in a session or in `cascade simulate`.
+- Removing an instance discards the fires queued for it; its lifeline and
+  last state stay in the trace and its name is never reused.
+- `cascade simulate <file> [scenario] --interactive` is the same session at
+  a text prompt.
+
 ## Contracts and ownership
 
 | Workstream (branch) | Owns | Implements |
@@ -60,7 +98,8 @@ in parallel.
 | --- | --- | --- |
 | `crates/cascade-core/src/edit/mod.rs` | Edit ops on definitions | `EditOp`, `Applied`, `EditError`, `apply`, `locate_transition`, `fresh_name` |
 | `crates/cascade-interop/src/patch/mod.rs` | Comment-preserving persistence | `patch_text`, `Patched`, `PatchError` |
-| `crates/cascade-sim/src/session/mod.rs` | Interactive simulator | `PlaySession`, `PlayAction`, `PendingItem`, `InstanceState`, `AvailableFire`, `Timeline`, `Branch`, `scenario_to_yaml` |
+| `crates/cascade-sim/src/session/mod.rs` | Interactive simulator (`view.rs`: host queries; `save.rs`: timeline → scenario) | `PlaySession`, `PlayAction`, `PendingItem`, `InstanceState`, `AvailableFire`, `Timeline`, `Branch`, `scenario_to_yaml` |
+| `crates/cascade-sim/src/engine/` | The steppable core shared by play and batch runs (`core.rs`, `exec.rs`, `drive.rs`) | crate-private |
 | `crates/cascade-scene/src/play.rs` | Build/play drawing inputs | `SceneMode`, `PlayOverlay`, `PlayMarker` |
 | `crates/cascade-scene/src/scene.rs` | New hit target | `HitTarget::ConnectHandle` |
 
