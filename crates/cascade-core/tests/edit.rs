@@ -844,3 +844,42 @@ fn new_elements_have_unknown_spans_after_synthesis() {
         assert!(!event.span.is_known(), "{}", event.name.value);
     }
 }
+
+/// How the app changes a payload: remove the declaration and re-declare it
+/// at the same index. In strict mode the step in between does not resolve.
+fn change_payload(def: &cascade_core::Definition, event: &str, payload: &[&str]) -> cascade_core::edit::Applied {
+    let index = def.events.iter().position(|e| e.name.value == event).expect("declared");
+    if def.events.len() > 1 {
+        // On its own, removing a used declaration of a strict file is rejected.
+        let err = rejected(def, EditOp::RemoveEventDeclaration { event: event.into() });
+        assert!(invalid(&err, |k| matches!(k, DiagnosticKind::UndeclaredEvent { .. })), "{err:?}");
+    }
+    ok(
+        def,
+        EditOp::Batch(vec![
+            EditOp::RemoveEventDeclaration { event: event.into() },
+            EditOp::DeclareEvent { event: event_def(event, payload), index: Some(index) },
+        ]),
+    )
+}
+
+#[test]
+fn batch_changes_an_event_payload_in_strict_mode() {
+    let def = parse(SHOP);
+    let applied = change_payload(&def, "OrderPaid", &["orderId", "amount"]);
+    assert_eq!(event_names(&applied.definition), event_names(&def));
+    let paid = &applied.definition.events[1];
+    assert_eq!(paid.name.value, "OrderPaid");
+    assert_eq!(paid.payload.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), ["orderId", "amount"]);
+    assert!(applied.touched.contains(&ElementKey::Event { event: "OrderPaid".into() }));
+    // The inverse restores the old payload at the same place (also checked by `ok`).
+    let undone = apply(&applied.definition, &applied.inverse).expect("undo applies");
+    assert_eq!(undone.definition.events[1].payload.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), ["orderId"]);
+
+    // The only declaration: the list is empty in between (lenient), and the
+    // re-declaration makes it strict again with just this event.
+    let one = parse(ONE_EVENT);
+    let applied = change_payload(&one, "Ping", &[]);
+    assert_eq!(event_names(&applied.definition), ["Ping"]);
+    assert!(applied.definition.events[0].payload.is_empty());
+}
