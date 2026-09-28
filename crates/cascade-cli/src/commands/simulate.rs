@@ -1,11 +1,14 @@
 //! `cascade simulate <file> <scenario>`: print a scenario's trace, or with
-//! `--race <n>` both orderings of the n-th race candidate.
+//! `--race <n>` both orderings of the n-th race candidate, or with
+//! `--interactive` play the system at a prompt (see `play`).
 //!
 //! Text output is one line per step, indented by causal depth, with `← n`
 //! naming the cause when it is not the line above. `--format json` prints
 //! the same trace as JSON.
 //!
-//! Owner: `feat/simulator`.
+//! Owner: `feat/simulator`; `--interactive` from `feat/sim-session`.
+
+mod play;
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -21,15 +24,28 @@ use serde_json::{Value, json};
 use crate::OutputFormat;
 use crate::commands::load_or_report;
 
-pub fn run(file: &Path, scenario_path: &Path, format: OutputFormat, race: Option<usize>) -> anyhow::Result<ExitCode> {
+pub fn run(
+    file: &Path,
+    scenario_path: Option<&Path>,
+    format: OutputFormat,
+    race: Option<usize>,
+    interactive: bool,
+) -> anyhow::Result<ExitCode> {
     let model = match load_or_report(file)? {
         Ok(model) => model,
         Err(code) => return Ok(code),
     };
-    let scenario = match cascade_sim::load_scenario_file(scenario_path) {
-        Ok(scenario) => scenario,
-        Err(ScenarioFileError::Invalid { path, source }) => return Ok(report(&path, &source)),
-        Err(err @ ScenarioFileError::Io { .. }) => return Err(err.into()),
+    let scenario = match scenario_path.map(cascade_sim::load_scenario_file) {
+        None => None,
+        Some(Ok(scenario)) => Some(scenario),
+        Some(Err(ScenarioFileError::Invalid { path, source })) => return Ok(report(&path, &source)),
+        Some(Err(err @ ScenarioFileError::Io { .. })) => return Err(err.into()),
+    };
+    if interactive {
+        return play::run(file, &model, scenario.as_ref().zip(scenario_path));
+    }
+    let (Some(scenario), Some(scenario_path)) = (scenario, scenario_path) else {
+        bail!("a scenario file is required unless --interactive is given");
     };
 
     match race {
@@ -86,21 +102,36 @@ pub fn run(file: &Path, scenario_path: &Path, format: OutputFormat, race: Option
 }
 
 /// Print scenario diagnostics as `path:line:col: error: …`; exit code 2.
-fn report(path: &Path, err: &ScenarioError) -> ExitCode {
+pub(crate) fn report(path: &Path, err: &ScenarioError) -> ExitCode {
     for d in &err.diagnostics {
         eprintln!("{}:{}: error: {}", path.display(), d.span, d.kind);
     }
     ExitCode::from(2)
 }
 
-fn trace_text(model: &Model, run: &SimRun) -> String {
+pub(crate) fn trace_text(model: &Model, run: &SimRun) -> String {
     let trace = &run.trace;
     let mut out = format!("Scenario: {}\n", trace.scenario);
     let lifelines: Vec<String> = trace.lifelines.iter().map(|l| lifeline_label(model, l)).collect();
     out.push_str(&format!("Lifelines: {}\n", lifelines.join(", ")));
 
+    out.push_str(&step_lines(model, run, 0..trace.steps.len()));
+
+    out.push_str("Final states:\n");
+    for (ix, state) in &trace.final_states {
+        let who = trace.lifelines.get(ix.index()).map_or_else(|| "?".to_owned(), |l| lifeline_label(model, l));
+        out.push_str(&format!("  {who}: {}\n", model.state(*state).path));
+    }
+    out
+}
+
+/// The lines for `steps`: index, indent by causal depth, text, and `← n`
+/// when the cause is not the line above.
+pub(crate) fn step_lines(model: &Model, run: &SimRun, steps: std::ops::Range<usize>) -> String {
+    let trace = &run.trace;
     let depths = causal_depths(trace);
-    for (i, step) in trace.steps.iter().enumerate() {
+    let mut out = String::new();
+    for (i, step) in trace.steps.iter().enumerate().skip(steps.start).take(steps.len()) {
         let depth = depths.get(i).copied().unwrap_or(0);
         let text = step_text(model, trace, step, run.payloads.get(&cascade_sim::StepIx(to_u32(i))));
         let cause = match step.cause {
@@ -108,12 +139,6 @@ fn trace_text(model: &Model, run: &SimRun) -> String {
             _ => String::new(),
         };
         out.push_str(&format!("{i:>4}  {}{text}{cause}\n", "  ".repeat(depth)));
-    }
-
-    out.push_str("Final states:\n");
-    for (ix, state) in &trace.final_states {
-        let who = trace.lifelines.get(ix.index()).map_or_else(|| "?".to_owned(), |l| lifeline_label(model, l));
-        out.push_str(&format!("  {who}: {}\n", model.state(*state).path));
     }
     out
 }
