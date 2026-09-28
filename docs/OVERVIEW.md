@@ -43,7 +43,11 @@ Overview:
     cascade-app: >
       The `cascade-app` GPUI binary: paints scenes, pan/zoom, selection, cone
       tracing, search, legend/entity filter, findings panel, trace and matrix
-      interaction, live reload, click-to-source, diff mode, pin dragging.
+      interaction, live reload, click-to-source, diff mode, pin dragging; a
+      workbench with Build mode (edit ops with undo saved to the file in
+      place, drag-to-connect, inspector, new files) and Play mode
+      (interactive session with instances, trigger palette, queue, timeline,
+      scenarios).
 
   data_flow: >
     Text → cascade_core::parse_definition → Definition → resolve → Model.
@@ -115,8 +119,10 @@ Features Index:
       entity filter, findings panel, fuzzy search, trace scenario/race picker,
       matrix drill-down, click-to-source, pin dragging, diff mode, view links
       via the clipboard, light/dark theme, and live reload that keeps the last
-      good model on screen.
-    entry_points: [cascade-app, cascade open, cascade_app::workspace::Workspace]
+      good model on screen. View/Build/Play modes: Build edits the definition
+      (toolbar, drag-to-connect, inspector, undo/redo, own-write-aware saves,
+      `--new`); Play drives an interactive simulator session with an overlay.
+    entry_points: [cascade-app, cascade-app --new, cascade open, cascade_app::workspace::Workspace]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
   build_and_play:
