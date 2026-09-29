@@ -5,12 +5,13 @@
 //! - chains through their band's channels (orthogonal with tracks, or
 //!   polyline through dummy points);
 //! - self-loops as small loops beside their node;
-//! - cross-band edges through gaps and corridors ([`cross`]);
+//! - cross-band edges through the gaps between bands, the free passages of
+//!   bands in between and, as a last resort, side corridors ([`cross`]);
 //! - edges touching pinned nodes by the obstacle router ([`astar`]).
 //!
-//! Finally every route is checked: one that crosses a node or a foreign
-//! group (which can only happen around pins) is rerouted by the obstacle
-//! router.
+//! Finally every route is checked: one that crosses a node, or enters a
+//! foreign group other than straight across it through a passage (which
+//! can only happen around pins), is rerouted by the obstacle router.
 
 pub(crate) mod astar;
 pub(crate) mod channels;
@@ -26,12 +27,9 @@ use crate::options::EdgeRouting;
 use super::bands::Placement;
 use super::context::{Columns, Ctx};
 use super::problem::EdgeKind;
-use channels::SegKey;
+use channels::{Leg, SegKey};
 use check::RectIndex;
-use cross::{CrossGeometry, CrossPlan, Stack};
-
-/// Crossing a node costs this many times more than crossing a group.
-const NODE_WEIGHT: u16 = 16;
+use cross::{CrossGeometry, CrossPlan, Passage, Request, Stack};
 
 pub(crate) struct Routes {
     /// Canonical polyline of every edge.
@@ -46,7 +44,8 @@ pub(crate) fn port_nets(ctx: &Ctx<'_, '_>, edge: usize) -> [Option<u64>; 2] {
     [e.source.port.map(|p| channels::net(e.source.node, p)), e.target.port.map(|p| channels::net(e.target.node, p))]
 }
 
-/// Stack positions and corridor bases for the given band rects.
+/// Stack positions, the bands' shared extent and corridor bases for the
+/// given band rects.
 pub(crate) fn stack_info(ctx: &Ctx<'_, '_>, order: &[usize], outer: &[Option<Rect>]) -> Stack {
     let mut position = vec![None; ctx.bands.len()];
     for (k, &b) in order.iter().enumerate() {
@@ -58,7 +57,14 @@ pub(crate) fn stack_info(ctx: &Ctx<'_, '_>, order: &[usize], outer: &[Option<Rec
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(l, r), rect| (l.min(rect.left()), r.max(rect.right())));
     let (l, r) = if l.is_finite() { (l, r) } else { (0.0, 0.0) };
     let margin = ctx.p.spacing.edge.max(ctx.p.spacing.group / 2.0);
-    Stack { position, left_base: l - margin, right_base: r + margin, edge_spacing: ctx.p.spacing.edge }
+    Stack {
+        position,
+        order: order.to_vec(),
+        span: (l, r),
+        left_base: l - margin,
+        right_base: r + margin,
+        edge_spacing: ctx.p.spacing.edge,
+    }
 }
 
 /// Track positions of every band's channel segments, given each band's
@@ -81,29 +87,63 @@ pub(crate) fn channel_positions(
     seg_x
 }
 
-/// Cross-band plans from the channel positions of their legs.
-pub(crate) fn cross_plans(ctx: &Ctx<'_, '_>, seg_x: &[BTreeMap<SegKey, f32>], stack: &Stack) -> Vec<CrossPlan> {
-    let p = ctx.p;
-    (0..p.edges.len())
-        .filter(|&e| p.kinds[e] == EdgeKind::CrossBand)
-        .filter_map(|e| {
-            let (sb, tb) = (p.nodes[p.edges[e].source.node].band, p.nodes[p.edges[e].target.node].band);
-            let x_s = *seg_x[sb].get(&SegKey::Exit { edge: e })?;
-            let x_t = *seg_x[tb].get(&SegKey::Entry { edge: e })?;
-            cross::plan(e, sb, tb, x_s, x_t, stack)
-        })
-        .collect()
+/// Main-axis position of a cross-band edge's leg in its own band: the
+/// attachment point for a direct leg, its channel track otherwise.
+pub(crate) fn leg_x(ctx: &Ctx<'_, '_>, seg_x: &[BTreeMap<SegKey, f32>], edge: usize, source: bool) -> Option<f32> {
+    let e = &ctx.p.edges[edge];
+    let node = e.end(source).node;
+    match channels::leg(ctx, edge, source) {
+        Leg::Direct => Some(ctx.slots.attach(ctx.p, edge, source, ctx.node_rect(node)).x),
+        Leg::Channel => {
+            let key = if source { SegKey::Exit { edge } } else { SegKey::Entry { edge } };
+            seg_x[ctx.p.nodes[node].band].get(&key).copied()
+        }
+    }
 }
 
-fn reroute(ctx: &Ctx<'_, '_>, edge: usize, rects: &[Rect], foreign: &[Rect]) -> Vec<Point> {
+/// Cross-band plans from the positions of their legs, and the passages of
+/// every stacked band they were planned through.
+pub(crate) fn cross_plans(
+    ctx: &Ctx<'_, '_>,
+    cols: &[Columns],
+    seg_x: &[BTreeMap<SegKey, f32>],
+    stack: &Stack,
+) -> (Vec<CrossPlan>, Vec<Vec<Passage>>) {
+    let p = ctx.p;
+    let pins: Vec<(f32, f32)> = p.nodes.iter().filter_map(|n| n.pin.map(|pin| (pin.x, pin.x + n.size.width))).collect();
+    let mut passages: Vec<Vec<Passage>> = (0..ctx.bands.len())
+        .map(|b| {
+            if stack.position[b].is_some() {
+                cross::passages::of_band(ctx, b, &cols[b], &seg_x[b], stack.span, &pins)
+            } else {
+                Vec::new()
+            }
+        })
+        .collect();
+    let requests: Vec<Request> = (0..p.edges.len())
+        .filter(|&e| p.kinds[e] == EdgeKind::CrossBand)
+        .filter_map(|e| {
+            Some(Request {
+                edge: e,
+                source_band: p.nodes[p.edges[e].source.node].band,
+                target_band: p.nodes[p.edges[e].target.node].band,
+                x_s: leg_x(ctx, seg_x, e, true)?,
+                x_t: leg_x(ctx, seg_x, e, false)?,
+            })
+        })
+        .collect();
+    let plans = cross::plan_all(&requests, stack, &mut passages);
+    (plans, passages)
+}
+
+fn reroute(router: &mut astar::Router, ctx: &Ctx<'_, '_>, edge: usize, rects: &[Rect], foreign: &[Rect]) -> Vec<Point> {
     let e = &ctx.p.edges[edge];
     let start = ctx.slots.attach(ctx.p, edge, true, rects[e.source.node]);
     let end = ctx.slots.attach(ctx.p, edge, false, rects[e.target.node]);
-    let mut obstacles: Vec<astar::Obstacle> =
-        rects.iter().map(|&rect| astar::Obstacle { rect, weight: NODE_WEIGHT }).collect();
-    obstacles.extend(foreign.iter().map(|&rect| astar::Obstacle { rect, weight: 1 }));
+    let mut obstacles: Vec<astar::Obstacle> = rects.iter().map(|&rect| astar::Obstacle::Node(rect)).collect();
+    obstacles.extend(foreign.iter().map(|&rect| astar::Obstacle::Group(rect)));
     let ends = astar::Ends { start, start_side: e.source.side, end, end_side: e.target.side };
-    astar::route(ends, &obstacles, ctx.p.spacing.edge.max(4.0))
+    router.route(ends, &obstacles, ctx.p.spacing.edge.max(4.0))
 }
 
 pub(crate) fn route_all(
@@ -116,10 +156,10 @@ pub(crate) fn route_all(
     let stack = stack_info(ctx, &placement.order, &placement.outer);
     let bounds: Vec<Option<(f32, f32)>> = placement.outer.iter().map(|o| o.map(|r| (r.top(), r.bottom()))).collect();
     let seg_x = channel_positions(ctx, cols, &stack, &bounds);
-    let plans = cross_plans(ctx, &seg_x, &stack);
+    let (plans, passages) = cross_plans(ctx, cols, &seg_x, &stack);
     let nets = |e: usize| port_nets(ctx, e);
-    let geometry = cross::resolve(&plans, &stack, &placement.gaps, &nets);
-    let cross_of: BTreeMap<usize, CrossGeometry> = plans.iter().zip(geometry).map(|(pl, g)| (pl.edge, g)).collect();
+    let geometry = cross::resolve(&plans, &passages, &stack, &placement.gaps, &nets);
+    let cross_of: BTreeMap<usize, CrossGeometry> = plans.iter().map(|pl| pl.edge).zip(geometry).collect();
 
     let rects: Vec<Rect> = (0..p.nodes.len()).map(|v| ctx.node_rect(v)).collect();
     let groups: Vec<(usize, Rect)> = placement
@@ -133,6 +173,7 @@ pub(crate) fn route_all(
         groups.iter().filter(|(b, _)| *b != sb && *b != tb).map(|(_, r)| *r).collect()
     };
 
+    let mut router = astar::Router::default();
     let mut points = Vec::with_capacity(p.edges.len());
     let mut rerouted = vec![false; p.edges.len()];
     for e in 0..p.edges.len() {
@@ -148,7 +189,7 @@ pub(crate) fn route_all(
             (EdgeKind::CrossBand, _, Some(g)) => paths::cross_band(ctx, e, g),
             _ => {
                 rerouted[e] = true;
-                reroute(ctx, e, &rects, &foreign_of(e))
+                reroute(&mut router, ctx, e, &rects, &foreign_of(e))
             }
         };
         points.push(route);
@@ -161,7 +202,7 @@ pub(crate) fn route_all(
         }
         let foreign = foreign_of(e);
         if !check::is_clear(&points[e], &index, &foreign) {
-            points[e] = reroute(ctx, e, index.rects(), &foreign);
+            points[e] = reroute(&mut router, ctx, e, index.rects(), &foreign);
 
             rerouted[e] = true;
         }

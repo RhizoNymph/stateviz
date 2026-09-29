@@ -36,13 +36,12 @@ pub struct LayoutOptions {
     /// Gap between stacked groups (lanes).
     pub group_spacing: f32,
     /// Pull nodes toward their neighbours in other groups: after each group
-    /// is laid out, shift its nodes horizontally (keeping their in-group
-    /// order and spacing) toward the median x of the nodes they connect to
-    /// in other groups, so edges between stacked groups run as straight as
-    /// possible. Off by default.
-    ///
-    /// Owner: `feat/readable-routing` implements it; until then it is
-    /// accepted and ignored.
+    /// is laid out, shift its layers along the flow (keeping their order and
+    /// spacing; a layer of only edge bends and labels moves with the layer
+    /// before it) toward the other ends of their edges into other groups,
+    /// so edges between stacked groups run as straight as possible. Layers
+    /// only spread (right with left-to-right flow); groups kept from
+    /// `LayoutHints::previous` and pinned nodes do not move. Off by default.
     pub align_across_groups: bool,
 }
 

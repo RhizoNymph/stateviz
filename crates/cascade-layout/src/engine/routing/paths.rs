@@ -6,7 +6,7 @@ use crate::geometry::{Point, Rect};
 
 use super::super::context::{Columns, Ctx};
 use super::super::frame::Side;
-use super::channels::{SegKey, end_line};
+use super::channels::{Leg, SegKey, end_line, leg};
 use super::cross::CrossGeometry;
 
 /// Drop repeated points and middle points lying between their neighbours on
@@ -200,20 +200,27 @@ impl Ring {
     }
 }
 
-/// Route of a cross-band edge from its resolved geometry.
+/// Route of a cross-band edge from its resolved geometry: out of the
+/// source (straight from a direct leg, or by its stub and channel track),
+/// alternating gap runs and verticals, and into the target the same way.
 pub(crate) fn cross_band(ctx: &Ctx<'_, '_>, edge: usize, g: &CrossGeometry) -> Vec<Point> {
     let (start, end) = ends(ctx, edge);
+    let (Some(&x_s), Some(&x_t)) = (g.xs.first(), g.xs.last()) else { return simplify(vec![start, end]) };
     let mut pts = vec![start];
-    pts.extend(stub(ctx, edge, true, start));
-    pts.push(Point::new(g.x_s, end_line(ctx, edge, true)));
-    pts.push(Point::new(g.x_s, g.y_first));
-    if let Some(xc) = g.x_corridor {
-        pts.push(Point::new(xc, g.y_first));
-        pts.push(Point::new(xc, g.y_last));
+    if leg(ctx, edge, true) == Leg::Channel {
+        pts.extend(stub(ctx, edge, true, start));
+        pts.push(Point::new(x_s, end_line(ctx, edge, true)));
     }
-    pts.push(Point::new(g.x_t, g.y_last));
-    pts.push(Point::new(g.x_t, end_line(ctx, edge, false)));
-    pts.extend(stub(ctx, edge, false, end));
+    for (k, run) in g.runs.iter().enumerate() {
+        if let (Some(y), Some(&a), Some(&b)) = (run, g.xs.get(k), g.xs.get(k + 1)) {
+            pts.push(Point::new(a, *y));
+            pts.push(Point::new(b, *y));
+        }
+    }
+    if leg(ctx, edge, false) == Leg::Channel {
+        pts.push(Point::new(x_t, end_line(ctx, edge, false)));
+        pts.extend(stub(ctx, edge, false, end));
+    }
     pts.push(end);
     simplify(pts)
 }

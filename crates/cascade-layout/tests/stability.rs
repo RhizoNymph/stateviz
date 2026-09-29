@@ -452,3 +452,46 @@ fn new_cross_lane_edges_move_only_their_ends() {
         }
     }
 }
+
+#[test]
+fn a_new_node_without_neighbours_takes_the_top_of_its_empty_column() {
+    use cascade_layout::{Insets, LayerConstraint, LayoutGroup, LayoutNode, Size};
+    let build = |with_new: bool| {
+        let mut g = LayoutGraph::new();
+        let lanes: Vec<_> = ["A", "B", "C"]
+            .iter()
+            .map(|k| g.add_group(LayoutGroup { key: (*k).to_string(), padding: Insets::uniform(8.0), header: 20.0 }))
+            .collect();
+        for (i, lane) in lanes.iter().enumerate() {
+            let ids: Vec<_> = (0..3)
+                .map(|j| {
+                    g.add_node(LayoutNode::new(format!("n{i}_{j}"), Size::new(60.0, 24.0)).in_group(*lane))
+                        .expect("node")
+                })
+                .collect();
+            for w in ids.windows(2) {
+                edge(&mut g, w[0], w[1]);
+            }
+        }
+        if with_new {
+            let x =
+                LayoutNode::new("x", Size::new(60.0, 24.0)).in_group(lanes[1]).with_layer(LayerConstraint::Exact(3));
+            g.add_node(x).expect("x");
+        }
+        g
+    };
+    let before = build(false);
+    let r1 = run(&before);
+    let after = build(true);
+    let hints = LayoutHints { previous: Some(r1.to_previous(&before)), ..LayoutHints::default() };
+    let r2 = run_with(&after, &LayoutOptions::default(), &hints);
+    assert_ok(&after, &LayoutOptions::default(), &hints, &r2);
+    for (id, n) in before.nodes() {
+        let now = after.node_by_key(&n.key).expect("kept");
+        assert_eq!(r1.node(id).rect, r2.node(now).rect, "{} moved", n.key);
+    }
+    // The new node sits level with its lane's row, not below it.
+    let x = rect_of(&after, &r2, "x");
+    let row = rect_of(&after, &r2, "n1_2");
+    assert!((x.top() - row.top()).abs() < 1.0, "{x:?} vs {row:?}");
+}

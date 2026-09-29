@@ -103,11 +103,19 @@ impl RectIndex {
     }
 }
 
-/// Whether a route stays clear of every indexed node and of the given
-/// foreign group rects.
+/// Whether segment `a`–`b` runs straight across `group` along the stacking
+/// axis, from above its top to below its bottom: how a route passes a band
+/// through one of its passages.
+pub(crate) fn passes_across(a: Point, b: Point, group: &Rect) -> bool {
+    (a.x - b.x).abs() < 1e-3 && a.y.min(b.y) <= group.top() + SHRINK && a.y.max(b.y) >= group.bottom() - SHRINK
+}
+
+/// Whether a route stays clear of every indexed node, and enters the given
+/// foreign group rects only straight across them.
 pub(crate) fn is_clear(points: &[Point], nodes: &RectIndex, foreign_groups: &[Rect]) -> bool {
     points.windows(2).all(|w| {
-        nodes.hits(w[0], w[1]).is_empty() && !foreign_groups.iter().any(|g| segment_hits(w[0], w[1], g, SHRINK))
+        nodes.hits(w[0], w[1]).is_empty()
+            && !foreign_groups.iter().any(|g| segment_hits(w[0], w[1], g, SHRINK) && !passes_across(w[0], w[1], g))
     })
 }
 

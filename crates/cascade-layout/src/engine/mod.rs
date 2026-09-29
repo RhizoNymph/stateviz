@@ -18,6 +18,7 @@
 //! Everything is deterministic: indices are processed in order, ties break
 //! by index, and hash maps are only used for lookups.
 
+mod align;
 mod bands;
 mod context;
 mod coordinates;
@@ -214,6 +215,26 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
         cols[b] = Columns::of(&bands[b], entry, exit);
     }
 
+    if p.align {
+        let movable: Vec<bool> = modes.iter().map(|m| *m == BandMode::Fresh).collect();
+        let shifts = {
+            let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
+            align::shifts(&ctx, &cols, &bands::stacked_bands(&p), &movable)
+        };
+        for (b, shift) in shifts.iter().enumerate() {
+            if shift.iter().all(|d| d.abs() < 1e-4) {
+                continue;
+            }
+            let bg = &mut bands[b];
+            for (l, &d) in shift.iter().enumerate() {
+                for &i in &bg.layers[l] {
+                    bg.items[i].x += d;
+                }
+            }
+            cols[b] = Columns::of(bg, cols[b].entry, cols[b].exit);
+        }
+    }
+
     // Gap sizes from provisional cross-band tracks, then stacking.
     let gap_tracks = {
         let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
@@ -224,8 +245,8 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
         let stack = routing::stack_info(&ctx, &order, &outer);
         let bounds: Vec<Option<(f32, f32)>> = outer.iter().map(|o| o.map(|r| (r.top(), r.bottom()))).collect();
         let seg_x = routing::channel_positions(&ctx, &cols, &stack, &bounds);
-        let plans = routing::cross_plans(&ctx, &seg_x, &stack);
-        routing::cross::gap_track_counts(&plans, &stack, order.len().saturating_sub(1), &|e| {
+        let (plans, passages) = routing::cross_plans(&ctx, &cols, &seg_x, &stack);
+        routing::cross::gap_track_counts(&plans, &passages, &stack, order.len().saturating_sub(1), &|e| {
             routing::port_nets(&ctx, e)
         })
     };
@@ -234,8 +255,9 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
 
     let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
     let routes = routing::route_all(&ctx, &cols, &placement, &chain_of);
-    let label_boxes = labels::boxes(&ctx, &routes.points, &chain_of, &cols, &routes.rerouted);
-    Ok(assemble(&ctx, &layer_of, &on_cycle, &placement, routes, label_boxes))
+    let (label_boxes, unplaced) =
+        labels::boxes(&ctx, &routes.points, &chain_of, &cols, &placement.outer, &routes.rerouted);
+    Ok(assemble(&ctx, &layer_of, &on_cycle, &placement, routes, label_boxes).with_unplaced_labels(unplaced))
 }
 
 /// How a band is placed.
