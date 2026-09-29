@@ -1,5 +1,6 @@
 //! `cascade render --edit` draws the build canvas: the structure view with
-//! its wiring band.
+//! its wiring (event tags, controller hexagons, source boxes) in gutters
+//! between the lanes.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -26,15 +27,17 @@ fn render_svg(extra: &[&str], name: &str) -> String {
 }
 
 #[test]
-fn edit_flag_adds_the_wiring_band() {
+fn edit_flag_adds_the_wiring() {
     let svg = render_svg(&["--edit"], "edit");
-    assert!(svg.contains("Events and controllers"));
-    assert!(svg.contains("External sources"));
+    // A controller hexagon lists its handlers; sources are boxes.
+    assert!(svg.contains("on OrderPaid"));
+    assert!(svg.contains("Customer"));
     assert!(svg.contains("Fulfillment"));
 }
 
 #[test]
 fn without_the_flag_the_structure_view_is_unchanged() {
     let svg = render_svg(&[], "view");
-    assert!(!svg.contains("Events and controllers"));
+    assert!(!svg.contains("on OrderPaid"));
+    assert!(!svg.contains("Customer"));
 }

@@ -2,7 +2,7 @@ spec-causal c03e76e5c52ed337 790a840516a79108
 spec-structure 2441057bac656629 2ef4cd3007cc178b
 spec-matrix a4f677e9ce447e78 ac9c3af8534345d0
 shop-causal 026275d804741375 5346b7b5f467cac4
-shop-structure d5f9a323b27e94e0 9ff53ae126636227
+shop-structure 8aa11dc665806d50 ba36dab56e7b2fa4
 shop-matrix 23a68f5051a9b327 61a2d1f9b999bb20
 chain-causal 49743493260bb228 2ae8a39ffcdb1c6c
 chain-structure c622a57e7767deea 561b4485451ce539
@@ -10,6 +10,6 @@ chain-matrix ab0044f46a356cb3 2405d4c3d8b35d67
 shop-causal-cone-dim 1b03ea5f5b1c24b1 21638e26f0742b00
 shop-causal-cone-hide b530adb55840ebdf 2ac3357a4967d787
 shop-causal-filters 369b0697b246d36b bf194d2a311ab56a
-shop-structure-cone-dim 8f4b21f50173644a 5154a95cf09e1f7b
+shop-structure-cone-dim 77acd8be5ff254fe 78b17ff03ab6fae4
 shop-structure-cone-hide 4f8dacdfaa0dda19 b2b53fdf185ded39
-shop-structure-filters e628284aa63af398 80c1b650143fc286
+shop-structure-filters d2658c6cb4d66b8f 533a1812ada93bdf

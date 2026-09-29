@@ -1,12 +1,11 @@
-//! Edit-mode extras on the structure view after layout: the wiring band's
-//! lanes and the empty-state hints that make building from scratch work.
+//! Edit-mode extras on the structure view after layout: the gutters' lanes
+//! and the empty-state hints that make building from scratch work.
 
 use cascade_core::{ElementRef, Model};
 use cascade_layout::{Point, Rect};
 
 use crate::scene::{FontWeight, HitTarget, Label, Lane, Layer, Overlay, Scene, Stroke};
 use crate::views::structure::machines::MachinePlan;
-use crate::views::structure::wiring::{SOURCES_TITLE, WIRING_TITLE, WiringPlan};
 use crate::views::style::Painter;
 
 /// Shown (and noted) when the definition has no machines.
@@ -16,27 +15,29 @@ pub(super) const NO_TRANSITIONS_HINT: &str = "no transitions yet: drag between s
 /// Gap between a lane title and its hint.
 const HINT_GAP: f32 = 16.0;
 
-/// Neutral lanes for the band's groups (only those holding nodes).
-pub(super) fn band_lanes(
+/// A quiet neutral lane under every gutter holding nodes: no title (the
+/// tags, hexagons and boxes say what they are) and a light fill, so the
+/// wiring reads as sitting between the machines rather than in one.
+pub(super) fn gutter_lanes(
     scene: &mut Scene,
     painter: &Painter<'_>,
-    band: &WiringPlan,
+    gutters: &[usize],
     group_rect: impl Fn(usize) -> Option<Rect>,
 ) {
     let theme = painter.theme;
-    for (group, title) in [(band.sources, SOURCES_TITLE), (band.wiring, WIRING_TITLE)] {
+    for &group in gutters {
         let Some(rect) = group_rect(group) else { continue };
         scene.lanes.push(Lane {
             target: HitTarget::None,
             rect,
-            fill: theme.neutral.mix(theme.background, 0.92),
-            stroke: Stroke::solid(theme.rule, 1.0),
+            fill: theme.neutral.mix(theme.background, 0.95),
+            stroke: Stroke::dashed(theme.rule, 1.0),
             title: Label {
-                text: title.to_owned(),
-                origin: Point::new(rect.left() + 12.0, rect.top() + 5.0),
-                font_size: theme.font_size,
+                text: String::new(),
+                origin: rect.origin,
+                font_size: theme.small_font_size,
                 color: theme.text_muted,
-                weight: FontWeight::Bold,
+                weight: FontWeight::Normal,
             },
             opacity: 1.0,
             collapsed: false,

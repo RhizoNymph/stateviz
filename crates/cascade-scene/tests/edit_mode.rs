@@ -1,7 +1,7 @@
 //! `SceneMode::Edit` in the structure view: the build canvas. Machine lanes
-//! as in view mode, plus a wiring band below them (event tags, controller
-//! hexagons, source boxes) with real emit, subscribe, fire and trigger
-//! edges, and a connect handle on every connectable element.
+//! as in view mode, plus wiring in gutters between them (event tags,
+//! controller hexagons, source boxes) with real emit, subscribe, fire and
+//! trigger edges, and a connect handle on every connectable element.
 
 mod build_play;
 mod common;
@@ -21,10 +21,6 @@ fn node_shape(scene: &Scene, key: &str) -> Shape {
     scene.nodes.iter().find(|n| n.target == t).map(|n| n.shape).unwrap_or_else(|| panic!("no node {key}"))
 }
 
-fn lane_rect(scene: &Scene, title: &str) -> cascade_layout::Rect {
-    scene.lanes.iter().find(|l| l.title.text == title).map(|l| l.rect).unwrap_or_else(|| panic!("no lane {title}"))
-}
-
 /// The one edge of `kind` whose ends touch the two nodes.
 fn edge_between<'a>(scene: &'a Scene, kind: EdgeKind, from: &str, to: &str) -> &'a SceneEdge {
     let (a, b) = (node_rect(scene, from), node_rect(scene, to));
@@ -39,7 +35,7 @@ fn edge_between<'a>(scene: &'a Scene, kind: EdgeKind, from: &str, to: &str) -> &
 }
 
 #[test]
-fn edit_mode_adds_a_wiring_band_below_the_lanes() {
+fn edit_mode_puts_the_wiring_in_gutters_between_the_lanes() {
     let bench = Bench::new(SPEC_EXAMPLE);
     let scene = bench.edit();
     assert_eq!(scene.view, ViewKind::Structure);
@@ -57,24 +53,42 @@ fn edit_mode_adds_a_wiring_band_below_the_lanes() {
     let texts: Vec<&str> = hexagons[0].labels.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(texts, ["Fulfillment", "on OrderPaid"]);
 
-    // The band lanes sit below every machine lane and hold their nodes.
-    let wiring = lane_rect(&scene, "Events and controllers");
-    let sources = lane_rect(&scene, "External sources");
-    let lowest_machine = scene
+    // Every wiring node sits in a neutral gutter lane, outside every
+    // machine lane.
+    let gutters: Vec<_> = scene.lanes.iter().filter(|l| l.target == HitTarget::None).collect();
+    let machines: Vec<_> = scene
         .lanes
         .iter()
         .filter(|l| matches!(&l.target, HitTarget::Element(ElementKey::Machine { .. })))
-        .map(|l| l.rect.bottom())
-        .fold(f32::MIN, f32::max);
-    assert!(sources.top() >= lowest_machine, "band below the lanes");
-    assert!(wiring.top() >= sources.bottom(), "events and controllers last, where growing moves nothing");
-    for key in ["event:OrderPaid", "event:Shipped", "controller:Fulfillment"] {
-        assert!(inside(wiring, node_rect(&scene, key)), "{key} in the wiring band");
+        .map(|l| l.rect)
+        .collect();
+    for n in scene.nodes.iter().filter(|n| matches!(n.shape, Shape::Tag | Shape::Hexagon | Shape::Rect)) {
+        assert!(gutters.iter().any(|g| inside(g.rect, n.rect)), "{:?} in a gutter", n.target);
+        assert!(machines.iter().all(|m| !m.intersects(&n.rect)), "{:?} outside the lanes", n.target);
     }
-    assert!(inside(sources, node_rect(&scene, "external:Clock")));
-    for lane in scene.lanes.iter().filter(|l| l.target == HitTarget::None) {
-        assert_eq!(lane.title.color, bench.theme.text_muted, "band titles are neutral");
+    for gutter in &gutters {
+        assert_eq!(gutter.title.color, bench.theme.text_muted, "gutters are neutral");
+        assert!(machines.iter().all(|m| !m.intersects(&gutter.rect)), "gutters lie between lanes");
     }
+    // Next to what they wire: OrderPaid and Fulfillment between the Order
+    // lane (which emits it) and the Shipment lane (which it fires into),
+    // the sources above the Order lane they trigger, Shipped below the
+    // Shipment lane.
+    let order = lane_rect_of(&scene, "machine:Order");
+    let shipment = lane_rect_of(&scene, "machine:Shipment");
+    for key in ["event:OrderPaid", "controller:Fulfillment"] {
+        let r = node_rect(&scene, key);
+        assert!(r.top() >= order.bottom() && r.bottom() <= shipment.top(), "{key} between Order and Shipment");
+    }
+    for key in ["external:Customer", "external:PaymentGateway", "external:Clock"] {
+        assert!(node_rect(&scene, key).bottom() <= order.top(), "{key} above Order");
+    }
+    assert!(node_rect(&scene, "event:Shipped").top() >= shipment.bottom(), "Shipped below Shipment");
+}
+
+fn lane_rect_of(scene: &Scene, key: &str) -> cascade_layout::Rect {
+    let t = target(key);
+    scene.lanes.iter().find(|l| l.target == t).map(|l| l.rect).unwrap_or_else(|| panic!("no lane {key}"))
 }
 
 #[test]
@@ -97,7 +111,7 @@ fn wiring_edges_replace_the_direct_links() {
         edge_between(&scene, EdgeKind::Fire, "controller:Fulfillment", "transition:Shipment:idle->picking@start");
     assert!(matches!(fire.stroke.dash, Dash::Dashed { .. }));
     assert_eq!(fire.stroke.color, OKABE_GREEN, "fire: dashed in the target hue");
-    assert_eq!(fire.label.as_ref().map(|l| l.text.as_str()), Some("where orderId == event.orderId"));
+    assert_eq!(fire.label.as_ref().map(|l| l.text.as_str()), Some("by orderId"));
     assert_eq!(fire.target, target("rule:Fulfillment/OrderPaid#0"));
 
     let trigger =
@@ -130,8 +144,8 @@ fn fire_labels_show_selectors_and_conditions_only_when_present() {
         .filter(|e| e.kind == EdgeKind::Fire)
         .filter_map(|e| e.label.as_ref().map(|l| l.text.clone()))
         .collect();
-    assert!(labels.contains(&"where orderId == event.orderId [risk score above threshold]".to_owned()), "{labels:?}");
-    assert!(labels.contains(&"new with orderId = event.orderId".to_owned()), "{labels:?}");
+    assert!(labels.contains(&"by orderId [risk score above threshold]".to_owned()), "{labels:?}");
+    assert!(labels.contains(&"new with orderId".to_owned()), "{labels:?}");
 }
 
 #[test]
@@ -151,7 +165,7 @@ fn fires_from_one_controller_into_one_pill_merge() {
     assert_eq!(fires.len(), 1);
     assert_eq!(fires[0].target, target("rule:Tracking/ShipmentDispatched#0"));
     let label = fires[0].label.as_ref().map(|l| l.text.clone()).unwrap_or_default();
-    assert_eq!(label, "where orderId == event.orderId, where orderId == event.orderId [parcel not yet delivered]");
+    assert_eq!(label, "by orderId [parcel not yet delivered]", "each selector and condition once");
     // Every event appears once, including ones nobody emits or handles.
     for event in ["event:ShipmentLost", "event:ReturnRequested", "event:TrackingPolled"] {
         assert_eq!(node_shape(&scene, event), Shape::Tag);
@@ -294,7 +308,7 @@ fn edit_mode_exports_without_handles() {
     let handle_count = handles_of(&scene).len();
     assert!(handle_count > 0);
     assert_eq!(overlays, scene.overlays.len() - handle_count, "handles are left out of exports");
-    for text in ["Events and controllers", "External sources", "on OrderPaid", "where orderId == event.orderId"] {
+    for text in ["OrderPaid", "Customer", "on OrderPaid", "by orderId"] {
         assert!(svg.contains(text), "{text}");
     }
 }

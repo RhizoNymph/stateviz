@@ -81,37 +81,79 @@ simulator.md ("Play session").
 ## Build and play drawing
 
 Implemented in `cascade-scene` (`views/structure/wiring.rs`,
+`views/structure/gutters/`, `views/structure/selector.rs`,
 `views/structure/edit.rs`, `views/overlays/`); view-scenes.md has the full
-encoding. The app paints the scene and dispatches clicks through
+encoding and readability.md the placement's rationale and measurements. The app paints the scene and dispatches clicks through
 `Scene::hit_test` as for every view.
 
 ### Edit mode (`SceneMode::Edit`, structure view only)
 
 ```text
-Drafter (lanes, pills with a second South port) ──▶ wiring band ──▶ realize (LayoutCache)
-     ──▶ Decor (emphasis, badges, diff) ──▶ band lanes, empty hints, connect handles ──▶ play overlay
+Drafter (a gutter group above each machine, lanes, pills with extra ports) ──▶ last gutter
+     ──▶ wiring: nodes, merged edges ──▶ gutters::assign ──▶ gutters::order ──▶ WiringMemo columns
+     ──▶ ports facing the gutter, fire labels ──▶ realize (LayoutCache)
+     ──▶ Decor (emphasis, badges, diff) ──▶ gutter lanes, empty hints, connect handles ──▶ play overlay
 ```
 
-- **Lanes** are the view mode's, except that each pill has an extra
-  South port (index 4) where emits leave.
-- **Wiring band:** two more layout groups below the machine lanes, first
-  "External sources" (one box per source), then "Events and controllers"
-  (one tag per event, including events nothing emits or handles, and one
-  hexagon per controller listing its handlers as "on Event"). The
-  events-and-controllers band grows most while building, so it goes last,
-  where its growth moves nothing else.
+- **Lanes** are the view mode's, except that each pill has two extra
+  ports where emits leave: South-out (4) toward a gutter below, North-out
+  (5) toward a gutter above.
+- **Gutters:** thin layout groups without a header, one right above each
+  machine's groups (its lane and nested bands, or its stub or collapsed
+  lane) and one below the last; only gutters holding nodes are laid out.
+  Each is drawn as an untitled neutral lane (pale fill, dashed rule
+  outline). They hold one tag per event (including events nothing emits
+  or handles), one hexagon per controller listing its handlers as
+  "on Event", and one box per external source.
+- **Which gutter** (`gutters::assign`): the layout routes a wire straight
+  through the gap between two neighbouring groups and sends any other
+  wire around through a side corridor. So each node goes where the fewest
+  of its wires need a corridor, then where they cross the fewest lane
+  groups:
+  - an event by its emits plus one stand-in wire per handling controller
+    (to the nearest pill that controller's rules for the event fire
+    into); ties go nearest its placed controllers, then downward;
+  - a controller by its fires plus its subscriptions to the placed
+    events; ties go upward (above the lane it fires into);
+  - a source by its triggers; ties go upward;
+  - a node with no wires at all goes to the last gutter.
+  Each rule looks only at the node's own wiring (events also at the rules
+  handling them), so an edit only moves the wiring nodes whose wiring
+  changed.
+- **Row order** (`gutters::order`): by the median estimated column of the
+  pills a node wires (a pill's column is estimated from breadth-first
+  depth in its band); nodes without pills last; ties sources, events,
+  controllers, then definition order. A controller that handles an event
+  in the same gutter goes right after its last such event.
+- **Columns** (`gutters::memo`): gutter nodes get fixed layout columns
+  (`LayerConstraint::Exact`) so the row stays one row in that order. The
+  `SceneBuilder` remembers each node's column per gutter: a node keeps
+  its column, a node new to a gutter gets the next unused one (the right
+  end of the row), and a controller that would sit left of an event it
+  handles in the same gutter moves to the end (the engine rejects a fixed
+  edge pointing backwards). `SceneBuilder::reset` forgets the columns, so
+  a fresh build is the tidy order again. Returning to an earlier input
+  (undo) restores its columns, hence its cached layout.
 - **Edges** are the causal graph's with handlers folded into their
-  controller, aggregated per pair of drawn ends and kind: emit (pill
-  South-out → event North, dashed gray, target the transition), subscribe
-  (event East → controller West, solid gray, target the handler), fire
-  (controller North → pill South-in, dashed in the target hue, labelled
-  with the selector without the machine, e.g. `where orderId ==
-  event.orderId`, `all`, `new with orderId = event.orderId`, then
-  `[when]`; merged rules list each label once; target the first rule),
-  trigger (source North → pill South-in, solid external neutral, target
-  the trigger). They replace the view mode's pill-to-pill links. Ends on a
-  collapsed state or machine are unported; ends on a hidden machine's stub
-  become dotted `StubLink`s counted in its label.
+  controller, aggregated per pair of drawn ends and kind. Pill ends face
+  the gutter: emit (pill South-out → event North when the event is below,
+  pill North-out → event South when above; dashed gray, target the
+  transition), subscribe (event East → controller West, solid gray, target
+  the handler), fire (controller → pill, South → North when the pill is
+  below, North → South when above; dashed in the target hue, target the
+  first rule), trigger (source → pill likewise, solid external neutral,
+  target the trigger). They replace the view mode's pill-to-pill links.
+  Ends on a collapsed state or machine are unported; ends on a hidden
+  machine's stub become dotted `StubLink`s counted in its label.
+- **Fire labels** (`selector.rs`): the selector without the machine,
+  shortened: `by orderId` for `where orderId == event.orderId` (a clause
+  comparing different names or a literal reads `f=event.g`, `f=lit`),
+  `all`, `all by f`, `new`, `new with f`; nothing for a singleton; then
+  `[when]`. A fire standing for several rules lists each distinct
+  selector and condition once. Among one controller's fires into one
+  machine, a label identical to one already shown is left off. The full
+  selector is in the inspector (the edge's hit target is the rule). The
+  layout reserves room for each label.
 - **Connect handles:** a circle (radius 4.5) centred on the east edge of
   every state, pill, controller and source, as an `Overlay::Rect` with
   `HitTarget::ConnectHandle { element }`, background fill and a muted
@@ -182,14 +224,16 @@ in parallel.
 | `crates/cascade-sim/src/engine/` | The steppable core shared by play and batch runs (`core.rs`, `exec.rs`, `drive.rs`) | crate-private |
 | `crates/cascade-scene/src/play.rs` | Build/play drawing inputs | `SceneMode`, `PlayOverlay`, `PlayMarker` |
 | `crates/cascade-scene/src/scene.rs` | New hit target; handles win hit tests | `HitTarget::ConnectHandle`, `Scene::hit_test` |
-| `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring band: groups, band nodes, aggregated edges, fire labels | crate-private |
-| `crates/cascade-scene/src/views/structure/edit.rs` | Band lanes, empty-machine hint, empty-definition note | crate-private |
+| `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring: nodes, aggregated edges, placement glue, ports facing the gutter, fire labels | crate-private |
+| `crates/cascade-scene/src/views/structure/gutters/` | Gutter assignment (`mod.rs`), row order (`order.rs`), columns kept across edits (`memo.rs`) | `assign`, `order`, `WiringMemo` (crate) |
+| `crates/cascade-scene/src/views/structure/selector.rs` | Fire label policy | crate-private |
+| `crates/cascade-scene/src/views/structure/edit.rs` | Gutter lanes, empty-machine hint, empty-definition note | crate-private |
 | `crates/cascade-scene/src/views/overlays/mod.rs` | Play decoration entry point | `PlayDecor`, `Placement`, `add_handles` (crate) |
 | `crates/cascade-scene/src/views/overlays/handles.rs` | Connect handles | `add_handles` (crate) |
 | `crates/cascade-scene/src/views/overlays/markers.rs` | Instance markers | crate-private |
 | `crates/cascade-scene/src/views/overlays/queue.rs` | Active and pending | crate-private |
 | `crates/cascade-scene/src/views/overlays/chip.rs` | Chip drawing | crate-private |
-| `crates/cascade-scene/tests/{edit_mode,edit_mode_stability,edit_mode_performance,play_overlay,view_mode_golden}.rs` | Build and play drawing tests; view-mode fingerprints in `tests/golden/view_mode.txt` | — |
+| `crates/cascade-scene/tests/{edit_mode,edit_mode_stability,edit_mode_performance,gutters,play_overlay,view_mode_golden}.rs` | Build and play drawing tests; view-mode fingerprints in `tests/golden/view_mode.txt` | — |
 
 ## App build and play modes
 
@@ -386,8 +430,13 @@ note.
   matrix views ignore it. In edit mode, adding a transition moves nothing
   outside its machine; appending an event or a controller moves no
   existing node; wiring a new handler moves at most the event and
-  controller it joins; appending a source can shift the events-and-controllers
-  band down, but only as one piece.
+  controller it joins; a node joining a gutter moves nothing already in
+  it (it takes the next column); appending a source moves nothing above
+  or in its gutter, and can shift everything below down, but only as one
+  piece (the engine gives a new node without neighbours in its band a
+  new row). Entering edit mode opens the gutters, so lanes shift down,
+  but states keep their place within their lane. Undoing an edit returns
+  to the earlier picture from the layout cache.
 - A session's trace equals the batch simulator's for the same actions;
   `to_scenario` then `from_scenario` reproduces the trace exactly.
 

@@ -48,6 +48,207 @@ Beyond the numbers, renders are checked by eye: a reader should be able to
 follow a transition → event → controller → transition chain without
 tracing wires across the canvas.
 
+## Placement
+
+Owned by `feat/readable-placement` (`cascade-scene`,
+`views/structure/{gutters/,selector.rs,wiring.rs,edit.rs}`).
+build-and-play.md ("Build and play drawing") has the full drawing rules;
+this section says why they are what they are.
+
+### Wiring in gutters
+
+The layout engine stacks groups top to bottom, all one width, and routes
+an edge between two groups straight through the gap between them only
+when the groups are neighbours. Any other edge detours through a side
+corridor. The old build canvas put all events and controllers in one band
+below every lane and the sources in another, so almost every wire crossed
+several lanes and ran up the left corridor.
+
+Now the wiring sits in **gutters**: a thin, untitled group above each
+machine's groups and one below the last. Each wiring node goes to the
+gutter where the fewest of its wires need a corridor, then where they
+cross the fewest lane groups (a nested band counts as a lane group, so a
+pill in `Order`'s `placed` band is reached from the gutter below `Order`):
+
+| Node | Wires counted | Ties |
+| --- | --- | --- |
+| Event | its emits, plus one stand-in wire per handling controller to the nearest pill that controller's rules for the event fire into | nearest its placed controllers, then downward |
+| Controller | its fires, plus its subscriptions to the placed events | upward (above the lane it fires into) |
+| Source | its triggers | upward (right above the lane it triggers) |
+| Nothing wired | — | the last gutter |
+
+Each rule looks only at the node's own wiring (events also at the rules
+handling them), so an edit moves only the wiring nodes whose wiring
+changed. A global search over gutter assignments (coordinate descent
+from 200 starts, total over all wires) finds 10 corridor wires for the
+shop, one fewer than these local rules (11), so the local rules keep
+their stability for a cost of one wire.
+
+**Row order.** Inside a gutter, nodes run left to right by the median
+estimated column of the pills they wire. A pill's column is estimated
+before layout from breadth-first depth in its band (`2 × depth + 1`),
+which is how the layered layout places it. Ties go sources, events,
+controllers, then definition order. A controller that handles an event
+in the same gutter goes right after its last such event, so the
+subscription is a short hop right. Gutter nodes get fixed columns
+(`LayerConstraint::Exact`), which keeps each gutter one row in that
+order. `LayoutOptions::align_across_groups` is on for the structure view.
+Once the engine implements it, the row slides under its pills. Until
+then the row starts at the lane's left edge, and the order alone keeps
+wires from crossing each other.
+
+**Columns across edits.** Ranks would shift every node right of an
+insertion, so the `SceneBuilder` keeps a `WiringMemo`: a node keeps its
+column per gutter, a node new to a gutter takes the next unused column
+(the right end), and a controller that would sit left of an event it
+handles in the same gutter moves to the end (both ends are fixed, and
+the engine rejects a fixed edge pointing backwards). Undo restores the
+earlier columns, so the cached layout is reused. `SceneBuilder::reset`
+forgets the columns, and a fresh build is the tidy order again.
+
+**Ports face the gutter.** Pills gained a North-out port (5) next to the
+South-out one (4). An emit leaves toward its event's gutter, and fires
+and triggers enter from their controller's or source's side, so no wire
+wraps around its pill.
+
+### Label policy
+
+- A fire's label is its selector without the machine, shortened: `where
+  orderId == event.orderId` → `by orderId`, `all … where` → `all by …`,
+  `new … with orderId = event.orderId` → `new with orderId`. A clause
+  comparing different names or a literal keeps both sides (`by
+  orderId=event.id`, `tier=gold`). The singleton selector (the default,
+  no `where`) gets no label. `[when]` follows.
+- A fire standing for several rules lists each distinct selector and
+  condition once (Tracking → `poll_tracking`: `by orderId [parcel not
+  yet delivered]`, not the selector twice).
+- Among one controller's fires into one machine (parallel wires leaving
+  it together), a label identical to one already shown is left off:
+  Orders' four fires into `Order` carry `by orderId` once.
+- The full selector is one click away: the edge's hit target is the
+  rule, and the inspector shows it. (A hover tooltip needs the app. The
+  scene has no field for one, and `SceneEdge` is a shared contract.)
+- Labels still go to the engine as label boxes (`LayoutEdge::with_label`),
+  so it reserves their room. Guard labels are unchanged.
+
+### View mode
+
+A self-link (a pill whose event's controller fires back into the same
+pill, e.g. `in_transit → in_transit` in the shop) is drawn by hand as a
+small loop. Its label used to sit at the loop's midpoint, on top of the
+neighbouring nodes. It now goes beside the loop's outer corner, else
+above the loop, else left of it, whichever first clears every node. Two
+further changes were tried and dropped because they regressed a metric
+(see Results).
+
+## Results (placement)
+
+`cargo test -p cascade-scene --test readability -- --nocapture`, on
+this branch alone (no routing changes; `align_across_groups` is still a
+no-op):
+
+| Scene | Crossings | Length | Bends | Label overlaps | Corridor | Through nodes | Area |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| shop structure/build, before | 728 | 139 922 | 376 | 9 | 38 | 0 | 7 162 608 |
+| shop structure/build, after | **83** | **55 488** | 328 | **0** | **11** | 0 | 4 451 794 |
+| order-fulfillment structure/build, before | 23 | 9 745 | 60 | 0 | 7 | 0 | 756 856 |
+| order-fulfillment structure/build, after | **4** | **4 572** | 46 | 0 | **0** | 0 | 503 733 |
+| shop structure/view, before | 38 | 31 165 | 151 | 5 | 9 | 0 | 2 827 336 |
+| shop structure/view, after | 38 | 31 165 | 151 | **3** | 9 | 0 | 2 827 336 |
+| order-fulfillment structure/view | 1 | 1 541 | 10 | 0 | 0 | 0 | 239 832 (unchanged) |
+| shop causal | 17 | 16 518 | 72 | 0 | 0 | 0 | unchanged |
+| order-fulfillment causal | 0 | 896 | 0 | 0 | 0 | 0 | unchanged |
+
+Targets (asserted in `tests/readability_targets.rs`):
+
+| Target | Placement alone |
+| --- | --- |
+| shop build: crossings ≤ 150, length ≤ 70 000, 0 label overlaps, 0 through nodes | met |
+| shop build: corridor edges ≤ 5 | not met (11), `#[ignore]`d. No gutter assignment found does better than 10: with this routing, every wire between non-neighbouring groups needs a corridor. Reaching 5 needs routing that can run a wire between a lane's nodes. |
+| order-fulfillment build: every target | met |
+| shop view: no regression, corridor ≤ 9, 0 through nodes | met |
+| shop view: 0 label overlaps | not met (3), `#[ignore]`d. The overlaps are labels of different links placed in the same spot of a shared gap, which collision-free label placement in the engine fixes. |
+| every causal view: no regression | met (unchanged) |
+
+### Arrangements tried
+
+| Arrangement | shop build: crossings / length / overlaps / corridor | order-fulfillment build |
+| --- | --- | --- |
+| One band below the lanes (before) | 728 / 139 922 / 9 / 38 | 23 / 9 745 / 0 / 7 |
+| **Gutters (kept)** | **83 / 55 488 / 0 / 11** | **4 / 4 572 / 0 / 0** |
+| Gutters, first cut (one stand-in wire per fire, event ties always downward) | 94 / 58 157 / 0 / 12 | 4 / 4 572 / 0 / 0 |
+| Gutters, but every source in the top gutter | 202 / 77 936 / 0 / 19 | 4 / 4 572 / 0 / 0 |
+| Wiring column at the right end of each lane (the nearest the engine gets to a column right of the lanes) | 138 / 63 292 / 1 / 10 | 5 / 4 590 / 0 / 0 |
+
+A separate wiring column to the right of the lanes cannot be expressed:
+groups only stack vertically and share one width. Its closest stand-in
+puts each wiring node in a lane's own group, in columns after the states
+(fixed layer 1000 + rank). The engine compresses those fixed layers in
+among the states, so the wiring mixes into the lanes and the lanes
+reshuffle. That also breaks the lane-stays-put property between view and
+edit mode. It saves one corridor wire, but gutters win on everything
+else.
+
+View mode, tried and dropped:
+
+| Change | shop view: crossings / length / overlaps | Why dropped |
+| --- | --- | --- |
+| Self-links routed by the engine (reserves label room above the node) | 38 / 31 507 / 3 | longer loops: length regresses |
+| Parallel link labels said once (one pill into two `reserve` pills: `OrderPaid › Fulfillment` twice) | 39 / 31 151 / 2 | removing a label box re-routes a link: one more crossing |
+| **Self-link label beside the loop (kept)** | **38 / 31 165 / 3** | — |
+
+### What a reader sees now
+
+- **Build canvas, shop.** Above `Order`: Customer and Clock, and
+  ReturnRequested with Returns, whose fire drops into `Order`. Between
+  `Order` and `Payment`: OrderPlaced → Checkout (dropping `new with
+  orderId` into Payment's first pill), PaymentGateway,
+  OrderCancelled → Refunds, and PaymentCaptured / PaymentRefunded →
+  Orders. Between `Payment` and `Inventory`: PaymentAuthorized → Billing
+  and FraudCheck, both firing straight back up into `Payment`, plus
+  OrderPaid and Warehouse. Between `Inventory` and `Shipment`:
+  StockReserved → Fulfillment, ShipmentDispatched → Shipping and Tracking,
+  Carrier, TrackingPolled and ShipmentDelivered. Between `Shipment` and `Notification`: OrderDelivered →
+  Notifier, MailProvider, ShipmentLost. A transition → event →
+  controller → transition chain is mostly two short hops through one
+  gap. The 11 wires that still take a side corridor are the fan-ins of
+  Orders (events from three machines) and Fulfillment (events from two),
+  and wires between `Order`'s top lane and the gutter below its nested
+  `placed` band, which sits in between. Fire labels read `by
+  orderId` once per fan instead of the full selector on every wire, and
+  no label overlaps anything.
+- **Build canvas, order-fulfillment.** The three sources sit right above
+  `Order` and drop into their pills. OrderPaid → Fulfillment and
+  OrderCancelled sit between the lanes, and Fulfillment's `by orderId`
+  fire drops into `Shipment`. Shipped hangs below `Shipment`. No
+  corridors.
+- **Still to come from routing.** Gutter rows start at the left edge
+  rather than under their pills, so wires to pills far right run
+  horizontally along the gap. `align_across_groups` will slide the rows
+  under their pills.
+- **View mode.** Unchanged except that the `TrackingPolled › Tracking`
+  self-link label sits clear, right of its loop.
+
+### Engine limitations met
+
+1. Groups stack vertically and share one width, so there is no wiring
+   column beside the lanes.
+2. A wire between groups that are not neighbours always takes a side
+   corridor. With lanes between wiring and its targets, that bounds the
+   shop's corridor wires at about 10.
+3. In a stable relayout, a new node with no neighbour in its band goes
+   below every placed node of the band (`stability::place_nodes`, the
+   `(None, None)` case), even when its own column is empty. So appending
+   a source or a lone event to a middle gutter opens a new row and
+   shifts every lane below down (rigidly).
+   `appending_a_source_moves_at_most_what_lies_below_its_gutter_as_a_whole`
+   pins that behaviour. Placing such a node at the top of its empty
+   column would keep the lanes still.
+4. Gutter rows are packed from the left edge until `align_across_groups`
+   exists.
+5. Engine-routed self-loops are longer than the hand-drawn loop, so
+   self-links stay hand-drawn.
+
 ## Workstreams
 
 | Branch | Owns | Work |

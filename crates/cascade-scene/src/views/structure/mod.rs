@@ -26,16 +26,20 @@
 //!   their links attach to it.
 //!
 //! **Edit mode** (the build canvas) keeps the lanes and replaces the
-//! cross-lane links with the wiring band below them (see `wiring`): event
-//! tags, controller hexagons and source boxes joined to the pills by real
-//! emit, subscribe, fire and trigger edges. Connectable nodes get connect
+//! cross-lane links with the wiring (see `wiring`): event tags, controller
+//! hexagons and source boxes in gutters between the lanes (see `gutters`),
+//! joined to the pills by real emit, subscribe, fire and trigger edges. Connectable nodes get connect
 //! handles, a machine without transitions says how to add one, and an empty
 //! definition says how to start.
 
 mod edit;
+mod gutters;
 mod links;
 mod machines;
+mod selector;
 mod wiring;
+
+pub(crate) use gutters::memo::WiringMemo;
 
 use cascade_core::ElementRef;
 use cascade_layout::{LayoutOptions, Point, Rect};
@@ -62,6 +66,7 @@ pub(super) fn build(
     input: &SceneInput<'_>,
     interaction: &Interaction,
     cache: &mut LayoutCache,
+    memo: &mut WiringMemo,
 ) -> Result<Scene, SceneError> {
     let model = input.model;
     let theme = input.theme;
@@ -74,7 +79,12 @@ pub(super) fn build(
     let mut draft = DraftGraph::default();
     let mut endpoints = vec![None; model.transition_count()];
     let mut plans = Vec::with_capacity(model.machine_count());
+    // Edit mode: a gutter above every machine's groups and one below all.
+    let mut gutters = Vec::new();
     for m in model.machine_ids() {
+        if edit {
+            gutters.push(draft.add_group(wiring::gutter_group(wiring::gutter_key_above(&model.machine(m).name))));
+        }
         let plan = if hidden.contains(&m) {
             drafter.hidden(&mut draft, m, &mut endpoints)
         } else if collapse.machine(m) {
@@ -84,6 +94,9 @@ pub(super) fn build(
         };
         plans.push(plan);
     }
+    if edit {
+        gutters.push(draft.add_group(wiring::gutter_group(wiring::LAST_GUTTER_KEY.to_owned())));
+    }
     let stubs: Vec<_> = plans
         .iter()
         .filter_map(|p| match p {
@@ -91,13 +104,12 @@ pub(super) fn build(
             MachinePlan::Collapsed { .. } | MachinePlan::Expanded { .. } => None,
         })
         .collect();
-    let band = if edit {
+    if edit {
         let wiring = wiring::Wiring { model, graph: input.graph, painter: &painter };
-        Some(wiring.draft(&mut draft, &endpoints, &stubs))
+        wiring.draft(&mut draft, &endpoints, &gutters, &stubs, memo);
     } else {
         links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
-        None
-    };
+    }
 
     let cuts = apply_hide(&mut draft, interaction);
     let ctx = RealizeCtx {
@@ -105,7 +117,7 @@ pub(super) fn build(
         theme,
         measure: input.measure,
         sidecar: input.sidecar,
-        options: LayoutOptions { layer_spacing: 48.0, ..LayoutOptions::default() },
+        options: LayoutOptions { layer_spacing: 48.0, align_across_groups: true, ..LayoutOptions::default() },
     };
     let realized = realize(draft, cuts, &ctx, cache)?;
     let mut scene = realized.scene;
@@ -134,9 +146,7 @@ pub(super) fn build(
             }
         }
     }
-    if let Some(band) = &band {
-        edit::band_lanes(&mut scene, &painter, band, group_rect);
-    }
+    edit::gutter_lanes(&mut scene, &painter, &gutters, group_rect);
     // A selected machine or compound state shows on its lane by weight.
     let selected: Vec<_> = interaction.selected().iter().map(|e| model.key_of(*e)).collect();
     for lane in &mut scene.lanes {

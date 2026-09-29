@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 
 use build_play::*;
 use cascade_layout::Rect;
-use cascade_scene::{Scene, SceneBuilder, SceneMode, ViewKind, ViewState};
+use cascade_scene::{HitTarget, Scene, SceneBuilder, SceneMode, ViewKind, ViewState};
 
 fn edit_build(builder: &mut SceneBuilder, yaml: &str) -> Scene {
     Bench::new(yaml).build_with(builder, &structure(), SceneMode::Edit, None)
@@ -123,27 +123,49 @@ fn appending_events_and_controllers_moves_no_existing_node() {
 }
 
 #[test]
-fn appending_a_source_moves_at_most_the_band_below_it_as_a_whole() {
+fn appending_a_source_moves_at_most_what_lies_below_its_gutter_as_a_whole() {
+    // Auditor triggers Notification.send, so it joins the gutter above the
+    // Notification lane. Nothing above that gutter or in it moves; the
+    // engine may open a row for it, shifting everything below down as one
+    // piece.
     let text = format!("{SHOP}  Auditor: [Notification.send]\n");
     let mut builder = SceneBuilder::new();
-    let before = rects(&edit_build(&mut builder, SHOP));
-    let after = rects(&edit_build(&mut builder, &text));
-    assert!(after.contains_key("external:Auditor"));
-    let wired = |k: &str| k.starts_with("event:") || k.starts_with("controller:");
-    let moved = moved(&before, &after, wired);
-    assert!(moved.is_empty(), "moved:\n{}", moved.join("\n"));
-    // The events-and-controllers band may shift down to make room, but
-    // only as one piece.
+    let before_scene = edit_build(&mut builder, SHOP);
+    let after_scene = edit_build(&mut builder, &text);
+    let (before, after) = (rects(&before_scene), rects(&after_scene));
+    let auditor = after["external:Auditor"];
+    let notification = lane(&after_scene, "machine:Notification");
+    assert!(auditor.bottom() <= notification.top(), "above the lane it triggers");
+    let gutter = after_scene
+        .lanes
+        .iter()
+        .find(|l| l.target == HitTarget::None && inside(l.rect, auditor))
+        .expect("Auditor sits in a gutter");
+    let gutter_before = before_scene
+        .lanes
+        .iter()
+        .find(|l| l.target == HitTarget::None && l.rect.top() == gutter.rect.top())
+        .expect("the gutter existed and did not move");
+    let below = |r: &Rect| r.top() >= gutter_before.rect.bottom();
+    let moved = moved(&before, &after, |k| below(&before[k]));
+    assert!(moved.is_empty(), "moved above or in the gutter:\n{}", moved.join("\n"));
     let shifts: Vec<(f32, f32)> = before
         .iter()
-        .filter(|(k, _)| wired(k))
+        .filter(|(_, r)| below(r))
         .map(|(k, r)| {
             let new = after[k.as_str()];
             (new.left() - r.left(), new.top() - r.top())
         })
         .collect();
-    assert!(shifts.windows(2).all(|w| w[0] == w[1]), "the band moved as a whole: {shifts:?}");
+    assert!(!shifts.is_empty());
+    assert!(shifts.windows(2).all(|w| w[0] == w[1]), "everything below moved as a whole: {shifts:?}");
     assert_eq!(shifts[0].0, 0.0, "only downwards");
+    assert!(shifts[0].1 >= 0.0, "only downwards");
+}
+
+fn lane(scene: &Scene, key: &str) -> Rect {
+    let t = target(key);
+    scene.lanes.iter().find(|l| l.target == t).map(|l| l.rect).unwrap_or_else(|| panic!("no lane {key}"))
 }
 
 #[test]
@@ -157,16 +179,25 @@ fn switching_modes_returns_to_the_same_pictures() {
     assert_eq!(bench.build_with(&mut builder, &state, SceneMode::View, None), view);
     assert_eq!(bench.build_with(&mut builder, &state, SceneMode::Edit, None), edit);
     assert_eq!(builder.layouts_run(), runs, "both layouts stay cached");
-    // Entering edit mode from view mode keeps every state where it was:
-    // the band is added below and pills only gain a port.
+    // Entering edit mode from view mode opens gutters between the lanes,
+    // so lanes shift down, but inside its lane every state keeps its place:
+    // pills only gain ports.
     let (v, e) = (rects(&view), rects(&edit));
+    let in_lane = |scene: &Scene, key: &str, r: &Rect| {
+        let machine = key.trim_start_matches("state:").split(':').next().unwrap_or_default();
+        let top = lane(scene, &format!("machine:{machine}")).top();
+        (r.left(), r.top() - top, r.size)
+    };
     let states_moved: Vec<_> = v
         .iter()
         .filter(|(k, _)| k.starts_with("state:"))
-        .filter(|(k, r)| e.get(*k) != Some(r))
+        .filter(|(k, r)| e.get(*k).map(|er| in_lane(&edit, k, er)) != Some(in_lane(&view, k, r)))
         .map(|(k, _)| k)
         .collect();
-    assert!(states_moved.len() <= v.len() / 4, "most states stay put entering edit mode: {states_moved:?}");
+    assert!(
+        states_moved.len() <= v.len() / 4,
+        "most states stay put in their lane entering edit mode: {states_moved:?}"
+    );
 }
 
 #[test]

@@ -18,7 +18,7 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 - Layout caching and stability across rebuilds, pins from the sidecar.
 - SVG and PNG export, and `cascade render`.
 - Build and play drawing: `SceneMode::Edit` (the structure view's wiring
-  band and connect handles) and the `PlayOverlay` (instance markers,
+  in gutters between the lanes, and connect handles) and the `PlayOverlay` (instance markers,
   active and pending items) over the causal and structure views.
 
 ## Non-scope
@@ -43,7 +43,7 @@ SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff
       │        apply_hide: hide mode removes outside items, records cut links
       │     realize(draft, cuts) ──LayoutCache──▶ Scene items (+ metas aligned with them)
       │     lanes from group rects (structure)
-      │     edit mode (structure): wiring band lanes, hints, connect handles
+      │     edit mode (structure): gutter lanes, hints, connect handles
       │
       ├─ trace / matrix: placed directly, metas kept alongside
       │
@@ -148,18 +148,24 @@ anything.
   compound state outlines its lane at the selected width. Reversed edges
   are never marked red here: the graph includes ordinary state cycles.
 
-### Edit mode (`views/structure/wiring.rs`, `edit.rs`)
+### Edit mode (`views/structure/wiring.rs`, `gutters/`, `selector.rs`, `edit.rs`)
 
-`SceneMode::Edit` changes only the structure view: pills get a second
-South port (4) for emits, the cross-lane links are replaced by a wiring
-band of two more layout groups below the lanes ("External sources", then
-"Events and controllers", neutral lanes with muted titles), with real emit,
-subscribe, fire and trigger edges, and every state, pill, controller and
-source gets a connect handle. Details, including the empty-machine hint
-and the empty-definition note, are in build-and-play.md ("Build and play
-drawing"). The layout cache is per view, so switching modes feeds one
-mode's layout to the other as the previous layout (states stay put) and
-switching back hits the cache.
+`SceneMode::Edit` changes only the structure view: pills get second South
+(4) and North (5) ports for emits, and the cross-lane links are replaced
+by the wiring (event tags, controller hexagons, source boxes) in
+*gutters*: thin untitled layout groups, one above each machine's groups
+and one below the last, drawn as quiet neutral lanes (pale fill, dashed
+rule-colored outline). Each wiring node goes into the gutter next to what
+it wires, in a row ordered by the pills it wires; pill ends face their
+gutter. Edges are the real emit, subscribe, fire and trigger edges; fire
+labels are short (`by orderId`, `new with orderId`, `[when]`) and said
+once. Every state, pill, controller and source gets a connect handle.
+Details, including the placement rules, column memory, empty-machine hint
+and empty-definition note, are in build-and-play.md ("Build and play
+drawing") and readability.md ("Placement"). The layout cache is per view,
+so switching modes feeds one mode's layout to the other as the previous
+layout (lanes open up for the gutters, and states keep their place within
+their lane) and switching back hits the cache.
 
 ### Play overlay (`views/overlays/`)
 
@@ -294,7 +300,8 @@ revision or an invalid version exits with code 2.
 | Selected / focused / dimmed / search | — | Selected width / middle width / 15% opacity / dotted halo; never a hue change |
 | Matrix cell | `Rect` with count | Neutral gray by count |
 | Controller (edit mode) | `Hexagon` per controller, name in bold over "on Event" lines | Dark neutral outline, no fill |
-| Wiring band (edit mode) | Lanes "External sources", "Events and controllers" | Neutral pale fill, rule-colored outline, muted title |
+| Gutter (edit mode) | Untitled lane between machine lanes holding wiring | Neutral pale fill, dashed rule-colored outline |
+| Fire label (edit mode) | Short selector then `[when]`: `by orderId`, `all by f`, `new with f`; none for a singleton | Default text color; once per parallel fires |
 | Connect handle (edit mode) | Circle on the east edge | Background fill, muted outline; not exported |
 | Instance marker | Chip on the top edge, `o1` | Machine hue fill, on-hue bold text; hollow (hue outline) on a dead end's way in (causal) |
 | Active (play) | — | Selected width; nodes also a glow ring in their own outline color at 35% alpha |
@@ -320,8 +327,12 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | crate-private |
 | `crates/cascade-scene/src/views/structure/machines.rs` | Per-machine drafting, nesting, collapse | crate-private |
 | `crates/cascade-scene/src/views/structure/links.rs` | Cross-lane links, stub counts | crate-private |
-| `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring band | crate-private |
-| `crates/cascade-scene/src/views/structure/edit.rs` | Band lanes, empty hints | crate-private |
+| `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring: nodes, merged edges, gutter placement glue, ports facing the gutter | crate-private |
+| `crates/cascade-scene/src/views/structure/gutters/mod.rs` | Which gutter each wiring node goes to | `Stack`, `Gutter`, `Wires`, `assign` (crate) |
+| `crates/cascade-scene/src/views/structure/gutters/order.rs` | Row order inside a gutter | `order`, `WiringNode` (crate) |
+| `crates/cascade-scene/src/views/structure/gutters/memo.rs` | Gutter columns kept across edits | `WiringMemo` (crate, owned by `SceneBuilder`) |
+| `crates/cascade-scene/src/views/structure/selector.rs` | Fire label policy (short selectors, said once) | crate-private |
+| `crates/cascade-scene/src/views/structure/edit.rs` | Gutter lanes, empty hints | crate-private |
 | `crates/cascade-scene/src/views/overlays/*.rs` | Connect handles, markers, active/pending, chips | `PlayDecor`, `Placement`, `add_handles` (crate) |
 | `crates/cascade-scene/src/play.rs` | Build/play inputs (contract) | `SceneMode`, `PlayOverlay`, `PlayMarker` |
 | `crates/cascade-scene/src/views/trace.rs` | Trace view | crate-private |
@@ -346,7 +357,9 @@ revision or an invalid version exits with code 2.
   order, definition order, deterministic seriation and tie-breaks).
 - Selected items are never hidden or dimmed.
 - Every `SceneEdge` has at least two points; self-links are drawn as small
-  loops rather than passed to the layout.
+  loops rather than passed to the layout. A self-link's label goes beside
+  the loop's outer corner, else above the loop, else left of it, whichever
+  first clears every node.
 - Scene bounds cover every node, badge, edge point, label, lane and
   overlay.
 - Non-test code never panics on user input: unknown keys, names and
@@ -355,12 +368,13 @@ revision or an invalid version exits with code 2.
 - Performance: at about 20 machines, 200 states and 50 controllers each
   view builds well under a second in a debug build (tested, including the
   current layout engine), edit mode included; a play overlay change costs
-  no layout. Pinning a band node with many lane-crossing edges (a busy
+  no layout. Pinning a wiring node with many lane-crossing edges (a busy
   controller) goes through the engine's obstacle router and is slower
   (about 0.35 s release for the shop's Orders controller).
 - Play overlays never relayout, and `SceneMode::View` scenes are
   unchanged by build and play drawing (fingerprinted in
-  `tests/view_mode_golden.rs`).
+  `tests/view_mode_golden.rs`; re-blessed only for intended view-mode
+  changes, last for the self-link label placement).
 - `Scene::hit_test` checks connect handles before nodes; nothing else
   in its order changed.
 - `Scene` and its item types are unchanged; additions are
