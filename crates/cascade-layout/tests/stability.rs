@@ -495,3 +495,44 @@ fn a_new_node_without_neighbours_takes_the_top_of_its_empty_column() {
     let row = rect_of(&after, &r2, "n1_2");
     assert!((x.top() - row.top()).abs() < 1.0, "{x:?} vs {row:?}");
 }
+
+fn aligned() -> LayoutOptions {
+    LayoutOptions { layer_spacing: 48.0, align_across_groups: true, ..LayoutOptions::default() }
+}
+
+#[test]
+fn aligned_lanes_come_back_exactly() {
+    let g = shop_lanes(false);
+    let r1 = run_with(&g, &aligned(), &LayoutHints::default());
+    assert_ok(&g, &aligned(), &LayoutHints::default(), &r1);
+    let hints = LayoutHints { previous: Some(r1.to_previous(&g)), ..LayoutHints::default() };
+    let r2 = run_with(&g, &aligned(), &hints);
+    for (id, n) in g.nodes() {
+        assert_eq!(r1.node(id).rect, r2.node(id).rect, "{} moved", n.key);
+    }
+    for (gid, group) in g.groups() {
+        assert_eq!(r1.group(gid), r2.group(gid), "group {} changed", group.key);
+    }
+    for (e, _) in g.edges() {
+        assert_eq!(r1.edge(e).points, r2.edge(e).points, "route of edge {} changed", e.index());
+    }
+}
+
+#[test]
+fn an_edit_inside_one_aligned_lane_moves_no_node_in_another_lane() {
+    let before = shop_lanes(false);
+    let r1 = run_with(&before, &aligned(), &LayoutHints::default());
+    let after = shop_lanes(true);
+    let hints = LayoutHints { previous: Some(r1.to_previous(&before)), ..LayoutHints::default() };
+    let r2 = run_with(&after, &aligned(), &hints);
+    if let Err(msg) = check(&after, &aligned(), &hints, &r2, Checks { labels: false, ..Checks::ALL }) {
+        panic!("relayout invariant violated: {msg}");
+    }
+    for (id, n) in after.nodes() {
+        if n.key.starts_with("Shipment:") {
+            continue;
+        }
+        let old = before.node_by_key(&n.key).expect("existing node");
+        assert_eq!(r1.node(old).rect, r2.node(id).rect, "{} moved", n.key);
+    }
+}

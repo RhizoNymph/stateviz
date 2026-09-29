@@ -173,7 +173,8 @@ impl Ring {
     }
 
     /// From the point on side `s` around the node's corners to the point
-    /// on side `t`.
+    /// on side `t`. A loop between the North and South sides goes around
+    /// the nearer of the East and West sides.
     fn around(&self, (s, sp): (Side, Point), (t, tp): (Side, Point)) -> Vec<Point> {
         let (east, west) = (self.rect.right() + self.offset, self.rect.left() - self.offset);
         let ne = Point::new(east, self.north);
@@ -188,8 +189,12 @@ impl Ring {
             (West, South) | (South, West) => vec![sw],
             (East, West) => vec![ne, nw],
             (West, East) => vec![nw, ne],
-            (North, South) => vec![ne, se],
-            (South, North) => vec![se, ne],
+            // Around whichever side is nearer the two ports.
+            (North, South) | (South, North) => {
+                let west = (sp.x + tp.x) / 2.0 < self.rect.center().x;
+                let (n, so) = if west { (nw, sw) } else { (ne, se) };
+                if s == North { vec![n, so] } else { vec![so, n] }
+            }
             _ => Vec::new(),
         };
         let mut pts = vec![sp, self.at(s, sp)];
@@ -228,6 +233,16 @@ pub(crate) fn cross_band(ctx: &Ctx<'_, '_>, edge: usize, g: &CrossGeometry) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn north_south_loops_go_round_the_nearer_side() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let ring = Ring { rect, offset: 4.0, north: -8.0, south: 48.0 };
+        let left = ring.around((Side::South, Point::new(20.0, 40.0)), (Side::North, Point::new(30.0, 0.0)));
+        assert!(left.iter().all(|p| p.x <= 30.0), "{left:?}");
+        let right = ring.around((Side::North, Point::new(80.0, 0.0)), (Side::South, Point::new(70.0, 40.0)));
+        assert!(right.iter().all(|p| p.x >= 70.0), "{right:?}");
+    }
 
     #[test]
     fn simplify_removes_duplicates_and_straight_runs() {
