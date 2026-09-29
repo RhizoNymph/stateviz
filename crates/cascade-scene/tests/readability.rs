@@ -4,7 +4,7 @@
 //! routing work; see docs/features/readability.md.
 
 use cascade_core::{CausalGraph, analyze, load_str};
-use cascade_scene::metrics::{SceneMetrics, measure};
+use cascade_scene::metrics::{SceneMetrics, leftward_edges, measure};
 use cascade_scene::{LayoutSidecar, MonoMeasure, SceneBuilder, SceneInput, SceneMode, Theme, ViewKind, ViewState};
 
 pub const EXAMPLES: [(&str, &str); 2] = [
@@ -13,17 +13,21 @@ pub const EXAMPLES: [(&str, &str); 2] = [
 ];
 
 pub fn metrics_of(yaml: &str, view: ViewKind, mode: SceneMode) -> SceneMetrics {
+    measure(&scene_of(yaml, &ViewState { view, ..ViewState::default() }, mode))
+}
+
+/// The scene of an example in `state`.
+pub fn scene_of(yaml: &str, state: &ViewState, mode: SceneMode) -> cascade_scene::Scene {
     let model = load_str(yaml).expect("example loads");
     let graph = CausalGraph::build(&model);
     let findings = analyze(&model, &graph);
-    let state = ViewState { view, ..ViewState::default() };
     let theme = Theme::light();
     let sidecar = LayoutSidecar::default();
     let input = SceneInput {
         model: &model,
         graph: &graph,
         findings: &findings,
-        view: &state,
+        view: state,
         theme: &theme,
         measure: &MonoMeasure::default(),
         sidecar: &sidecar,
@@ -32,7 +36,7 @@ pub fn metrics_of(yaml: &str, view: ViewKind, mode: SceneMode) -> SceneMetrics {
         play: None,
         diff: None,
     };
-    measure(&SceneBuilder::new().build(&input).expect("scene builds"))
+    SceneBuilder::new().build(&input).expect("scene builds")
 }
 
 #[test]
@@ -45,5 +49,8 @@ fn report() {
         ] {
             println!("{name:<18} {label:<16} {}", metrics_of(yaml, view, mode));
         }
+        let lanes = ViewState { group_by_machine: true, ..ViewState::default() };
+        let scene = scene_of(yaml, &lanes, SceneMode::View);
+        println!("{name:<18} {:<16} {}  leftward {}", "causal/lanes", measure(&scene), leftward_edges(&scene));
     }
 }

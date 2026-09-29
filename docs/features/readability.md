@@ -22,7 +22,8 @@ their endpoint, overlapping labels (edge labels with each other, with node
 labels and with foreign nodes), edges routed through a side corridor
 (points outside every lane's horizontal extent), and bounding area.
 
-Report: `cargo test -p cascade-scene --test readability -- --nocapture`.
+Report: `cargo test -p cascade-scene --test readability -- --nocapture`
+(structure view and build modes, the causal view, and the causal lanes).
 
 ### Baseline (before this work)
 
@@ -339,6 +340,52 @@ before), and 8.9 and 8.5 ms with 8 groups (8.4 and 9.2 ms before).
 Pinning the busiest controller of a 96-node canvas costs 1.7–3.7 ms
 (10–170 ms before). A pinned shop build, scene included, takes 14–18 ms
 (up to 142 ms before).
+
+## Causal lanes
+
+`ViewState::group_by_machine` draws the causal view with one lane per
+machine on shared causal columns (view-scenes.md, "Causal lanes";
+`LayoutOptions::shared_layers` in layered-layout.md). The report prints it
+as `causal/lanes`, with one more measure: `leftward`
+(`metrics::leftward_edges`), the edges that are not cascade-cycle back
+edges yet end left of their start or have a horizontal segment heading
+left. `tests/causal_lanes.rs` asserts it is 0, with 0 label overlaps, 0
+corridor edges and 0 edges through nodes, at most 0 crossings and 1 200
+length for order-fulfillment, and at most 40 crossings and 21 000 length
+for the shop.
+
+| Scene | Crossings | Length | Bends | Label overlaps | Corridor | Through nodes | Leftward | Area |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| order-fulfillment causal (flat) | 0 | 896 | 0 | 0 | 0 | 0 | — | 291 808 |
+| order-fulfillment causal/lanes | 0 | 941 | 4 | 0 | 0 | 0 | **0** | 363 684 |
+| shop causal (flat) | 17 | 16 518 | 72 | 0 | 0 | 0 | — | 3 332 486 |
+| shop causal/lanes | 38 | 19 174 | 94 | 0 | 0 | 0 | **0** | 5 135 480 |
+
+Lanes cost crossings and length: a machine's transitions no longer sit
+next to the events and controllers of other machines they cause or are
+caused by, so those links cross lanes (every one heading right). The flat
+view is unchanged.
+
+### Placements tried
+
+Rules as in view-scenes.md, with one changed at a time:
+
+| Placement | order-fulfillment: crossings / length / bends | shop: crossings / length / bends / area |
+| --- | --- | --- |
+| **Event with its first emitter, handler in the lane it fires into, source with its first trigger (kept)** | **0 / 941 / 4** | **38 / 19 174 / 94 / 5 135 480** |
+| Event in the lane its first handler fires into | 1 / 941 / 4 | 31 / 18 198 / 104 / 4 761 408 |
+| Handler with its event (the event's emitter lane) | 0 / 941 / 4 | 32 / 18 560 / 92 / 5 143 760 |
+| Sources in the Unattached lane | 3 / 2 132 / 22 | 49 / 30 938 / 144 / 6 932 016 |
+
+None regresses the guarantees (0 leftward, overlaps, corridors). Putting
+handlers with their event saves 6 crossings in the shop and costs nothing
+in order-fulfillment; putting events with their consumer saves 7 but
+adds a crossing to order-fulfillment and 10 bends to the shop. The
+specified rules keep a machine's causes and effects in its own lane
+(a handler sits right before the transition it fires, an event right
+after the transition emitting it), measure within a few crossings of the
+best, and were kept. Sources in a lane of their own are clearly worse:
+every trigger crosses lanes.
 
 ## Invariants and constraints
 

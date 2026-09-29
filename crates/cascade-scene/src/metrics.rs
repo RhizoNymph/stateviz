@@ -196,6 +196,23 @@ pub fn measure(scene: &Scene) -> SceneMetrics {
     }
 }
 
+/// Visible edges that head against the left-to-right flow somewhere: a
+/// horizontal segment running right to left, or an end left of the start.
+/// Cascade-cycle back edges (`back_edge`) run against the flow by design and
+/// are not counted.
+pub fn leftward_edges(scene: &Scene) -> usize {
+    const EPS: f32 = 0.01;
+    visible_edges(scene)
+        .into_iter()
+        .filter(|e| !e.back_edge)
+        .filter(|e| {
+            let (Some(first), Some(last)) = (e.points.first(), e.points.last()) else { return false };
+            last.x < first.x - EPS
+                || e.points.windows(2).any(|w| (w[0].y - w[1].y).abs() < EPS && w[1].x < w[0].x - EPS)
+        })
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

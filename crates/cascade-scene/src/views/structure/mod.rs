@@ -168,7 +168,7 @@ pub(super) fn build(
     Ok(scene)
 }
 
-fn machine_lane(
+pub(crate) fn machine_lane(
     input: &SceneInput<'_>,
     painter: &Painter<'_>,
     machine: cascade_core::MachineId,

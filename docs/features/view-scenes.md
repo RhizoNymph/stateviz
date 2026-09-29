@@ -28,7 +28,8 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 - Painting, pan/zoom and hit-test dispatch (the GPUI app).
 - Producing traces (`cascade-sim`) and findings (`cascade_core::analyze`).
 - The `cascade://` link format and the pins sidecar file format
-  (`view_state.rs`, `pins.rs`; unchanged here).
+  (`view_state.rs`, `pins.rs`). The format is unchanged apart from the
+  `lanes=1` parameter (`ViewState::group_by_machine`, left out when off).
 
 ## Data and control flow
 
@@ -110,6 +111,61 @@ anything.
    drawn red with `back_edge = true` only when it lies on a causal cycle
    (both ends in one strongly connected component), so stub links and
    reversals made for other reasons are never mistaken for cascade cycles.
+
+### Causal lanes (`views/causal/lanes.rs`)
+
+`ViewState::group_by_machine` (link parameter `lanes=1`, the app's **Group
+by machine** toggle and `G`) draws the same causal graph with one lane per
+machine. Everything above still applies (machine pair, hidden-machine
+stubs, hide mode, emphasis, cones, path queries, search, badges, diff, play
+overlay, red back edges); only these change:
+
+- **Lanes:** one layout group per machine in definition order, drawn like
+  the structure view's machine lanes (`structure::machine_lane`: pale hue
+  fill, header with the machine name in its hue, bold; a selected machine
+  outlines its lane at the selected width), then an **Unattached** lane
+  (neutral fill, dashed rule outline, muted title, no hit target). Lanes
+  without nodes (hide mode, pair filter) are not drawn.
+- **Placement** (looked up in the model, so filters never move a node to
+  another lane):
+
+  | Node | Lane |
+  | --- | --- |
+  | Transition pill | its machine |
+  | Hidden machine's stub | that machine (the lane is marked `collapsed`) |
+  | Event | the machine of the first transition in definition order that emits it |
+  | Handler | the machine its first rule fires into |
+  | External source | the machine of its first trigger |
+  | An event nothing emits, a handler without rules, a source without triggers | Unattached |
+
+  Alternatives were measured (readability.md, "Causal lanes"); these rules
+  are kept.
+- **Pills** read `from → to` over the trigger, without the machine name
+  (the lane says it). States are still not drawn.
+- **Layout:** `LayoutOptions::shared_layers` (layered-layout.md). A node's
+  column is its causal layer, shared by every lane; columns are as wide as
+  their widest item in any lane.
+
+Guarantees (tested in `tests/causal_lanes.rs`, measured in the readability
+report):
+
+- Every edge that is not a cascade-cycle back edge points right: it ends
+  right of where it starts and no horizontal segment of it runs right to
+  left, within a lane or across lanes (`metrics::leftward_edges` is 0 for
+  both examples, in hide mode and with hidden machines). Back edges of
+  genuine cascade cycles stay red and are the only edges running left.
+- No side corridors, no edge through a node, no label overlaps in either
+  example.
+- Emphasis never relayouts; an edit in one machine leaves the other lanes'
+  nodes in place; toggling lanes off returns exactly the flat layout (the
+  cache seeds a layout only from one made with the same options, so the
+  lanes are never seeded by the flat layout or the other way round).
+- With the toggle off the causal scene is exactly as before
+  (`tests/view_mode_golden.rs` unchanged).
+
+Known gap: the pins sidecar keys pins by view, so the flat causal view and
+its lanes share one set of pins; a node pinned in one is placed at the
+same point in the other.
 
 ### Structure view (`views/structure/`)
 
@@ -235,6 +291,8 @@ miss, the view's most recent layout is passed as `LayoutHints::previous`
 (`LayoutResult::to_previous`), and pins come from
 `sidecar.pins_for(view)` keyed by element-key strings (filtered to nodes in
 the graph). Toggling a filter back returns exactly the earlier picture.
+Only a layout made with the same options seeds a miss, so the causal
+view's lanes and its flat layout never seed each other.
 Layout node keys are element-key strings; a hidden machine's stub uses the
 machine's key, so it can be pinned too.
 
@@ -265,7 +323,8 @@ exit 2), applies the link (its view is overridden by `--view`), runs the
 checks for badges, loads the pins sidecar, simulates the scenario (or, with
 `race=N` in the link, replays the N-th race candidate in both orders),
 builds the scene, prints its notes to stderr and writes SVG or PNG by
-extension.
+extension. `--view causal --state 'cascade://causal?lanes=1'` renders the
+causal lanes.
 
 With `diff=<base>,<head>` in the link, `render` reads the definition at
 `base` (and at `head`, or the working tree when `head` is empty) with
@@ -323,8 +382,9 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/style.rs` | Node looks and link strokes per element kind | `Painter` (crate) |
 | `crates/cascade-scene/src/views/filters.rs` | Hidden machines, machine pair, hide mode | crate-private |
 | `crates/cascade-scene/src/views/links.rs` | Derived transition links, cycle edges | `causal_links`, `cycle_edges` (crate) |
-| `crates/cascade-scene/src/views/causal.rs` | Causal flow view | crate-private |
-| `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | crate-private |
+| `crates/cascade-scene/src/views/causal/mod.rs` | Causal flow view | crate-private |
+| `crates/cascade-scene/src/views/causal/lanes.rs` | Causal lanes: lane rules, lane groups and drawing | `LaneRules`, `LaneOf`, `LaneGroups` (crate) |
+| `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | `machine_lane` (crate) |
 | `crates/cascade-scene/src/views/structure/machines.rs` | Per-machine drafting, nesting, collapse | crate-private |
 | `crates/cascade-scene/src/views/structure/links.rs` | Cross-lane links, stub counts | crate-private |
 | `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring: nodes, merged edges, gutter placement glue, ports facing the gutter | crate-private |
@@ -340,9 +400,11 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/export/mod.rs` | Export entry points and errors | `to_svg`, `to_png`, `ExportError` |
 | `crates/cascade-scene/src/export/svg.rs` | SVG writer | crate-private |
 | `crates/cascade-scene/src/export/png.rs` | resvg rasteriser and font loading | crate-private |
-| `crates/cascade-scene/tests/*.rs` | Per-view, export and performance tests | — |
+| `crates/cascade-scene/src/metrics.rs` | Readability measures | `measure`, `SceneMetrics`, `leftward_edges` |
+| `crates/cascade-scene/tests/*.rs` | Per-view, export and performance tests (`causal_lanes.rs`, `view_link_lanes.rs` for causal lanes) | — |
 | `crates/cascade-cli/src/commands/render.rs` | `cascade render` | `run`, `RenderArgs` |
 | `crates/cascade-cli/tests/render.rs` | CLI render tests | — |
+| `crates/cascade-cli/tests/render_lanes.rs` | `render --state 'cascade://causal?lanes=1'` | — |
 
 ## Invariants and constraints
 
