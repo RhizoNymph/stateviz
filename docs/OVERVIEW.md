@@ -143,6 +143,14 @@ Features Index:
     entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes]
     depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
     doc: docs/features/build-and-play.md
+  readability:
+    description: >
+      Scene readability metrics (crossings, length, bends, label overlaps,
+      corridor use) with a report over the examples, and the placement and
+      routing work that improves them.
+    entry_points: [cascade_scene::metrics::measure, cascade-scene tests/readability.rs, cascade_layout::LayoutOptions::align_across_groups]
+    depends_on: [view_scenes, layered_layout, build_and_play]
+    doc: docs/features/readability.md
   workstream_contracts:
     description: The interface types each crate exposes and which workstream implements each stub.
     entry_points: []

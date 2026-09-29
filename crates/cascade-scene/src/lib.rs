@@ -15,6 +15,7 @@
 pub mod color;
 pub mod emphasis;
 pub mod export;
+pub mod metrics;
 pub mod pins;
 pub mod play;
 pub mod scene;
