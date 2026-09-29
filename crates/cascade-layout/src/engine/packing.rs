@@ -155,6 +155,21 @@ impl Occupancy {
         best.unwrap_or(lo[n])
     }
 
+    /// The lowest top at or below `from` where a box of `height` fits.
+    pub(crate) fn first_free(&self, from: f32, height: f32, sep: &dyn Fn(bool) -> f32) -> f32 {
+        let mut top = from;
+        for e in &self.entries {
+            let s = sep(e.is_node);
+            if top + height + s <= e.top {
+                break;
+            }
+            if top < e.bottom + s {
+                top = e.bottom + s;
+            }
+        }
+        top
+    }
+
     /// Whether a box fits at `top`.
     pub(crate) fn fits(&self, top: f32, height: f32, sep: &dyn Fn(bool) -> f32) -> bool {
         self.entries.iter().all(|e| {
@@ -268,6 +283,11 @@ mod tests {
         assert_eq!(occ.nearest_free(10.0, 12.0, &sep), -17.0);
         assert_eq!(occ.nearest_free(45.0, 12.0, &sep), 65.0);
         assert!(occ.fits(25.0, 10.0, &sep));
+        // First free slot from the top: the hole between the two stretches
+        // when it fits, else below both.
+        assert_eq!(occ.first_free(-100.0, 10.0, &sep), -100.0);
+        assert_eq!(occ.first_free(0.0, 10.0, &sep), 25.0);
+        assert_eq!(occ.first_free(0.0, 12.0, &sep), 65.0);
         assert!(!occ.fits(24.0, 10.0, &sep));
     }
 

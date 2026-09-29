@@ -3,13 +3,15 @@
 //! Every chain link whose ends are at different heights needs a vertical
 //! segment in its channel; so do East/West self-loops (a C on the node's
 //! side) and the in-band legs of cross-band edges (from the node to the
-//! band's top or bottom boundary). Each channel's segments get tracks,
-//! spread evenly across the channel's width.
+//! band's top or bottom boundary) that cannot go straight out of their
+//! port ([`Leg`]). Each channel's segments get tracks, spread evenly across
+//! the channel's width.
 
 use std::collections::BTreeMap;
 
 use super::super::context::{Columns, Ctx};
 use super::super::frame::Side;
+use super::super::layered::ItemKind;
 use super::super::problem::EdgeKind;
 use super::super::tracks::{Toward, TrackSeg, assign};
 
@@ -46,6 +48,63 @@ pub(crate) fn cross_channel(side: Side, column: usize, source: bool) -> usize {
             }
         }
     }
+}
+
+/// How a cross-band edge's end gets from its node to its band's boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Leg {
+    /// Straight out of a North or South side that faces the other band,
+    /// when no other node or label of its column lies between the node and
+    /// the band's boundary: one vertical run from the attachment point.
+    Direct,
+    /// Through a track in the channel beside the node.
+    Channel,
+}
+
+/// The leg of a cross-band edge's end (`Channel` for any other edge).
+/// Bands stack in index order, so the other band lies below when its index
+/// is larger.
+pub(crate) fn leg(ctx: &Ctx<'_, '_>, edge: usize, source: bool) -> Leg {
+    let p = ctx.p;
+    let e = &p.edges[edge];
+    let end = e.end(source);
+    let band = p.nodes[end.node].band;
+    let down = p.nodes[e.end(!source).node].band > band;
+    let faces = match end.side {
+        Side::South => down,
+        Side::North => !down,
+        Side::East | Side::West => false,
+    };
+    let Some(here) = ctx.item_of[end.node].filter(|_| faces && p.kinds[edge] == EdgeKind::CrossBand) else {
+        return Leg::Channel;
+    };
+    let bg = &ctx.bands[band];
+    let item = &bg.items[here];
+    let blocked = bg.layers[item.layer].iter().any(|&i| {
+        let other = &bg.items[i];
+        i != here
+            && !matches!(other.kind, ItemKind::Dummy { .. })
+            && if down { other.top > item.top } else { other.top < item.top }
+    });
+    if blocked { Leg::Channel } else { Leg::Direct }
+}
+
+/// Main-axis offset of a cross-band edge end's leg from the left of its
+/// node's column: the attachment point for a direct leg, the middle of its
+/// channel otherwise. `None` for a pinned end.
+pub(crate) fn leg_offset(ctx: &Ctx<'_, '_>, cols: &Columns, edge: usize, source: bool) -> Option<f32> {
+    let p = ctx.p;
+    let end = p.edges[edge].end(source);
+    let item = ctx.item(end.node)?;
+    let left = *cols.left.get(item.layer)?;
+    let x = match leg(ctx, edge, source) {
+        Leg::Direct => ctx.slots.attach(p, edge, source, ctx.node_rect(end.node)).x,
+        Leg::Channel => {
+            let (a, b) = cols.channel(cross_channel(end.side, item.layer, source));
+            (a + b) / 2.0
+        }
+    };
+    Some(x - left)
 }
 
 /// Net key of an explicit port: segments at one port share a track.
@@ -120,7 +179,7 @@ pub(crate) fn collect(
             }
             EdgeKind::CrossBand => {
                 for (source, node_band, other_band) in [(true, s_band, t_band), (false, t_band, s_band)] {
-                    if node_band != band {
+                    if node_band != band || leg(ctx, e, source) == Leg::Direct {
                         continue;
                     }
                     let end = edge.end(source);

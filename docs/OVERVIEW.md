@@ -20,8 +20,10 @@ Overview:
       model diffing. Pure; no UI, the only I/O is load_file.
     cascade-layout: >
       Generic layered (Sugiyama-style) graph layout: sized nodes, ports,
-      groups (lanes) stacked and routed around, orthogonal edge routing,
-      stability from the previous layout, pins. Knows nothing about Cascade.
+      groups (lanes) stacked with edges routed through the gaps and free
+      passages between them, orthogonal edge routing, collision-free
+      labels, stability from the previous layout, pins. Knows nothing
+      about Cascade.
     cascade-sim: >
       Scenario files and the simulator: instances, one global FIFO queue of
       events and controller fires, target selectors, traces with cause
@@ -90,8 +92,10 @@ Features Index:
       Sugiyama-style layered layout: constrained network-simplex layering
       with cycle breaking, port-aware crossing minimisation, L1 coordinate
       placement, orthogonal channel routing with track assignment, lanes
-      stacked and routed around, stability from the previous layout, pins
-      with an obstacle router.
+      stacked with edges between them run through gaps and free passages
+      (side corridors only as a last resort), optional cross-lane
+      alignment, collision-free labels, stability from the previous
+      layout, pins with an obstacle router.
     entry_points: [cascade_layout::layout, cascade_layout::metrics]
     depends_on: []
     doc: docs/features/layered-layout.md

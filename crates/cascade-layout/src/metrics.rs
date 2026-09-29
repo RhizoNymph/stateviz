@@ -1,8 +1,14 @@
 //! Measurements of a finished layout, for tests, benchmarks and
 //! diagnostics.
+//!
+//! [`measure`] gathers the readability measures ([`RouteMetrics`]); the
+//! single measures are public too.
 
-use crate::geometry::Point;
+use std::fmt;
+
+use crate::geometry::{Point, Rect};
 use crate::graph::{LayoutGraph, NodeId};
+use crate::options::FlowDirection;
 use crate::result::LayoutResult;
 
 const EPS: f32 = 1e-3;
@@ -77,6 +83,119 @@ pub fn count_order_crossings(graph: &LayoutGraph, result: &LayoutResult) -> usiz
         }
     }
     count
+}
+
+/// Total length of every edge route.
+pub fn total_length(graph: &LayoutGraph, result: &LayoutResult) -> f32 {
+    graph.edges().flat_map(|(id, _)| result.edge(id).points.windows(2).map(|w| w[0].distance(w[1]))).sum()
+}
+
+/// Direction changes over every edge route.
+pub fn bends(graph: &LayoutGraph, result: &LayoutResult) -> usize {
+    graph
+        .edges()
+        .map(|(id, _)| {
+            result
+                .edge(id)
+                .points
+                .windows(3)
+                .filter(|w| orient(w[0], w[1], w[2]).abs() > EPS * (1.0 + w[0].distance(w[1]) + w[1].distance(w[2])))
+                .count()
+        })
+        .sum()
+}
+
+/// Edges with a point beside the stack of groups (left or right of every
+/// group with left-to-right flow, above or below with top-to-bottom flow):
+/// routed through a side corridor. Zero without groups.
+pub fn corridor_edges(graph: &LayoutGraph, result: &LayoutResult, direction: FlowDirection) -> usize {
+    let rects: Vec<Rect> = graph.groups().map(|(id, _)| result.group(id)).collect();
+    let Some(first) = rects.first() else { return 0 };
+    let across = |r: &Rect| match direction {
+        FlowDirection::LeftToRight => (r.left(), r.right()),
+        FlowDirection::TopToBottom => (r.top(), r.bottom()),
+    };
+    let (lo, hi) = rects.iter().map(across).fold(across(first), |(lo, hi), (a, b)| (lo.min(a), hi.max(b)));
+    let coord = |p: &Point| match direction {
+        FlowDirection::LeftToRight => p.x,
+        FlowDirection::TopToBottom => p.y,
+    };
+    graph
+        .edges()
+        .filter(|(id, _)| result.edge(*id).points.iter().any(|p| coord(p) < lo - 0.5 || coord(p) > hi + 0.5))
+        .count()
+}
+
+/// The header strip of every group: its padding and header band on the
+/// real top, where the lane's title goes.
+pub fn group_headers(graph: &LayoutGraph, result: &LayoutResult) -> Vec<Rect> {
+    graph
+        .groups()
+        .map(|(id, g)| {
+            let r = result.group(id);
+            Rect::new(r.left(), r.top(), r.size.width, (g.padding.top + g.header).min(r.size.height))
+        })
+        .collect()
+}
+
+/// Label boxes overlapping another label box, a node, or a group's header
+/// strip (each overlapping pair counts once).
+pub fn label_overlaps(graph: &LayoutGraph, result: &LayoutResult) -> usize {
+    let shrink = |r: &Rect| Rect::new(r.left() + 0.5, r.top() + 0.5, r.size.width - 1.0, r.size.height - 1.0);
+    let labels: Vec<Rect> = graph.edges().filter_map(|(id, _)| result.edge(id).label).map(|r| shrink(&r)).collect();
+    let mut obstacles: Vec<Rect> = graph.nodes().map(|(id, _)| result.node(id).rect).collect();
+    obstacles.extend(group_headers(graph, result));
+    let mut count = 0;
+    for (i, a) in labels.iter().enumerate() {
+        count += labels[i + 1..].iter().filter(|b| a.intersects(b)).count();
+        count += obstacles.iter().filter(|o| a.intersects(o)).count();
+    }
+    count
+}
+
+/// Readability measures of one layout. Lower is better for every field.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RouteMetrics {
+    pub edges: usize,
+    /// Proper crossings between different edges' routes.
+    pub crossings: usize,
+    /// Edges routed through a side corridor.
+    pub corridor_edges: usize,
+    pub total_length: f32,
+    pub bends: usize,
+    /// See [`label_overlaps`].
+    pub label_overlaps: usize,
+    /// Labels the engine reported it could not place cleanly.
+    pub unplaced_labels: usize,
+}
+
+impl fmt::Display for RouteMetrics {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "edges {:>4}  crossings {:>5}  corridor {:>3}  length {:>8.0}  bends {:>5}  label-overlaps {:>3}  unplaced {:>3}",
+            self.edges,
+            self.crossings,
+            self.corridor_edges,
+            self.total_length,
+            self.bends,
+            self.label_overlaps,
+            self.unplaced_labels
+        )
+    }
+}
+
+/// Every readability measure of a layout.
+pub fn measure(graph: &LayoutGraph, result: &LayoutResult, direction: FlowDirection) -> RouteMetrics {
+    RouteMetrics {
+        edges: graph.edge_count(),
+        crossings: count_crossings(graph, result),
+        corridor_edges: corridor_edges(graph, result, direction),
+        total_length: total_length(graph, result),
+        bends: bends(graph, result),
+        label_overlaps: label_overlaps(graph, result),
+        unplaced_labels: result.unplaced_labels,
+    }
 }
 
 /// Pairs of nodes whose rects overlap (touching does not count).

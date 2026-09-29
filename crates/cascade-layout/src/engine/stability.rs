@@ -98,13 +98,72 @@ pub(crate) fn reproduce_y(bg: &mut BandGraph, anchors: &Anchors) -> bool {
     true
 }
 
-/// The same along the main axis, after the fresh column placement.
+/// The same along the main axis, after the fresh column placement. A band
+/// laid out with [`super::align`] moved its columns separately, so besides
+/// one translation for the whole band this accepts one per column: every
+/// column with nodes has all of them anchored at one translation, a column
+/// of dummies and labels only moves with the column before it (as the
+/// alignment moves it), and no channel ends up narrower than the fresh
+/// placement made it.
 pub(crate) fn reproduce_x(bg: &mut BandGraph, anchors: &Anchors) -> bool {
-    let Some(dx) = common_shift(bg, anchors, |x, _, prev| prev.x - x) else { return false };
-    for (it, anchor) in bg.items.iter_mut().zip(anchors) {
-        it.x = anchor.map_or(it.x + dx, |p| p.x);
+    if let Some(dx) = common_shift(bg, anchors, |x, _, prev| prev.x - x) {
+        for (it, anchor) in bg.items.iter_mut().zip(anchors) {
+            it.x = anchor.map_or(it.x + dx, |p| p.x);
+        }
+        return true;
+    }
+    let columns = bg.columns();
+    let mut shift = vec![0.0f32; columns];
+    for l in 0..columns {
+        let mut column: Option<f32> = None;
+        for &i in &bg.layers[l] {
+            let it = &bg.items[i];
+            if !it.is_node() {
+                continue;
+            }
+            let Some(prev) = anchors[i] else { return false };
+            let d = prev.x - it.x;
+            match column {
+                None => column = Some(d),
+                Some(c) if (c - d).abs() <= TOLERANCE => {}
+                Some(_) => return false,
+            }
+        }
+        shift[l] = match (column, l.checked_sub(1)) {
+            (Some(d), _) => d,
+            (None, Some(before)) => shift[before],
+            (None, None) => return false,
+        };
+    }
+    let before = column_extents(bg);
+    for l in 1..columns {
+        let fresh = before[l].0 - before[l - 1].1;
+        let kept = (before[l].0 + shift[l]) - (before[l - 1].1 + shift[l - 1]);
+        if kept + TOLERANCE < fresh {
+            return false;
+        }
+    }
+    for (l, layer) in bg.layers.iter().enumerate() {
+        for &i in layer {
+            let it = &mut bg.items[i];
+            it.x = anchors[i].map_or(it.x + shift[l], |p| p.x);
+        }
     }
     true
+}
+
+/// Main-axis extent (left, right) of every column's reserved room.
+fn column_extents(bg: &BandGraph) -> Vec<(f32, f32)> {
+    bg.layers
+        .iter()
+        .map(|layer| {
+            layer.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &i| {
+                let it = &bg.items[i];
+                let cx = it.x + it.width / 2.0;
+                (lo.min(cx - it.reserve / 2.0), hi.max(cx + it.reserve / 2.0))
+            })
+        })
+        .collect()
 }
 
 fn separation<'a>(problem: &'a Problem<'_>, is_node: bool) -> impl Fn(bool) -> f32 + 'a {
@@ -173,18 +232,25 @@ pub(crate) fn place_nodes(bg: &mut BandGraph, problem: &Problem<'_>, anchors: &A
             break;
         }
     }
-    let bottom =
-        (0..bg.items.len()).filter(|&i| placed[i]).map(|i| bg.items[i].box_bottom()).fold(f32::NEG_INFINITY, f32::max);
+    // A new node with nothing to go by takes its column's first free slot
+    // from the band's top: the top of an empty column, or a hole between
+    // placed nodes, before the space below them.
+    let top = (0..bg.items.len()).filter(|&i| placed[i]).map(|i| bg.items[i].box_top()).fold(f32::INFINITY, f32::min);
+    let top = if top.is_finite() { top } else { 0.0 };
     for &i in &new_nodes {
         let item = &bg.items[i];
         let desired_top = match (centre[i], item.node().and_then(|n| problem.nodes[n].prev)) {
             (Some(c), _) => c - item.height / 2.0,
             (None, Some(prev)) => prev.origin.y,
-            (None, None) => bottom.max(0.0) + problem.spacing.node + item.margin_top,
+            (None, None) => top + item.margin_top,
         };
         let l = item.layer;
         let sep = separation(problem, true);
-        let box_top = occupancy[l].nearest_free(desired_top - item.margin_top, item.extent(), &sep);
+        let box_top = if centre[i].is_none() && item.node().and_then(|n| problem.nodes[n].prev).is_none() {
+            occupancy[l].first_free(desired_top - item.margin_top, item.extent(), &sep)
+        } else {
+            occupancy[l].nearest_free(desired_top - item.margin_top, item.extent(), &sep)
+        };
         let item = &mut bg.items[i];
         item.top = box_top + item.margin_top;
         occupancy[l].insert(item.box_top(), item.box_bottom(), true);

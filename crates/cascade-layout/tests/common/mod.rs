@@ -209,6 +209,17 @@ fn leaves_outward(from: Point, next: Point, side: PortSide) -> bool {
     dx * ox + dy * oy > EPS && (dx * oy - dy * ox).abs() < EPS
 }
 
+/// Whether segment `a`–`b` runs straight across `group` along the stacking
+/// axis (vertically with left-to-right flow, where groups stack top to
+/// bottom), from one side of the group to the other.
+pub fn passes_across(a: Point, b: Point, group: &Rect, direction: FlowDirection) -> bool {
+    let (along_a, along_b, across_a, across_b, lo, hi) = match direction {
+        FlowDirection::LeftToRight => (a.y, b.y, a.x, b.x, group.top(), group.bottom()),
+        FlowDirection::TopToBottom => (a.x, b.x, a.y, b.y, group.left(), group.right()),
+    };
+    (across_a - across_b).abs() < EPS && along_a.min(along_b) <= lo + 0.5 && along_a.max(along_b) >= hi - 0.5
+}
+
 /// What the invariant checker should verify for one layout.
 #[derive(Clone, Copy, Debug)]
 pub struct Checks {
@@ -216,8 +227,10 @@ pub struct Checks {
     pub overlaps: bool,
     /// Routes never cross a node interior.
     pub avoidance: bool,
-    /// Routes never cross a foreign group's interior (pins may drag a
-    /// group over other bands, making this impossible).
+    /// Routes enter a foreign group's interior only straight across it
+    /// along the stacking axis, from one side of the group to the other:
+    /// through a passage, which `avoidance` keeps clear of nodes (pins may
+    /// drag a group over other bands, making this impossible).
     pub foreign_groups: bool,
     /// Group rects contain their nodes and do not overlap each other.
     pub groups: bool,
@@ -348,7 +361,11 @@ pub fn check(
                 for (gid, group) in g.groups().filter(|_| checks.foreign_groups) {
                     let own =
                         g.node(edge.source.node).group == Some(gid) || g.node(edge.target.node).group == Some(gid);
-                    if !own && segment_hits_interior(w[0], w[1], &r.group(gid), 0.5) {
+                    let gr = r.group(gid);
+                    if !own
+                        && segment_hits_interior(w[0], w[1], &gr, 0.5)
+                        && !passes_across(w[0], w[1], &gr, options.direction)
+                    {
                         return Err(format!(
                             "{name} crosses foreign group {} with {:?} -> {:?}",
                             group.key, w[0], w[1]

@@ -127,6 +127,8 @@ pub(crate) struct Problem<'g> {
     pub frame: Frame,
     pub spacing: Spacing,
     pub routing: EdgeRouting,
+    /// Shift freshly placed bands to line up their cross-band edges.
+    pub align: bool,
     pub nodes: Vec<PNode>,
     pub edges: Vec<PEdge>,
     pub bands: Vec<PBand>,
@@ -263,7 +265,18 @@ impl<'g> Problem<'g> {
             })
             .collect();
 
-        Ok(Self { graph, frame, spacing, routing: options.routing, nodes, edges, bands, kinds, mode })
+        Ok(Self {
+            graph,
+            frame,
+            spacing,
+            routing: options.routing,
+            align: options.align_across_groups,
+            nodes,
+            edges,
+            bands,
+            kinds,
+            mode,
+        })
     }
 
     pub(crate) fn key(&self, node: usize) -> &str {

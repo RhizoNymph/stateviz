@@ -31,12 +31,23 @@ pub struct LayoutResult {
     groups: Vec<Rect>,
     /// Bounding box of everything, including edge routes.
     pub bounds: Rect,
+    /// Label boxes that could not be placed clear of every node, group
+    /// header and other label. They are still returned, at the spot with
+    /// the least overlap.
+    pub unplaced_labels: usize,
 }
 
 impl LayoutResult {
     /// Assemble a result. Every vector is indexed by the matching graph id.
     pub fn new(nodes: Vec<NodePlacement>, edges: Vec<EdgeRoute>, groups: Vec<Rect>, bounds: Rect) -> Self {
-        Self { nodes, edges, groups, bounds }
+        Self { nodes, edges, groups, bounds, unplaced_labels: 0 }
+    }
+
+    /// The same result, reporting `count` labels that could not be placed
+    /// cleanly.
+    pub fn with_unplaced_labels(mut self, count: usize) -> Self {
+        self.unplaced_labels = count;
+        self
     }
 
     pub fn node(&self, id: NodeId) -> &NodePlacement {
