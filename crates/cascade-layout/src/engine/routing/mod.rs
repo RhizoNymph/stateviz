@@ -81,8 +81,13 @@ pub(crate) fn channel_positions(
         let here = stack.position[b];
         let below = |other: usize| stack.position[other] > here;
         let segs = channels::collect(ctx, b, top, bottom, &below);
-        let (tracks, counts) = channels::assign_tracks(&segs, cols[b].count() + 1);
-        seg_x[b] = channels::positions(&segs, &tracks, &counts, &cols[b]);
+        seg_x[b] = match ctx.shared {
+            Some(shared) => shared.positions(b, &segs),
+            None => {
+                let (tracks, counts) = channels::assign_tracks(&segs, cols[b].count() + 1);
+                channels::positions(&segs, &tracks, &counts, &cols[b])
+            }
+        };
     }
     seg_x
 }
@@ -110,6 +115,9 @@ pub(crate) fn cross_plans(
     stack: &Stack,
 ) -> (Vec<CrossPlan>, Vec<Vec<Passage>>) {
     let p = ctx.p;
+    if let Some(shared) = ctx.shared {
+        return (super::shared::cross::plans(ctx, shared, seg_x, stack), vec![Vec::new(); ctx.bands.len()]);
+    }
     let pins: Vec<(f32, f32)> = p.nodes.iter().filter_map(|n| n.pin.map(|pin| (pin.x, pin.x + n.size.width))).collect();
     let mut passages: Vec<Vec<Passage>> = (0..ctx.bands.len())
         .map(|b| {

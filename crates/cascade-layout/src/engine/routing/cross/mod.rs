@@ -41,6 +41,9 @@ pub(crate) enum Via {
     Passage { band: usize, passage: usize },
     /// Around the band, in a side corridor.
     Corridor(Corridor),
+    /// Straight through the band on a vertical reserved for this edge
+    /// (shared layers: a pass slot kept free in every band).
+    Reserved { band: usize },
 }
 
 /// The route skeleton of one cross-band edge.

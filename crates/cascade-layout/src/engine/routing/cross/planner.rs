@@ -76,6 +76,7 @@ fn plan_one(
                 (p.clamp(x), p.crossings as f32 * CROSSING)
             }
             Via::Corridor(side) => (stack.base(side), CORRIDOR),
+            Via::Reserved { .. } => (x, 0.0),
         }
     };
 
@@ -131,6 +132,19 @@ fn plan_one(
     (vias, xs)
 }
 
+/// Which way a request travels, the gaps it runs through and the bands in
+/// between, in travel order. `None` when an end's band is not stacked.
+pub(crate) fn crossing(request: &Request, stack: &Stack) -> Option<(bool, Vec<usize>, Vec<usize>)> {
+    let (s, t) = (stack.position[request.source_band]?, stack.position[request.target_band]?);
+    let down = s < t;
+    let gaps: Vec<usize> = if down { (s..t).collect() } else { (t..s).rev().collect() };
+    let between: Vec<usize> = if down { (s + 1..t).collect() } else { (t + 1..s).rev().collect::<Vec<_>>() }
+        .into_iter()
+        .map(|pos| stack.order[pos])
+        .collect();
+    Some((down, gaps, between))
+}
+
 /// Plan every request. `passages[b]` are band `b`'s passages; their
 /// capacities are used up as routes take them.
 pub(crate) fn plan_all(requests: &[Request], stack: &Stack, passages: &mut [Vec<Passage>]) -> Vec<CrossPlan> {
@@ -146,13 +160,7 @@ pub(crate) fn plan_all(requests: &[Request], stack: &Stack, passages: &mut [Vec<
     let mut plans: Vec<(usize, CrossPlan)> = Vec::with_capacity(order.len());
     for &(_, _, i) in &order {
         let r = &requests[i];
-        let (Some(s), Some(t)) = (stack.position[r.source_band], stack.position[r.target_band]) else { continue };
-        let down = s < t;
-        let gaps: Vec<usize> = if down { (s..t).collect() } else { (t..s).rev().collect() };
-        let between: Vec<usize> = if down { (s + 1..t).collect() } else { (t + 1..s).rev().collect::<Vec<_>>() }
-            .into_iter()
-            .map(|pos| stack.order[pos])
-            .collect();
+        let Some((down, gaps, between)) = crossing(r, stack) else { continue };
         let (vias, via_x) = plan_one(r, &between, stack, passages);
         plans.push((i, CrossPlan { edge: r.edge, down, gaps, vias, via_x, x_s: r.x_s, x_t: r.x_t }));
     }

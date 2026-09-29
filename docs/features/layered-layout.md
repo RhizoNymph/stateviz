@@ -25,6 +25,9 @@ transitions or events.
 - Optional alignment of groups with each other
   (`LayoutOptions::align_across_groups`), so edges between stacked groups
   run straight.
+- Optional shared layers (`LayoutOptions::shared_layers`): one layering
+  over the whole graph and one column position per layer in every group,
+  so every edge between groups heads with the flow (step 10).
 - Label boxes clear of nodes, group headers and each other, with a count
   of any that could not be placed cleanly.
 - `LeftToRight` and `TopToBottom` flow.
@@ -52,6 +55,7 @@ transitions or events.
 | `metrics::overlapping_nodes`, `metrics::segments_cross` | Test and diagnostic helpers. |
 | `metrics::measure` → `RouteMetrics` | Crossings, corridor edges, total length, bends, label overlaps and unplaced labels of one layout. The single measures (`total_length`, `bends`, `corridor_edges`, `label_overlaps`, `group_headers`) are public too. |
 | `LayoutOptions::align_across_groups` | Off by default. See step 6. |
+| `LayoutOptions::shared_layers` | Off by default (`#[serde(default)]`). See step 10. Takes precedence over `align_across_groups`. |
 | `LayoutResult::unplaced_labels` | Labels that could not be placed clear of every node, header and label (additive field; `with_unplaced_labels` sets it). |
 
 The input and output types (`LayoutGraph`, `LayoutOptions`, `LayoutHints`,
@@ -273,6 +277,61 @@ group's header on the real top.
    - Everything is transposed back, and bounds cover nodes, groups, routes
      and labels.
 
+10. **Shared layers** (`shared/`, with `LayoutOptions::shared_layers`).
+    Steps 2, 6 and the cross-band part of 8 change; everything else runs
+    as above, per band.
+    - **Layering** (`shared/layering.rs`). One layering over every node
+      and every edge but self-loops, edges between bands included (length
+      1; labelled chain edges keep length 2). On a relayout an acyclic
+      edge between two nodes kept at their soft previous layers could
+      point backwards (a new edge, or a new node pushing its successors
+      on); the soft fix of its target (else its source) is released and
+      the layering runs again, until no acyclic edge points backwards.
+      `on_cycle` now covers edges between bands, and `reversed` can flag
+      them.
+    - **Columns** (`shared/columns.rs`). Each band keeps its own columns
+      (its distinct layers) and chains, but every column is mapped to a
+      *global column* (a distinct layer of any band), as wide as its
+      widest item in any band. A band's channel between two of its
+      columns spans the global channels between them.
+    - **Zones.** Every global channel is split, left to right, into
+      *exit* (legs leaving the column on the left for another band),
+      *pass* (reserved verticals, below), *link* (the band's own chain
+      links and East/West loops) and *entry* (legs arriving at the column
+      on the right from another band) zones. Each zone has as many slots
+      as the band needing the most tracks there; slots are spread evenly
+      over the channel, and a band with fewer tracks is centred in its
+      zone. Exit legs use the first global channel their local channel
+      spans; a link whose ends both lie left of the channel too; entry
+      legs, other links and West loops the last. A channel is at least
+      `layer_spacing` wide and holds its slots an edge spacing apart.
+    - **Pass slots.** Every edge between bands that are not neighbours in
+      the stack gets a pass slot in the global channel right of its
+      source column, by interval colouring over the gaps its vertical
+      spans, so verticals share a slot only when their stretches do not
+      meet. No band puts a track there, so the vertical passes every band
+      in between straight through (`Via::Reserved`), and no corridor is
+      needed.
+    - **Positions.** Fresh: global columns packed left to right from the
+      widest left inset. With a previous layout: if the fresh placement
+      puts every kept node within `TOLERANCE` of its previous position it
+      is used (kept nodes on their exact previous floats); otherwise each
+      global column keeps the median centre of its kept nodes, new
+      columns go next to their neighbours, and a column moves right only
+      where its channel would get narrower than
+      `max(2 × edge spacing, (slots + 1) × edge spacing / 2)`, moving its
+      kept nodes by the same amount. Every other item is centred on its
+      column.
+    - **Why edges head right.** With the target layer above the source
+      layer, an exit leg lies in the exit zone right of the source
+      column, the pass slot further right in the same channel, and the
+      entry leg in the entry zone left of the target column, at or after
+      that channel's pass zone. Direct legs sit inside their columns. So
+      source leg ≤ pass ≤ entry leg, and every gap run heads right; chain
+      links run between their columns as before. Only reversed edges
+      (cycles) run left. Polyline chains, and routes the obstacle router
+      repairs (around pins), are not covered.
+
 ## Files
 
 | File | Role | Key items |
@@ -291,20 +350,24 @@ group's header on the real top.
 | `engine/stability.rs` | Placement with previous positions: reproducing unchanged bands, fitting changes into changed ones | `anchors`, `reproduce_y`, `reproduce_x`, `place_nodes`, `place_dummies`, `place_x` |
 | `engine/context.rs` | Shared read-only views | `Ctx`, `Columns` |
 | `engine/align.rs` | Cross-group alignment of fresh bands | `shifts` |
+| `engine/shared/mod.rs` | Shared layers: zones, slot positions | `Shared`, `Zone`, `Caps`, `channel_span`, `zone_of`, `zone_tracks` |
+| `engine/shared/layering.rs` | One layering over the whole graph, releasing soft fixes that point edges backwards | `assign` |
+| `engine/shared/columns.rs` | Global columns, zone slots, pass slots, column positions (fresh or kept) | `place` |
+| `engine/shared/cross.rs` | Cross-band plans through reserved verticals | `plans` |
 | `engine/bands.rs` | Stacking, pins, group rects | `stack`, `Placement` |
 | `engine/tracks.rs` | Track assignment | `assign`, `TrackSeg`, `Toward` |
 | `engine/routing/mod.rs` | Routing driver and repair | `route_all`, `Routes` |
 | `engine/routing/channels.rs` | Channel segments and track positions, leg kinds | `collect`, `SegKey`, `Leg`, `leg`, `leg_offset` |
-| `engine/routing/cross/mod.rs` | Cross-band route types | `CrossPlan`, `Via`, `Corridor`, `Stack` |
+| `engine/routing/cross/mod.rs` | Cross-band route types | `CrossPlan`, `Via` (`Passage`, `Corridor`, `Reserved`), `Corridor`, `Stack` |
 | `engine/routing/cross/passages.rs` | Free passages through a band | `Passage`, `of_band` |
-| `engine/routing/cross/planner.rs` | Choosing passages or corridors per band | `Request`, `plan_all` |
+| `engine/routing/cross/planner.rs` | Choosing passages or corridors per band | `Request`, `crossing`, `plan_all` |
 | `engine/routing/cross/resolve.rs` | Passage, gap and corridor tracks → coordinates | `resolve`, `gap_track_counts`, `CrossGeometry` |
 | `engine/routing/paths.rs` | Polylines for chains, loops, cross-band edges | `chain_orthogonal`, `chain_polyline`, `self_loop`, `simplify` |
 | `engine/routing/astar.rs` | Obstacle router | `Router`, `Obstacle`, `Ends` |
 | `engine/routing/check.rs` | Route validation, rect index | `is_clear`, `passes_across`, `RectIndex` |
 | `engine/labels.rs` | Collision-free label boxes | `boxes` |
 | `src/metrics.rs` | Public measurements | `measure`, `RouteMetrics`, `count_crossings`, `corridor_edges`, `label_overlaps`, `count_order_crossings`, `overlapping_nodes` |
-| `tests/*.rs` | Behaviour: basics, cycles, constraints, ordering, ports, labels, groups, stability, pins, determinism, direction, routing, readability, fuzzed invariants, performance, pinned-hub performance | `tests/common` holds the invariant checker; `tests/canvas` builds build-canvas-shaped benchmark graphs (lanes with gutters, or one wiring band) and draws them as SVG |
+| `tests/*.rs` | Behaviour: basics, cycles, constraints, ordering, ports, labels, groups, stability, pins, determinism, direction, routing, readability, fuzzed invariants, performance, pinned-hub performance, shared layers | `tests/common` holds the invariant checker; `tests/canvas` builds build-canvas-shaped benchmark graphs (lanes with gutters, or one wiring band) and draws them as SVG |
 
 ## Invariants and constraints
 
@@ -316,8 +379,17 @@ group's header on the real top.
 - **Layers.** Forward edges point left to right (top to bottom). An edge
   is `reversed` exactly when it lies on a cycle within its band and does
   not point forward, so every cycle shows at least one reversed edge and
-  no acyclic edge is flagged. Self-loops and cross-band edges are never
-  reversed.
+  no acyclic edge is flagged. Self-loops are never reversed, and neither
+  are cross-band edges unless `shared_layers` is on (then layering and
+  cycles span every band, and a reversed edge may join two bands).
+- **Shared layers.** With `shared_layers`, nodes of one layer share a
+  centre in every group and a later layer lies wholly right of an earlier
+  one; every edge that is not reversed ends right of its start and has no
+  horizontal segment heading left (orthogonal routing, no pins); no route
+  leaves the lanes' width (`tests/shared_layers.rs`, 300 random grouped
+  graphs plus 120 random relayouts). An unchanged layout comes back
+  exactly; an edit that adds no column and widens none leaves the other
+  groups' nodes exactly in place.
 - **Constraints.** `First` and `Exact` layers are always honoured.
   `Unsatisfiable` means an acyclic edge joins two hard-fixed nodes and
   points backwards or sideways. When a free node cannot fit between its

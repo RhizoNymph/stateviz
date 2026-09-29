@@ -32,6 +32,7 @@ mod ordering;
 mod packing;
 mod problem;
 mod routing;
+mod shared;
 mod slots;
 mod stability;
 mod tracks;
@@ -82,7 +83,7 @@ pub enum LayoutError {
 /// them and edges route to their ports.
 pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints) -> Result<LayoutResult, LayoutError> {
     let p = Problem::build(graph, options, hints)?;
-    let (layer_of, on_cycle) = layer_bands(&p)?;
+    let (layer_of, on_cycle) = if p.shared { shared::layering::assign(&p)? } else { layer_bands(&p)? };
     let es = p.spacing.edge;
     let label_gap = labels::label_gap(es);
 
@@ -184,12 +185,76 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
     }
 
     // Main axis: provisional tracks size the channels.
+    let (mut cols, shared) = if p.shared {
+        let (shared, cols) = shared::columns::place(&p, &mut bands, &item_of, &slots, &anchors);
+        (cols, Some(shared))
+    } else {
+        (main_axis(&p, &mut bands, &item_of, &slots, &anchors, &modes), None)
+    };
+    let shared = shared.as_ref();
+
+    if p.align {
+        let movable: Vec<bool> = modes.iter().map(|m| *m == BandMode::Fresh).collect();
+        let shifts = {
+            let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots, shared };
+            align::shifts(&ctx, &cols, &bands::stacked_bands(&p), &movable)
+        };
+        for (b, shift) in shifts.iter().enumerate() {
+            if shift.iter().all(|d| d.abs() < 1e-4) {
+                continue;
+            }
+            let bg = &mut bands[b];
+            for (l, &d) in shift.iter().enumerate() {
+                for &i in &bg.layers[l] {
+                    bg.items[i].x += d;
+                }
+            }
+            cols[b] = Columns::of(bg, cols[b].entry, cols[b].exit);
+        }
+    }
+
+    // Gap sizes from provisional cross-band tracks, then stacking.
+    let gap_tracks = {
+        let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots, shared };
+        let order = bands::stacked_bands(&p);
+        let outer: Vec<Option<Rect>> = (0..bands.len())
+            .map(|b| bands::content_box(&bands[b], &cols[b]).map(|c| c.outset(p.bands[b].insets)))
+            .collect();
+        let stack = routing::stack_info(&ctx, &order, &outer);
+        let bounds: Vec<Option<(f32, f32)>> = outer.iter().map(|o| o.map(|r| (r.top(), r.bottom()))).collect();
+        let seg_x = routing::channel_positions(&ctx, &cols, &stack, &bounds);
+        let (plans, passages) = routing::cross_plans(&ctx, &cols, &seg_x, &stack);
+        routing::cross::gap_track_counts(&plans, &passages, &stack, order.len().saturating_sub(1), &|e| {
+            routing::port_nets(&ctx, e)
+        })
+    };
+    let kept: Vec<bool> = modes.iter().map(|m| *m != BandMode::Fresh).collect();
+    let placement = bands::stack(&p, &mut bands, &cols, &kept, &gap_tracks);
+
+    let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots, shared };
+    let routes = routing::route_all(&ctx, &cols, &placement, &chain_of);
+    let (label_boxes, unplaced) =
+        labels::boxes(&ctx, &routes.points, &chain_of, &cols, &placement.outer, &routes.rerouted);
+    Ok(assemble(&ctx, &layer_of, &on_cycle, &placement, routes, label_boxes).with_unplaced_labels(unplaced))
+}
+
+/// Main-axis positions of every band laid out on its own, by its mode:
+/// provisional channel tracks size the channels.
+fn main_axis(
+    p: &Problem<'_>,
+    bands: &mut [BandGraph],
+    item_of: &[Option<usize>],
+    slots: &Slots,
+    anchors: &[stability::Anchors],
+    modes: &[BandMode],
+) -> Vec<Columns> {
+    let es = p.spacing.edge;
     let mut cols: Vec<Columns> = vec![Columns::default(); bands.len()];
     for b in 0..bands.len() {
         let columns = bands[b].columns();
         let counts = {
-            let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
-            let (top, bottom) = local_bounds(&bands[b], &p, b);
+            let ctx = Ctx { p, bands: &*bands, item_of, slots, shared: None };
+            let (top, bottom) = local_bounds(&bands[b], p, b);
             let segs = routing::channels::collect(&ctx, b, top, bottom, &|other| other > b);
             routing::channels::assign_tracks(&segs, columns + 1).1
         };
@@ -214,50 +279,7 @@ pub fn layout(graph: &LayoutGraph, options: &LayoutOptions, hints: &LayoutHints)
         let exit = coordinates::channel_width(&p.spacing, counts.get(columns).copied().unwrap_or(0), false);
         cols[b] = Columns::of(&bands[b], entry, exit);
     }
-
-    if p.align {
-        let movable: Vec<bool> = modes.iter().map(|m| *m == BandMode::Fresh).collect();
-        let shifts = {
-            let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
-            align::shifts(&ctx, &cols, &bands::stacked_bands(&p), &movable)
-        };
-        for (b, shift) in shifts.iter().enumerate() {
-            if shift.iter().all(|d| d.abs() < 1e-4) {
-                continue;
-            }
-            let bg = &mut bands[b];
-            for (l, &d) in shift.iter().enumerate() {
-                for &i in &bg.layers[l] {
-                    bg.items[i].x += d;
-                }
-            }
-            cols[b] = Columns::of(bg, cols[b].entry, cols[b].exit);
-        }
-    }
-
-    // Gap sizes from provisional cross-band tracks, then stacking.
-    let gap_tracks = {
-        let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
-        let order = bands::stacked_bands(&p);
-        let outer: Vec<Option<Rect>> = (0..bands.len())
-            .map(|b| bands::content_box(&bands[b], &cols[b]).map(|c| c.outset(p.bands[b].insets)))
-            .collect();
-        let stack = routing::stack_info(&ctx, &order, &outer);
-        let bounds: Vec<Option<(f32, f32)>> = outer.iter().map(|o| o.map(|r| (r.top(), r.bottom()))).collect();
-        let seg_x = routing::channel_positions(&ctx, &cols, &stack, &bounds);
-        let (plans, passages) = routing::cross_plans(&ctx, &cols, &seg_x, &stack);
-        routing::cross::gap_track_counts(&plans, &passages, &stack, order.len().saturating_sub(1), &|e| {
-            routing::port_nets(&ctx, e)
-        })
-    };
-    let kept: Vec<bool> = modes.iter().map(|m| *m != BandMode::Fresh).collect();
-    let placement = bands::stack(&p, &mut bands, &cols, &kept, &gap_tracks);
-
-    let ctx = Ctx { p: &p, bands: &bands, item_of: &item_of, slots: &slots };
-    let routes = routing::route_all(&ctx, &cols, &placement, &chain_of);
-    let (label_boxes, unplaced) =
-        labels::boxes(&ctx, &routes.points, &chain_of, &cols, &placement.outer, &routes.rerouted);
-    Ok(assemble(&ctx, &layer_of, &on_cycle, &placement, routes, label_boxes).with_unplaced_labels(unplaced))
+    cols
 }
 
 /// How a band is placed.
@@ -423,7 +445,7 @@ fn assemble(
         .map(|(e, (points, label))| {
             let edge = &p.edges[e];
             let (s, t) = (edge.source.node, edge.target.node);
-            let same_band = p.nodes[s].band == p.nodes[t].band;
+            let same_band = p.nodes[s].band == p.nodes[t].band || p.shared;
             let reversed = s != t && same_band && on_cycle[e] && layer_of[t] <= layer_of[s];
             EdgeRoute {
                 points: points.into_iter().map(|pt| frame.point(pt)).collect(),
