@@ -19,12 +19,19 @@ transitions or events.
 - Ports on any side, spread evenly. Unported edges attach on the
   flow-facing sides.
 - Edge labels: room reserved in the layout and boxes returned.
-- Groups (lanes) stacked top to bottom, with edges between them routed
-  around foreign groups.
+- Groups (lanes) stacked top to bottom. Edges between them run through
+  the gaps between groups and straight across the groups in between
+  through free passages, with side corridors only as a last resort.
+- Optional alignment of groups with each other
+  (`LayoutOptions::align_across_groups`), so edges between stacked groups
+  run straight.
+- Label boxes clear of nodes, group headers and each other, with a count
+  of any that could not be placed cleanly.
 - `LeftToRight` and `TopToBottom` flow.
 - Stability from the previous layout, and pins.
 - Typed errors for contradictory constraints and invalid input.
-- Public measurement helpers (`cascade_layout::metrics`).
+- Public measurement helpers (`cascade_layout::metrics`), including the
+  readability measures of a layout.
 
 ## Non-scope
 
@@ -43,9 +50,12 @@ transitions or events.
 | `metrics::count_crossings` | Proper crossings between the routes of different edges. |
 | `metrics::count_order_crossings` | Crossings between neighbouring-layer edges, judged from `layer`/`order` alone. |
 | `metrics::overlapping_nodes`, `metrics::segments_cross` | Test and diagnostic helpers. |
+| `metrics::measure` → `RouteMetrics` | Crossings, corridor edges, total length, bends, label overlaps and unplaced labels of one layout. The single measures (`total_length`, `bends`, `corridor_edges`, `label_overlaps`, `group_headers`) are public too. |
+| `LayoutOptions::align_across_groups` | Off by default. See step 6. |
+| `LayoutResult::unplaced_labels` | Labels that could not be placed clear of every node, header and label (additive field; `with_unplaced_labels` sets it). |
 
 The input and output types (`LayoutGraph`, `LayoutOptions`, `LayoutHints`,
-`LayoutResult`) are the foundation's contracts and are unchanged.
+`LayoutResult`) are the foundation's contracts; they only grew additively.
 
 ## Data and control flow
 
@@ -132,10 +142,14 @@ group's header on the real top.
        really collide: their stub margins plus half an edge spacing, and
        at least half the node spacing between them. New nodes go into the
        nearest free space to the average height of their placed
-       neighbours. Each chain's dummies take one line clear through all
-       their columns near the source's (or target's) line, or else the
-       nearest free spot per column. The order within a column follows
-       position.
+       neighbours. A new node with no placed neighbour (and no previous
+       position) takes its column's first free slot from the band's top:
+       the top of an empty column, or a hole between placed nodes, before
+       the space below them. So it never opens a new row below the band
+       when its column has room. Each chain's dummies take one line clear
+       through all their columns near the source's (or target's) line, or
+       else the nearest free spot per column. The order within a column
+       follows position.
    - Between the two phases, unported slots are sorted by where their
      edges head: by neighbour order in fresh and reproduced bands, and by
      neighbour height in inserted ones.
@@ -143,11 +157,30 @@ group's header on the real top.
    Provisional channel tracks size the channels. An inner channel is at
    least `layer_spacing` wide and holds `(tracks + 1) × edge_spacing`.
    Columns are as wide as their widest item; nodes, dummies and labels are
-   centred. Reproduced bands are placed the fresh way and translated back
-   (falling back to the inserted rule if that doesn't reproduce every
-   node's `x`). In inserted bands, anchored nodes keep their `x`, new
+   centred. Reproduced bands are placed the fresh way and moved back:
+   by one translation, or by one per column when the previous layout
+   aligned the columns separately (every column with nodes agrees on one
+   translation, node-less columns move with the column before them, and
+   no channel ends up narrower). Otherwise they fall back to the
+   inserted rule. In inserted bands, anchored nodes keep their `x`, new
    columns sit next to their neighbours, and a column moves right only as
    far as its channel needs.
+   - **Alignment** (`align.rs`, with `align_across_groups`). Each fresh
+     band shifts its columns along the main axis toward the other ends of
+     its cross-band edges. Per band this is an exact L1 compaction
+     (`place_l1`):
+     - units are columns; a column without nodes (dummies and labels
+       only) is welded to the column before it;
+     - units keep their order and current distances as minimums, and the
+       first stays at or right of its fresh position, so columns only
+       spread to the right;
+     - every cross-band end pulls its unit so its leg lines up with the
+       other end's leg (the attachment point of a direct leg, the
+       channel's middle otherwise), weight 1, with a feeble pull to stay.
+
+     Bands are solved in stacking order, down and back up, until nothing
+     moves more than half a unit (at most 8 rounds). Kept bands and pins
+     never move, but new bands still align with them.
 7. **Stacking and pins** (`bands.rs`). Bands stack top to bottom: the
    ungrouped band first (when it has nodes), then groups in insertion
    order.
@@ -169,24 +202,71 @@ group's header on the real top.
      preferred, cycles are broken greedily, and a segment's track is its
      longest-path depth. Segments on one port share a track. Tracks are
      spread evenly across the channel.
-   - Cross-band edges (`cross.rs`): leave the source band through its top
-     or bottom boundary from a channel track, run in the gap next to it,
-     and drop into the target band if it borders that gap. Otherwise they
-     take the nearer side corridor to the gap bordering the target. Gap
-     runs and corridor runs get tracks too.
+   - Cross-band edges (`routing/cross/`):
+     - **Legs.** An end on a North or South side facing the other band
+       leaves straight out of its port (a *direct* leg) when no other node
+       or label of its column lies between it and the band's boundary.
+       Any other end runs from its stub to a channel track and along it to
+       the boundary (a *channel* leg). Direct legs take no channel track.
+     - **Adjacent bands.** One run in the gap between them. When the legs
+       line up the whole route is one vertical line; otherwise it has one
+       jog. Adjacent bands never use a corridor.
+     - **Bands in between.** Each band's *passages* (`passages.rs`) are
+       the stretches of the lanes' shared width clear of every column
+       extent, channel track and pinned node, each widened by the edge
+       spacing. The strip left of the first column is never a passage;
+       the lane's title sits there. The planner (`planner.rs`) runs a
+       small dynamic program over the bands in between. For each band it
+       picks a passage with room left, or the left or right corridor. It
+       minimises horizontal travel, plus 24 per jog, plus 300 per in-band
+       link a passage crosses, plus 10⁶ per band passed in a corridor. So
+       a corridor is used only when a band has no passage with room, and
+       then on the shorter side. A vertical lines up with the previous one
+       wherever its passage allows. Routes are planned with the fewest
+       bands in between first (then by edge), each taking one place in
+       every passage it uses.
+     - **Resolution** (`resolve.rs`). Verticals sharing a passage are
+       ordered by the midpoint of where they come from and go to, then
+       placed exactly (L1) as near their planned line as the edge spacing
+       allows. Lined-up verticals weigh more. Every gap's runs and every
+       corridor's verticals get tracks from `tracks.rs`. For each
+       overlapping pair that picks the order with fewer crossings, judged
+       from where the verticals join. Corridor tracks therefore nest by
+       span.
    - Self-loops (`paths.rs`): East/East and West/West loops are a small C
      on a channel track. Other side pairs go around the node's corners on
-     their levels; a loop from a port back into itself is a small lasso.
+     their levels. A North/South loop goes around the nearer of the East
+     and West sides. A loop from a port back into itself is a small lasso.
    - Pinned edges: the obstacle router (`astar.rs`). This is weighted A*
-     over a sparse grid of obstacle-side lines, with bend penalties.
-     Crossing an obstacle is allowed but costly (nodes cost 16× groups,
-     and overlapping obstacles add up), so a route always exists.
-   - Repair: any other route crossing a node or a foreign group's interior
-     (possible only around pins) is rerouted by the same router.
+     over a sparse grid of obstacle-side lines (with midlines on small
+     grids), with bend penalties. Crossing an obstacle is allowed but
+     costs a penalty per unit of length, and overlapping obstacles add
+     up, so a route always exists:
+     - a node: 16 000;
+     - running along inside a foreign group: 1 000;
+     - crossing a foreign group straight along the stacking axis, the way
+       a passage does: 1.
+
+     Cheap straight crossings keep the search from flooding the grid
+     before a long detour. Step penalties come from prefix sums over the
+     grid, so each step costs O(1). Search buffers are reused across
+     searches (reset by a stamp).
+   - Repair: any other route that crosses a node, or enters a foreign
+     group other than straight across it, is rerouted by the same router.
+     This can only happen around pins.
 9. **Labels and output** (`labels.rs`, `mod.rs`).
-   - Label boxes use the reserved room: the label item's column, or above
-     the node for self-loops. Otherwise a label goes beside a segment,
-     preferring spots clear of nodes.
+   - Label boxes first use the reserved room: the label item's column, or
+     above the node for self-loops. They keep it if it is clear.
+   - Every other label (cross-band, pinned, rerouted, or a reserved box
+     that collides) is placed in edge order. It goes beside one of its
+     segments: longer segments first, starting mid-segment and sliding
+     toward the ends in steps, on either side.
+   - The first candidate wins if it keeps 0.5 clear of every node, group
+     header strip (padding and header on the real top) and placed label,
+     and covers no other edge's route. Failing that, the first clear of
+     the hard obstacles wins. Failing that, the one overlapping least
+     wins, and it is counted in `unplaced_labels`. Route segments are
+     indexed in a grid for these queries.
    - `reversed` = the edge lies on a cycle within one band and does not
      point forward.
    - `order` ranks nodes within (band, layer) by position.
@@ -206,21 +286,25 @@ group's header on the real top.
 | `engine/layered.rs` | Columns, items, dummies, chains | `BandGraph`, `Item`, `ItemKind`, `Chain`, `end_channel` |
 | `engine/slots.rs` | Port and slot positions, stub levels, margins | `Slots`, `attach_point` |
 | `engine/ordering.rs` | Crossing minimisation | `minimize`, `count_inversions` |
-| `engine/packing.rs` | 1-D placement: L1 PAV, free space, push-off | `place_l1`, `Occupancy`, `push_off` |
+| `engine/packing.rs` | 1-D placement: L1 PAV, free space, push-off | `place_l1`, `Occupancy` (`nearest_free`, `first_free`), `push_off` |
 | `engine/coordinates.rs` | Fresh-mode coordinates, straightening, channel widths | `assign_y`, `assign_x`, `channel_width` |
 | `engine/stability.rs` | Placement with previous positions: reproducing unchanged bands, fitting changes into changed ones | `anchors`, `reproduce_y`, `reproduce_x`, `place_nodes`, `place_dummies`, `place_x` |
 | `engine/context.rs` | Shared read-only views | `Ctx`, `Columns` |
+| `engine/align.rs` | Cross-group alignment of fresh bands | `shifts` |
 | `engine/bands.rs` | Stacking, pins, group rects | `stack`, `Placement` |
 | `engine/tracks.rs` | Track assignment | `assign`, `TrackSeg`, `Toward` |
 | `engine/routing/mod.rs` | Routing driver and repair | `route_all`, `Routes` |
-| `engine/routing/channels.rs` | Channel segments and track positions | `collect`, `SegKey` |
-| `engine/routing/cross.rs` | Gaps and corridors | `plan`, `resolve`, `CrossPlan` |
+| `engine/routing/channels.rs` | Channel segments and track positions, leg kinds | `collect`, `SegKey`, `Leg`, `leg`, `leg_offset` |
+| `engine/routing/cross/mod.rs` | Cross-band route types | `CrossPlan`, `Via`, `Corridor`, `Stack` |
+| `engine/routing/cross/passages.rs` | Free passages through a band | `Passage`, `of_band` |
+| `engine/routing/cross/planner.rs` | Choosing passages or corridors per band | `Request`, `plan_all` |
+| `engine/routing/cross/resolve.rs` | Passage, gap and corridor tracks → coordinates | `resolve`, `gap_track_counts`, `CrossGeometry` |
 | `engine/routing/paths.rs` | Polylines for chains, loops, cross-band edges | `chain_orthogonal`, `chain_polyline`, `self_loop`, `simplify` |
-| `engine/routing/astar.rs` | Obstacle router | `route`, `Obstacle`, `Ends` |
-| `engine/routing/check.rs` | Route validation, rect index | `is_clear`, `RectIndex` |
-| `engine/labels.rs` | Label boxes | `boxes` |
-| `src/metrics.rs` | Public measurements | `count_crossings`, `count_order_crossings`, `overlapping_nodes` |
-| `tests/*.rs` | Behaviour: basics, cycles, constraints, ordering, ports, labels, groups, stability, pins, determinism, direction, routing, fuzzed invariants, performance | `tests/common` holds the invariant checker |
+| `engine/routing/astar.rs` | Obstacle router | `Router`, `Obstacle`, `Ends` |
+| `engine/routing/check.rs` | Route validation, rect index | `is_clear`, `passes_across`, `RectIndex` |
+| `engine/labels.rs` | Collision-free label boxes | `boxes` |
+| `src/metrics.rs` | Public measurements | `measure`, `RouteMetrics`, `count_crossings`, `corridor_edges`, `label_overlaps`, `count_order_crossings`, `overlapping_nodes` |
+| `tests/*.rs` | Behaviour: basics, cycles, constraints, ordering, ports, labels, groups, stability, pins, determinism, direction, routing, readability, fuzzed invariants, performance, pinned-hub performance | `tests/common` holds the invariant checker; `tests/canvas` builds build-canvas-shaped benchmark graphs (lanes with gutters, or one wiring band) and draws them as SVG |
 
 ## Invariants and constraints
 
@@ -245,9 +329,15 @@ group's header on the real top.
   and ends exactly on its target attachment point, leaving and entering
   perpendicular to the side. Orthogonal routes are axis-aligned.
   Overlapping vertical segments in a channel are at least `edge_spacing`
-  apart while the channel has room. No route crosses a node's or a
-  foreign group's interior, except where pins make that unavoidable (a
-  pinned node overlapping an end, or a group dragged over another band).
+  apart while the channel has room, and so are verticals sharing a
+  passage. No route crosses a node's interior. A route enters a foreign
+  group only straight across it along the stacking axis, from one side to
+  the other, through a passage. Pins are the exception where they make
+  this unavoidable (a pinned node overlapping an end, or a group dragged
+  over another band). Edges between adjacent groups never use a corridor.
+- **Labels.** Label boxes do not overlap nodes, group header strips or
+  each other. Where that is impossible, the result counts the label in
+  `unplaced_labels`.
 - **Groups.** Group rects contain their nodes plus padding and header, and
   stack in insertion order. A fresh layout keeps at least `group_spacing`
   between them. A relayout lets a gap close to half of that before a
@@ -275,7 +365,9 @@ group's header on the real top.
   where they were. That includes a transition added inside one lane of
   the structure view: every other lane keeps every node
   (`tests/stability.rs`). In the shop example, even the edited lane's
-  existing nodes stay put. New nodes keep previous layers fixed, so a
+  existing nodes stay put. With `align_across_groups`, an unchanged
+  layout comes back exactly (nodes, groups and routes), and an edit
+  inside one lane still moves no node in another (`tests/stability.rs`). New nodes keep previous layers fixed, so a
   new node between two adjacent layers shares a layer instead of shifting
   everything after it. Existing nodes keep their relative order within a
   layer. `SceneBuilder::reset` (a fresh layout) tidies up after many
@@ -287,5 +379,8 @@ group's header on the real top.
 - **Spacing floors.** Edge spacing below 2 and layer spacing below twice
   the edge spacing are raised internally, so routes can leave their nodes.
 - **Performance.** 500 nodes and 800 edges lay out in about 25 ms fresh
-  and 5 ms stable in a release build (`tests/performance.rs`). Random
-  graphs with long edges, 1000 nodes or pins stay under about 0.35 s.
+  and 21 ms stable without groups, and about 9 ms either way with 8
+  groups, in a release build (`tests/performance.rs`; unchanged by the
+  routing work within noise). Pinning the busiest controller of a
+  96-node build canvas anywhere costs 2–4 ms, down from up to 170 ms
+  (`tests/pins_performance.rs`).
