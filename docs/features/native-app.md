@@ -139,6 +139,12 @@ render ──▶ rebuild_scene (once per frame at most):
 - `F`/`B` set or toggle the forward/backward cone of the selection with the
   current depth; `[`/`]` step the depth `0 … 12, ∞` (it is remembered while
   no cone is active); `H` toggles dim/hide.
+- **Group by machine** (toolbar toggle, shown in the causal view, or `G`)
+  flips `ViewState::group_by_machine`: the causal view is drawn with one
+  lane per machine on shared causal columns (view-scenes.md, "Causal
+  lanes"). The toggle clears the stored viewport so the new picture is
+  fitted; selection, cone and search carry over. `G` was free (no other
+  binding uses it), so it needed no substitute.
 - Clicking a stub, trace step or lifeline selects the element behind it
   (`locate::target_key`), so selection is shared across all views.
 - A finding click selects `detail.primary()`, switches to the causal view
@@ -199,7 +205,8 @@ previous display stays up. Errors (stubs today) appear in the banner.
 - Copy link writes `ViewState::to_link()` with the on-screen viewport to the
   clipboard. Paste link finds the first `cascade://` link in the clipboard
   text and replaces the whole view state (search box and diff fields
-  included); unknown keys are kept and counted in the status bar.
+  included); unknown keys are kept and counted in the status bar. Links
+  carry the lanes toggle as `lanes=1`.
 - The theme follows the window appearance; the toolbar button or
   ctrl/cmd-shift-T cycles system → the opposite → system. The chrome
   (`theme::Chrome`, a GPUI global) derives from the scene theme.
@@ -215,6 +222,7 @@ a text field has focus; chords are bound in `Workspace`.
 | `F` / `B` | Forward / backward cone of the selection (again to turn off) |
 | `[` / `]` | Cone depth down / up (`0 … 12, ∞`) |
 | `H` | Dim or hide what is outside the cone or path query |
+| `G` | Causal view: group by machine (lanes) on or off |
 | `1` `2` `3` `4` | Causal, structure, trace, matrix view |
 | `+` (`=`) / `-` | Zoom in / out |
 | `0` | Fit to view |
@@ -281,7 +289,7 @@ search results, plus the usual editing keys.
 | `crates/cascade-app/src/workspace/scene.rs` | Scene rebuild, viewport helpers, trace and diff orchestration | `Workspace::changed`, `rebuild_scene`, `switch_view`, `trace_request`, `diff_request` |
 | `crates/cascade-app/src/workspace/operations.rs` | Files, commands, selection, findings, pins, source, links, search, diff | `Workspace::run_command`, `open_finding`, `pin`, `unpin`, `open_source`, `pins_supported` |
 | `crates/cascade-app/src/workspace/canvas_events.rs` | Canvas element and pointer handlers | `Workspace::render_canvas_area` |
-| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control), build bar, inspector, play panel, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
+| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle), build bar, inspector, play panel, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
 | `crates/cascade-app/src/mode.rs` | View/Build/Play modes (pure) | `AppMode`, `view_for` |
 | `crates/cascade-app/src/build/*` | Build mode logic: ops, connect, inspector, pipeline, undo, disk (pure) | see build-and-play.md |
 | `crates/cascade-app/src/play/*` | Play mode logic: session state, overlay, timeline, forms (pure) | see build-and-play.md |

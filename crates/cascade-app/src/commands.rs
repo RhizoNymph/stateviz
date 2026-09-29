@@ -21,6 +21,9 @@ pub enum Command {
     ConeBackward,
     /// Dim or hide what is outside the cone or path query.
     ToggleOutside,
+    /// Causal view: one lane per machine on shared causal columns, or the
+    /// flat layout.
+    ToggleLanes,
     DepthLess,
     DepthMore,
     ShowView(ViewKind),
@@ -95,6 +98,7 @@ pub const KEYMAP: &[Binding] = &[
     canvas("f", Command::ConeForward),
     canvas("b", Command::ConeBackward),
     canvas("h", Command::ToggleOutside),
+    canvas("g", Command::ToggleLanes),
     canvas("[", Command::DepthLess),
     canvas("]", Command::DepthMore),
     canvas("1", Command::ShowView(ViewKind::Causal)),
@@ -150,6 +154,7 @@ pub const ALL_COMMANDS: &[Command] = &[
     Command::ConeForward,
     Command::ConeBackward,
     Command::ToggleOutside,
+    Command::ToggleLanes,
     Command::DepthLess,
     Command::DepthMore,
     Command::ShowView(ViewKind::Causal),
@@ -235,6 +240,12 @@ pub fn reduce(command: Command, state: &mut ViewState, depth: &mut Option<u32>) 
                 OutsideFocus::Dim => OutsideFocus::Hide,
                 OutsideFocus::Hide => OutsideFocus::Dim,
             };
+            Outcome::ViewChanged
+        }
+        Command::ToggleLanes => {
+            state.group_by_machine = !state.group_by_machine;
+            // The picture changes completely: fit it again.
+            state.viewport = None;
             Outcome::ViewChanged
         }
         Command::DepthLess => changed(set_depth(state, depth, depth_less(*depth))),
@@ -503,6 +514,22 @@ mod tests {
         assert_eq!(state.outside, OutsideFocus::Hide);
         reduce(Command::ToggleOutside, &mut state, &mut depth);
         assert_eq!(state.outside, OutsideFocus::Dim);
+    }
+
+    #[test]
+    fn g_toggles_lanes_and_links_carry_them() {
+        let find = |keys: &str| KEYMAP.iter().find(|b| b.keys == keys).map(|b| (b.command, b.scope));
+        assert_eq!(find("g"), Some((Command::ToggleLanes, Scope::Canvas)));
+        let viewport = cascade_scene::Viewport { center: cascade_layout::Point::new(5.0, 5.0), zoom: 2.0 };
+        let mut state = ViewState { selection: vec![t1()], viewport: Some(viewport), ..ViewState::default() };
+        let mut depth = None;
+        assert_eq!(reduce(Command::ToggleLanes, &mut state, &mut depth), Outcome::ViewChanged);
+        assert!(state.group_by_machine);
+        assert_eq!(state.viewport, None, "the new picture is fitted");
+        assert_eq!(state.selection, vec![t1()], "the selection survives");
+        assert_eq!(ViewState::from_link(&state.to_link()), Ok(state.clone()));
+        reduce(Command::ToggleLanes, &mut state, &mut depth);
+        assert!(!state.group_by_machine);
     }
 
     #[test]

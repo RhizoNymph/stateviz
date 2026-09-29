@@ -1,4 +1,4 @@
-//! The toolbar: view tabs, cone controls, diff controls, link and theme
+//! The toolbar: view tabs, the causal view's lane toggle, cone controls, diff controls, link and theme
 //! buttons.
 
 use cascade_core::Direction;
@@ -35,6 +35,8 @@ impl Workspace {
         let backward = cone.is_some_and(|c| c.direction == Direction::Backward);
         let hide = self.view.outside == OutsideFocus::Hide;
         let in_diff = self.view.diff.is_some();
+        let lanes = self.view.group_by_machine;
+        let causal = self.view.view == ViewKind::Causal;
 
         let tabs = ViewKind::ALL.into_iter().filter(|view| self.mode.allows(*view)).map(|view| {
             button(
@@ -70,6 +72,12 @@ impl Workspace {
             .children(modes)
             .child(separator(colors))
             .children(tabs)
+            .when(causal, |el| {
+                el.child(
+                    button("group-by-machine", with_key("Group by machine", Command::ToggleLanes), lanes, colors)
+                        .on_click(cx.listener(|ws, _, window, cx| ws.run_command(Command::ToggleLanes, window, cx))),
+                )
+            })
             .child(separator(colors))
             .child(caption("Cone", colors))
             .child(
