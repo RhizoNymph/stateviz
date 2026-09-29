@@ -48,7 +48,8 @@ Overview:
     cascade-app: >
       The `cascade-app` GPUI binary: paints scenes, pan/zoom, selection, cone
       tracing, search, legend/entity filter, findings panel, trace and matrix
-      interaction, live reload, click-to-source, diff mode, pin dragging; a
+      interaction, the causal view's group-by-machine toggle (G), live
+      reload, click-to-source, diff mode, pin dragging; a
       workbench with Build mode (edit ops with undo saved to the file in
       place, drag-to-connect, inspector, new files) and Play mode
       (interactive session with instances, trigger palette, queue, timeline,
@@ -94,9 +95,12 @@ Features Index:
       placement, orthogonal channel routing with track assignment, lanes
       stacked with edges between them run through gaps and free passages
       (side corridors only as a last resort), optional cross-lane
-      alignment, collision-free labels, stability from the previous
+      alignment, optional shared layers (one layering and one column
+      position per layer across every lane, edges between lanes always
+      heading with the flow through zoned channels and reserved
+      verticals), collision-free labels, stability from the previous
       layout, pins with an obstacle router.
-    entry_points: [cascade_layout::layout, cascade_layout::metrics]
+    entry_points: [cascade_layout::layout, cascade_layout::metrics, cascade_layout::LayoutOptions::shared_layers]
     depends_on: []
     doc: docs/features/layered-layout.md
   simulator:
@@ -111,8 +115,8 @@ Features Index:
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:
-    description: Scene builders for the causal, structure, trace and matrix views; the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles) and play overlays (instance markers, active and pending items).
-    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
+    description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles) and play overlays (instance markers, active and pending items).
+    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md
   interop_and_diff:
@@ -150,7 +154,8 @@ Features Index:
   readability:
     description: >
       Scene readability metrics (crossings, length, bends, label overlaps,
-      corridor use) with a report over the examples and asserted targets,
+      corridor use, leftward forward edges) with a report over the examples
+      (causal lanes included) and asserted targets,
       and the placement (wiring in gutters between the lanes, short fire
       labels said once) and routing work that improves them.
     entry_points: [cascade_scene::metrics::measure, cascade-scene tests/readability.rs, cascade-scene tests/readability_targets.rs, cascade_scene::views::structure::gutters::assign (crate), cascade_layout::LayoutOptions::align_across_groups]
