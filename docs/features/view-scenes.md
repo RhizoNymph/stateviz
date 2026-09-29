@@ -369,8 +369,8 @@ revision or an invalid version exits with code 2.
   view builds well under a second in a debug build (tested, including the
   current layout engine), edit mode included; a play overlay change costs
   no layout. Pinning a wiring node with many lane-crossing edges (a busy
-  controller) goes through the engine's obstacle router and is slower
-  (about 0.35 s release for the shop's Orders controller).
+  controller) goes through the engine's obstacle router: 14–18 ms release
+  for the pinned shop build canvas, scene included.
 - Play overlays never relayout, and `SceneMode::View` scenes are
   unchanged by build and play drawing (fingerprinted in
   `tests/view_mode_golden.rs`; re-blessed only for intended view-mode
