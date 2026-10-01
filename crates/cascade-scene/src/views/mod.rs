@@ -20,6 +20,7 @@ mod draft;
 mod filters;
 mod links;
 mod matrix;
+mod overlays;
 mod structure;
 mod style;
 mod trace;
@@ -49,6 +50,10 @@ pub struct SceneInput<'a> {
     pub traces: &'a [Trace],
     /// Diff mode: statuses for the (merged) model.
     pub diff: Option<&'a ModelDiff>,
+    /// Build mode adds wiring and connect handles to the structure view.
+    pub mode: crate::play::SceneMode,
+    /// A live play session to draw over the causal and structure views.
+    pub play: Option<&'a crate::play::PlayOverlay>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +70,8 @@ pub enum SceneError {
 #[derive(Debug, Default)]
 pub struct SceneBuilder {
     cache: cache::LayoutCache,
+    /// The build canvas's gutter columns, kept across edits.
+    wiring: structure::WiringMemo,
 }
 
 impl SceneBuilder {
@@ -75,6 +82,7 @@ impl SceneBuilder {
     /// Forget previous layouts (e.g. when opening a different file).
     pub fn reset(&mut self) {
         self.cache.clear();
+        self.wiring.clear();
     }
 
     /// How many times the layout engine has actually run (cache misses).
@@ -87,7 +95,7 @@ impl SceneBuilder {
         let interaction = Interaction::new(input.model, input.graph, input.view);
         match input.view.view {
             ViewKind::Causal => causal::build(input, &interaction, &mut self.cache),
-            ViewKind::Structure => structure::build(input, &interaction, &mut self.cache),
+            ViewKind::Structure => structure::build(input, &interaction, &mut self.cache, &mut self.wiring),
             ViewKind::Trace => Ok(trace::build(input, &interaction)),
             ViewKind::Matrix => Ok(matrix::build(input, &interaction)),
         }

@@ -75,6 +75,10 @@ pub enum ScenarioErrorKind {
     InvalidTriggerRef { text: String },
     #[error("unknown timing `{text}`; expected `immediate` or `after-quiescence`")]
     UnknownTiming { text: String },
+    #[error("`{text}` is not a queue position; expected a whole number from 0 (the head)")]
+    InvalidQueuePosition { text: String },
+    #[error("unknown end `{text}`; expected `drain` or `pause`")]
+    UnknownEnd { text: String },
 
     // --- Against the model --------------------------------------------------
     #[error("instance `{name}` is declared more than once")]
@@ -106,16 +110,36 @@ pub enum ScenarioErrorKind {
         candidates.join(", ")
     )]
     AmbiguousInstance { machine: String, candidates: Vec<String> },
+
+    // --- While running --------------------------------------------------------
+    /// Instance names are never reused within a run, even after the instance
+    /// that had the name was removed.
+    #[error("an instance named `{name}` already exists or existed earlier; names are not reused")]
+    NameTaken { name: String },
+    #[error("nothing is queued to deliver")]
+    QueueEmpty,
+    #[error("there is no queue item at position {position}; {pending} pending (the head is 0)")]
+    NoPendingItem { position: u32, pending: usize },
 }
 
-/// The simulator could not run a scenario against a model.
+/// The simulator could not run a scenario, or a play session could not
+/// perform an action, against a model.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SimError {
+    /// Kept from the play contract's stubs; nothing returns it any more.
+    #[error("interactive play is not implemented yet")]
+    NotImplemented,
     /// The scenario does not match the model. Most problems are found before
     /// the run starts; a step whose target only exists if a controller
-    /// spawns it is checked when the step runs.
+    /// spawns it, and the queue and instance steps, are checked when they
+    /// run.
     #[error("{0}")]
     Scenario(#[from] ScenarioError),
+    /// A play action names something that does not exist (or no longer
+    /// does), or asks for a queue item that is not there. The same problems
+    /// as scenario steps, without a source position.
+    #[error("{0}")]
+    Action(ScenarioErrorKind),
     /// More than this many queue items were delivered.
     #[error("the cascade did not settle within {0} queue items; is there an unbounded cycle?")]
     StepLimit(usize),
@@ -131,4 +155,10 @@ pub enum SimError {
     /// is causal rather than a race.
     #[error("`{later}` only fires after `{earlier}` has been delivered, so their order cannot be swapped")]
     RaceNotSwappable { earlier: String, later: String },
+    /// A play session was asked to seek past the end of its timeline.
+    #[error("there is no timeline position {position}; the timeline has {len} actions")]
+    NoSuchPosition { position: usize, len: usize },
+    /// A play session was asked to switch to a branch it does not have.
+    #[error("there is no branch {index}; the timeline has {count} branches")]
+    NoSuchBranch { index: usize, count: usize },
 }

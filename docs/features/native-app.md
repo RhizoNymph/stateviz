@@ -3,10 +3,17 @@
 The GPUI desktop app. It replaces the spec's web app: it opens one
 definition, paints the four views from `cascade-scene` scenes, and keeps
 up with the file, its pins sidecar and its scenarios as they change on disk.
+It is also a workbench: Build mode edits the definition (saved back to the
+YAML file in place) and Play mode drives an interactive simulator session
+over the canvas. Build and play are documented in
+[build-and-play.md](build-and-play.md#app-build-and-play-modes).
 
 ```text
-cascade-app <file> [--view <cascade:// link>]
+cascade-app [--new] <file> [--view <cascade:// link>] [--mode view|build|play]
 ```
+
+`--new` creates `<file>` with a starter definition (one machine, one state)
+and opens it in Build mode; it refuses to overwrite an existing file.
 
 `CASCADE_EDITOR` sets the click-to-source command (see below); `RUST_LOG`
 sets log filters (default `cascade_app=info`). Exit code 2 means a bad
@@ -24,6 +31,9 @@ argument (missing file, invalid `--view` link).
   fuzzy search, trace view scenario/race picker, matrix cell drill-down,
   click-to-source, pins, diff mode, shareable links, light/dark theme,
   status bar.
+- Modes: View, Build (toolbar adds and deletes, drag-to-connect, inspector,
+  undo/redo, saving edits to the file, new files) and Play (instances,
+  trigger palette, queue stepping, timeline with branches, scenarios).
 
 ## Non-scope
 
@@ -33,7 +43,10 @@ argument (missing file, invalid `--view` link).
 - Checks, simulation, git access and model merging: the app calls
   `analyze`, `simulate`/`race_orderings`, `read_at_rev` and
   `merge_for_display` and shows their results or errors.
-- Editing the definition. The app is a viewer; the editor is external.
+- How edits are applied to the definition and patched into the text
+  (`cascade_core::edit`, `cascade_interop::patch`) and how a play session
+  simulates (`cascade_sim::session`): the app calls them and shows their
+  results or errors.
 - Scenario discovery beyond the local fallback described below.
 
 ## Data and control flow
@@ -57,14 +70,19 @@ notify thread ──classify──▶ Changes ──unbounded channel──▶ G
       and scenarios/ if present)        │  drain the rest, merge
                                         ▼
                          Workspace::on_files_changed(Changes)
-       definition → start_reload: background_spawn(load_definition) ─▶ Document::apply
+       definition → start_reload: background_spawn(reread) ─▶ own write? ignore
+                                                            ─▶ else Document::apply, clear undo
        sidecar    → reload_sidecar (sync; unchanged content is ignored)
        scenarios  → rediscover, watch scenarios/ if it appeared, rerun traces
 ```
 
 - The watcher watches directories, not files, because editors often save by
   writing a new file and renaming it over the old one.
-- `document::analyze_text` is `load_str` + `CausalGraph::build` + `analyze`.
+- `document::analyze_text` is `load_str` + `CausalGraph::build` + `analyze`;
+  the loaded text is kept (`Loaded::text`) for build mode to patch.
+- `document::reread` skips analysis when the file's text hashes the same as
+  what the app last read or wrote (`build::disk::DiskSync`), so the app's own
+  saves do not reload or clear the undo history. See build-and-play.md.
 - `Document::apply` is the reload state machine:
   `Empty → Ready | Failed`, `Ready → Ready | Stale`, `Stale → Ready | Stale`,
   `Failed → Ready | Failed`. `Stale` keeps the last good `Loaded` on screen
@@ -121,6 +139,12 @@ render ──▶ rebuild_scene (once per frame at most):
 - `F`/`B` set or toggle the forward/backward cone of the selection with the
   current depth; `[`/`]` step the depth `0 … 12, ∞` (it is remembered while
   no cone is active); `H` toggles dim/hide.
+- **Group by machine** (toolbar toggle, shown in the causal view, or `G`)
+  flips `ViewState::group_by_machine`: the causal view is drawn with one
+  lane per machine on shared causal columns (view-scenes.md, "Causal
+  lanes"). The toggle clears the stored viewport so the new picture is
+  fitted; selection, cone and search carry over. `G` was free (no other
+  binding uses it), so it needed no substitute.
 - Clicking a stub, trace step or lifeline selects the element behind it
   (`locate::target_key`), so selection is shared across all views.
 - A finding click selects `detail.primary()`, switches to the causal view
@@ -181,7 +205,8 @@ previous display stays up. Errors (stubs today) appear in the banner.
 - Copy link writes `ViewState::to_link()` with the on-screen viewport to the
   clipboard. Paste link finds the first `cascade://` link in the clipboard
   text and replaces the whole view state (search box and diff fields
-  included); unknown keys are kept and counted in the status bar.
+  included); unknown keys are kept and counted in the status bar. Links
+  carry the lanes toggle as `lanes=1`.
 - The theme follows the window appearance; the toolbar button or
   ctrl/cmd-shift-T cycles system → the opposite → system. The chrome
   (`theme::Chrome`, a GPUI global) derives from the scene theme.
@@ -197,6 +222,7 @@ a text field has focus; chords are bound in `Workspace`.
 | `F` / `B` | Forward / backward cone of the selection (again to turn off) |
 | `[` / `]` | Cone depth down / up (`0 … 12, ∞`) |
 | `H` | Dim or hide what is outside the cone or path query |
+| `G` | Causal view: group by machine (lanes) on or off |
 | `1` `2` `3` `4` | Causal, structure, trace, matrix view |
 | `+` (`=`) / `-` | Zoom in / out |
 | `0` | Fit to view |
@@ -209,6 +235,16 @@ a text field has focus; chords are bound in `Workspace`.
 | ctrl/cmd-shift-T | Toggle theme |
 | ctrl/cmd-R | Reload the definition, pins and scenarios |
 | ctrl/cmd-Q | Quit |
+| ctrl/cmd-1 / 2 / 3 | View / Build / Play mode |
+| ctrl/cmd-Z | Undo the last edit |
+| ctrl/cmd-shift-Z, ctrl-Y | Redo |
+| `Delete`, `Backspace` | Build mode: delete the selection |
+| ctrl/cmd-N | New definition file |
+| `Space` | Play mode: deliver the queue's head |
+| `R` | Play mode: run until the queue is quiet |
+
+Undo and redo are chords, so they also work (on the definition) while a
+text field has focus; the text fields have no undo of their own.
 
 In a text field: Enter submits, Esc returns to the canvas, ↑/↓ move through
 search results, plus the usual editing keys.
@@ -221,6 +257,7 @@ search results, plus the usual editing keys.
 | alt-click | Unpin |
 | drag a node (causal, structure) | Pin it where it is dropped |
 | drag the background | Pan |
+| drag a connect handle (Build) | Connect: transition, emit, fire or source trigger (see build-and-play.md) |
 | scroll / shift-scroll | Pan / pan horizontally |
 | ctrl/cmd-scroll, pinch | Zoom about the pointer |
 | matrix cell click | Causal view restricted to that machine pair |
@@ -230,21 +267,21 @@ search results, plus the usual editing keys.
 | File | Role | Key exports |
 | --- | --- | --- |
 | `crates/cascade-app/src/main.rs` | Arguments, logging, GPUI bootstrap, window | `main` |
-| `crates/cascade-app/src/args.rs` | CLI arguments | `Args`, `Args::initial_view` |
-| `crates/cascade-app/src/document/mod.rs` | Load + analyze; reload state machine | `analyze_text`, `load_definition`, `Analyzed`, `Loaded`, `LoadFailure`, `DocState`, `Document` |
+| `crates/cascade-app/src/args.rs` | CLI arguments | `Args`, `Args::initial_view`, `Args::initial_mode` |
+| `crates/cascade-app/src/document/mod.rs` | Load + analyze; own-write-aware re-read; reload state machine | `analyze_text`, `load_definition`, `reread`, `Reread`, `Analyzed`, `Loaded`, `LoadFailure`, `DocState`, `Document` |
 | `crates/cascade-app/src/document/scenarios.rs` | Scenario discovery fallback | `ScenarioFile`, `scenario_id`, `is_scenario_path`, `discover` |
 | `crates/cascade-app/src/watch.rs` | notify watcher, path classification | `WatchTargets`, `Changes`, `classify_event`, `is_relevant`, `FileWatcher`, `DEBOUNCE` |
 | `crates/cascade-app/src/commands.rs` | Key map and view-state reducer (pure) | `Command`, `Scope`, `KEYMAP`, `reduce`, `Outcome`, `HostEffect`, `select`, `add_to_selection`, `depth_more`, `depth_less` |
-| `crates/cascade-app/src/gesture.rs` | Pointer state machine, click classification (pure) | `Gesture`, `Pick`, `Draggable`, `Mods`, `classify_click`, `ClickAction` |
+| `crates/cascade-app/src/gesture.rs` | Pointer state machine (click, pan, pin drag, connect drag), click classification (pure) | `Gesture`, `Pick`, `Draggable`, `Mods`, `classify_click`, `ClickAction` |
 | `crates/cascade-app/src/viewport.rs` | Scene ↔ screen transforms, fit, zoom, pan (pure) | `ScreenPoint`, `ScreenRect`, `to_screen`, `to_scene`, `fit`, `zoom_about`, `pan_by`, `center_on` |
-| `crates/cascade-app/src/locate.rs` | Hit target → key; where a key is drawn; race indices | `target_key`, `locate_key`, `locate_with_fallback`, `locate_finding`, `race_finding`, `race_index` |
+| `crates/cascade-app/src/locate.rs` | Hit target → key; where a key is drawn; drop targets; race indices | `target_key`, `drop_key`, `drop_targets`, `locate_key`, `locate_with_fallback`, `locate_finding`, `race_finding`, `race_index` |
 | `crates/cascade-app/src/editor.rs` | Click-to-source command builder (pure) and spawn | `build_command`, `command_for`, `split_words`, `find_on_path`, `EditorCommand`, `Location` |
 | `crates/cascade-app/src/link.rs` | Link copy/paste flow (pure) | `link_for`, `parse_pasted`, `unknown_keys` |
 | `crates/cascade-app/src/trace.rs` | Trace requests and runs | `TraceRequest`, `TraceRun`, `run`, `TraceError` |
 | `crates/cascade-app/src/diffmode.rs` | Diff requests, runs and merge | `DiffRequest`, `DiffRun`, `DiffDisplay`, `compute`, `applies_to`, `refs_from_fields` |
 | `crates/cascade-app/src/theme.rs` | Theme choice, color conversion, chrome palette | `ThemeChoice`, `scene_theme`, `hsla`, `Chrome`, `ActiveChrome`, `chrome` |
 | `crates/cascade-app/src/input.rs` | Single-line text input (from GPUI's example) | `TextInput`, `InputEvent`, `bind_keys`, `CONTEXT` |
-| `crates/cascade-app/src/canvas/paint.rs` | Scene painter | `paint_scene`, `PaintInput` |
+| `crates/cascade-app/src/canvas/paint.rs` | Scene painter, connect rubber band and drop highlights | `paint_scene`, `PaintInput`, `ConnectPaint` |
 | `crates/cascade-app/src/canvas/shapes.rs` | Shape geometry, dashes, arrowheads, culling (pure) | `hexagon`, `tag`, `arrowhead`, `dash_pattern`, `quantize_font`, `visible` |
 | `crates/cascade-app/src/canvas/font.rs` | Monospace family choice | `pick_mono` |
 | `crates/cascade-app/src/workspace/mod.rs` | Root view: state, layout, theme sync, status expiry | `Workspace`, `CanvasState`, `SearchState`, `Status` |
@@ -252,7 +289,11 @@ search results, plus the usual editing keys.
 | `crates/cascade-app/src/workspace/scene.rs` | Scene rebuild, viewport helpers, trace and diff orchestration | `Workspace::changed`, `rebuild_scene`, `switch_view`, `trace_request`, `diff_request` |
 | `crates/cascade-app/src/workspace/operations.rs` | Files, commands, selection, findings, pins, source, links, search, diff | `Workspace::run_command`, `open_finding`, `pin`, `unpin`, `open_source`, `pins_supported` |
 | `crates/cascade-app/src/workspace/canvas_events.rs` | Canvas element and pointer handlers | `Workspace::render_canvas_area` |
-| `crates/cascade-app/src/panels/*.rs` | Toolbar, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
+| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle), build bar, inspector, play panel, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
+| `crates/cascade-app/src/mode.rs` | View/Build/Play modes (pure) | `AppMode`, `view_for` |
+| `crates/cascade-app/src/build/*` | Build mode logic: ops, connect, inspector, pipeline, undo, disk (pure) | see build-and-play.md |
+| `crates/cascade-app/src/play/*` | Play mode logic: session state, overlay, timeline, forms (pure) | see build-and-play.md |
+| `crates/cascade-app/src/workspace/building.rs`, `playing.rs` | Build and play glue | `BuildUi`, `PlayUi` |
 
 ## Invariants and constraints
 
@@ -284,3 +325,8 @@ search results, plus the usual editing keys.
 - Structure, trace and matrix scenes, SVG export, analysis, the simulator,
   git reading and model diffing are stubs on this branch; the app shows
   their notes or errors until the sibling workstreams land.
+- On `feat/app-build-play`, `edit::apply`, `locate_transition`,
+  `patch_text`, the play session, edit-mode wiring/handles and play overlays
+  are stubs: edits and play actions report "not implemented" in the UI, and
+  connecting works through shift-click + **Connect selection** until the
+  scene draws connect handles.

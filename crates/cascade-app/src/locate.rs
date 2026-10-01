@@ -39,6 +39,7 @@ pub fn lifeline_element(lifeline: &Lifeline) -> ElementRef {
 pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option<ElementKey> {
     match target {
         HitTarget::None | HitTarget::MatrixCell { .. } => None,
+        HitTarget::ConnectHandle { element } => Some(element.clone()),
         HitTarget::Element(key) => Some(key.clone()),
         HitTarget::MachineStub { machine, .. } => Some(ElementKey::Machine { machine: machine.clone() }),
         HitTarget::TraceStep { ordering, step } => {
@@ -52,6 +53,36 @@ pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option
             Some(model.key_of(lifeline_element(lifeline)))
         }
     }
+}
+
+/// The element a connect drag can drop on at this target: a drawn element
+/// or another element's connect handle.
+pub fn drop_key(target: &HitTarget) -> Option<&ElementKey> {
+    match target {
+        HitTarget::Element(key) | HitTarget::ConnectHandle { element: key } => Some(key),
+        HitTarget::None
+        | HitTarget::MachineStub { .. }
+        | HitTarget::MatrixCell { .. }
+        | HitTarget::TraceStep { .. }
+        | HitTarget::Lifeline { .. } => None,
+    }
+}
+
+/// Where each element `accept`s a drop is drawn (its node, else its edge's
+/// bounds), once per element, for highlighting valid drop targets.
+pub fn drop_targets(scene: &Scene, accept: impl Fn(&ElementKey) -> bool) -> Vec<(ElementKey, Rect)> {
+    let mut out: Vec<(ElementKey, Rect)> = Vec::new();
+    let nodes = scene.nodes.iter().filter_map(|n| drop_key(&n.target).map(|k| (k, n.rect)));
+    let edges = scene.edges.iter().filter_map(|e| match &e.target {
+        HitTarget::Element(k) => bounds_of(&e.points).map(|r| (k, r)),
+        _ => None,
+    });
+    for (key, rect) in nodes.chain(edges) {
+        if accept(key) && !out.iter().any(|(k, _)| k == key) {
+            out.push((key.clone(), rect));
+        }
+    }
+    out
 }
 
 /// The node for `key` that can be dragged to pin it, with its rect.
@@ -322,5 +353,27 @@ mod tests {
         assert_eq!(race_index(&findings, &unhandled), None);
         assert_eq!(race_finding(&findings, 0), Some(&race));
         assert_eq!(race_finding(&findings, 1), None);
+    }
+
+    #[test]
+    fn drop_targets_list_accepted_elements_once() {
+        let mut scene = Scene::empty(ViewKind::Structure, Rgba::hex(0xFFFFFF));
+        let draft = key("state:Order:draft");
+        let paid = key("state:Order:paid");
+        let rule = key("rule:Fulfillment/OrderPaid#0");
+        scene.nodes.push(node(HitTarget::Element(draft.clone()), Rect::new(0.0, 0.0, 10.0, 10.0)));
+        scene.nodes.push(node(HitTarget::ConnectHandle { element: draft.clone() }, Rect::new(10.0, 0.0, 2.0, 2.0)));
+        scene.nodes.push(node(HitTarget::Element(paid.clone()), Rect::new(20.0, 0.0, 10.0, 10.0)));
+        scene.nodes.push(node(HitTarget::None, Rect::new(40.0, 0.0, 10.0, 10.0)));
+        scene.edges.push(edge(HitTarget::Element(rule.clone()), vec![Point::new(0.0, 20.0), Point::new(5.0, 30.0)]));
+        let states = drop_targets(&scene, |k| k.kind() == cascade_core::ElementKind::State);
+        assert_eq!(
+            states,
+            [(draft.clone(), Rect::new(0.0, 0.0, 10.0, 10.0)), (paid, Rect::new(20.0, 0.0, 10.0, 10.0))]
+        );
+        let rules = drop_targets(&scene, |k| *k == rule);
+        assert_eq!(rules, [(rule, Rect::new(0.0, 20.0, 5.0, 10.0))]);
+        assert_eq!(drop_key(&HitTarget::ConnectHandle { element: draft.clone() }), Some(&draft));
+        assert_eq!(drop_key(&HitTarget::None), None);
     }
 }

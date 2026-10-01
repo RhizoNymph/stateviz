@@ -35,6 +35,27 @@ pub struct LayoutOptions {
     pub edge_spacing: f32,
     /// Gap between stacked groups (lanes).
     pub group_spacing: f32,
+    /// Pull nodes toward their neighbours in other groups: after each group
+    /// is laid out, shift its layers along the flow (keeping their order and
+    /// spacing; a layer of only edge bends and labels moves with the layer
+    /// before it) toward the other ends of their edges into other groups,
+    /// so edges between stacked groups run as straight as possible. Layers
+    /// only spread (right with left-to-right flow); groups kept from
+    /// `LayoutHints::previous` and pinned nodes do not move. Off by default.
+    pub align_across_groups: bool,
+    /// Lay the groups out on one shared set of layers: layering runs over
+    /// the whole graph (edges between groups included), and every group
+    /// puts a layer at the same position along the flow, each layer as wide
+    /// as its widest item in any group. An edge between groups then always
+    /// runs from a lower to a higher layer, and every segment of it heads
+    /// with the flow (or across it), unless it was reversed to break a
+    /// cycle (`EdgeRoute::reversed`, which can now flag edges between
+    /// groups too). Channel tracks keep edges leaving a layer before edges
+    /// arriving at the next, and every edge crossing groups in between gets
+    /// a reserved vertical of its own, so no side corridor is used.
+    /// Takes precedence over `align_across_groups`. Off by default.
+    #[serde(default)]
+    pub shared_layers: bool,
 }
 
 impl Default for LayoutOptions {
@@ -46,6 +67,8 @@ impl Default for LayoutOptions {
             layer_spacing: 64.0,
             edge_spacing: 8.0,
             group_spacing: 32.0,
+            align_across_groups: false,
+            shared_layers: false,
         }
     }
 }

@@ -6,7 +6,7 @@ use crate::geometry::{Point, Rect};
 
 use super::super::context::{Columns, Ctx};
 use super::super::frame::Side;
-use super::channels::{SegKey, end_line};
+use super::channels::{Leg, SegKey, end_line, leg};
 use super::cross::CrossGeometry;
 
 /// Drop repeated points and middle points lying between their neighbours on
@@ -173,7 +173,8 @@ impl Ring {
     }
 
     /// From the point on side `s` around the node's corners to the point
-    /// on side `t`.
+    /// on side `t`. A loop between the North and South sides goes around
+    /// the nearer of the East and West sides.
     fn around(&self, (s, sp): (Side, Point), (t, tp): (Side, Point)) -> Vec<Point> {
         let (east, west) = (self.rect.right() + self.offset, self.rect.left() - self.offset);
         let ne = Point::new(east, self.north);
@@ -188,8 +189,12 @@ impl Ring {
             (West, South) | (South, West) => vec![sw],
             (East, West) => vec![ne, nw],
             (West, East) => vec![nw, ne],
-            (North, South) => vec![ne, se],
-            (South, North) => vec![se, ne],
+            // Around whichever side is nearer the two ports.
+            (North, South) | (South, North) => {
+                let west = (sp.x + tp.x) / 2.0 < self.rect.center().x;
+                let (n, so) = if west { (nw, sw) } else { (ne, se) };
+                if s == North { vec![n, so] } else { vec![so, n] }
+            }
             _ => Vec::new(),
         };
         let mut pts = vec![sp, self.at(s, sp)];
@@ -200,20 +205,27 @@ impl Ring {
     }
 }
 
-/// Route of a cross-band edge from its resolved geometry.
+/// Route of a cross-band edge from its resolved geometry: out of the
+/// source (straight from a direct leg, or by its stub and channel track),
+/// alternating gap runs and verticals, and into the target the same way.
 pub(crate) fn cross_band(ctx: &Ctx<'_, '_>, edge: usize, g: &CrossGeometry) -> Vec<Point> {
     let (start, end) = ends(ctx, edge);
+    let (Some(&x_s), Some(&x_t)) = (g.xs.first(), g.xs.last()) else { return simplify(vec![start, end]) };
     let mut pts = vec![start];
-    pts.extend(stub(ctx, edge, true, start));
-    pts.push(Point::new(g.x_s, end_line(ctx, edge, true)));
-    pts.push(Point::new(g.x_s, g.y_first));
-    if let Some(xc) = g.x_corridor {
-        pts.push(Point::new(xc, g.y_first));
-        pts.push(Point::new(xc, g.y_last));
+    if leg(ctx, edge, true) == Leg::Channel {
+        pts.extend(stub(ctx, edge, true, start));
+        pts.push(Point::new(x_s, end_line(ctx, edge, true)));
     }
-    pts.push(Point::new(g.x_t, g.y_last));
-    pts.push(Point::new(g.x_t, end_line(ctx, edge, false)));
-    pts.extend(stub(ctx, edge, false, end));
+    for (k, run) in g.runs.iter().enumerate() {
+        if let (Some(y), Some(&a), Some(&b)) = (run, g.xs.get(k), g.xs.get(k + 1)) {
+            pts.push(Point::new(a, *y));
+            pts.push(Point::new(b, *y));
+        }
+    }
+    if leg(ctx, edge, false) == Leg::Channel {
+        pts.push(Point::new(x_t, end_line(ctx, edge, false)));
+        pts.extend(stub(ctx, edge, false, end));
+    }
     pts.push(end);
     simplify(pts)
 }
@@ -221,6 +233,16 @@ pub(crate) fn cross_band(ctx: &Ctx<'_, '_>, edge: usize, g: &CrossGeometry) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn north_south_loops_go_round_the_nearer_side() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 40.0);
+        let ring = Ring { rect, offset: 4.0, north: -8.0, south: 48.0 };
+        let left = ring.around((Side::South, Point::new(20.0, 40.0)), (Side::North, Point::new(30.0, 0.0)));
+        assert!(left.iter().all(|p| p.x <= 30.0), "{left:?}");
+        let right = ring.around((Side::North, Point::new(80.0, 0.0)), (Side::South, Point::new(70.0, 40.0)));
+        assert!(right.iter().all(|p| p.x >= 70.0), "{right:?}");
+    }
 
     #[test]
     fn simplify_removes_duplicates_and_straight_runs() {

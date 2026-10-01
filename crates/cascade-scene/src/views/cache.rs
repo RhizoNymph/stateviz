@@ -10,7 +10,9 @@
 //!
 //! A few recent layouts are kept per view so toggling a structural filter
 //! off returns to exactly the picture before it. On a miss, the most recent
-//! layout of the view is fed back as [`LayoutHints::previous`].
+//! layout of the view made with the same options is fed back as
+//! [`LayoutHints::previous`] (the causal view's lanes and its flat layout
+//! do not seed each other).
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
@@ -54,7 +56,9 @@ impl LayoutCache {
             memos.push_front(memo);
             return Ok(result);
         }
-        let previous = memos.front().map(|m| m.result.to_previous(&m.graph));
+        // Only a layout made with the same options seeds this one: the
+        // causal view's flat layout says nothing useful about its lanes.
+        let previous = memos.iter().find(|m| m.options == options).map(|m| m.result.to_previous(&m.graph));
         let hints = LayoutHints { previous, pins: pins.clone() };
         let result = Arc::new(layout(&graph, &options, &hints)?);
         self.runs += 1;

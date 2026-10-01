@@ -60,6 +60,16 @@ mod tests {
     }
 
     #[test]
+    fn copy_and_paste_carry_lanes() {
+        let state = ViewState { group_by_machine: true, ..ViewState::default() };
+        let link = link_for(&state, None);
+        assert_eq!(link, "cascade://causal?lanes=1");
+        let pasted = parse_pasted(&format!("cascade-app shop.yaml --view '{link}'")).expect("parses");
+        assert!(pasted.group_by_machine);
+        assert!(!parse_pasted("cascade://causal").expect("parses").group_by_machine);
+    }
+
+    #[test]
     fn paste_rejects_non_links() {
         assert_eq!(parse_pasted("hello"), Err(ViewLinkError::NotALink));
         assert!(matches!(parse_pasted("cascade://pie"), Err(ViewLinkError::UnknownView(_))));

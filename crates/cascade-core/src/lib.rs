@@ -16,6 +16,7 @@ pub mod causal;
 pub mod color;
 pub mod definition;
 pub mod diff;
+pub mod edit;
 pub mod error;
 pub mod ids;
 pub mod key;

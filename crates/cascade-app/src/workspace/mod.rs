@@ -7,12 +7,14 @@
 //! per frame at most.
 
 pub mod actions;
+pub mod building;
 mod canvas_events;
 mod operations;
+pub mod playing;
 mod scene;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use cascade_core::search::SearchHit;
@@ -22,15 +24,28 @@ use gpui::{
     WindowAppearance, div, prelude::*, px,
 };
 
+use crate::build::disk::DiskSync;
 use crate::diffmode::DiffRun;
 use crate::document::Document;
 use crate::document::scenarios::ScenarioFile;
 use crate::gesture::Gesture;
 use crate::input::{InputEvent, TextInput};
+use crate::mode::AppMode;
 use crate::theme::{ActiveChrome, Chrome, ThemeChoice, chrome, scene_theme};
 use crate::trace::TraceRun;
 use crate::viewport::ScreenRect;
 use crate::watch::FileWatcher;
+
+use self::building::BuildUi;
+use self::playing::PlayUi;
+
+/// `Cascade — cascade.yaml`.
+pub fn window_title(path: &Path) -> String {
+    format!(
+        "Cascade — {}",
+        path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned())
+    )
+}
 
 /// A transient message in the status bar.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -92,7 +107,13 @@ pub struct Workspace {
     status_timer_for: Option<u64>,
     status_task: Option<Task<()>>,
     pub(crate) mono: SharedString,
-    watcher: Option<FileWatcher>,
+    /// View, Build or Play.
+    pub(crate) mode: AppMode,
+    /// What the app last read from or wrote to the definition file.
+    pub(crate) disk: DiskSync,
+    pub(crate) build: BuildUi,
+    pub(crate) play: PlayUi,
+    pub(crate) watcher: Option<FileWatcher>,
     reload_task: Option<Task<()>>,
     trace_task: Option<Task<()>>,
     diff_task: Option<Task<()>>,
@@ -114,10 +135,12 @@ fn system_mode(window: &Window) -> ThemeMode {
 }
 
 impl Workspace {
-    /// Open `path` (absolute) with `view` as the initial view state.
+    /// Open `path` (absolute) with `view` as the initial view state, in
+    /// `mode`.
     pub fn new(
         path: PathBuf,
         view: ViewState,
+        mode: AppMode,
         mono: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -179,6 +202,10 @@ impl Workspace {
             status_timer_for: None,
             status_task: None,
             mono,
+            mode: AppMode::View,
+            disk: DiskSync::default(),
+            build: BuildUi::default(),
+            play: PlayUi::new(cx),
             watcher: None,
             reload_task: None,
             trace_task: None,
@@ -188,6 +215,7 @@ impl Workspace {
         };
         ws.load_initial();
         ws.start_watching(cx);
+        ws.set_mode(mode, cx);
         ws.changed(cx);
         window.focus(&ws.focus, cx);
         ws
@@ -242,6 +270,9 @@ impl Render for Workspace {
         if self.scene_dirty {
             self.rebuild_scene();
         }
+        if self.mode == AppMode::Build {
+            self.sync_inspector(window, cx);
+        }
         self.schedule_status_expiry(cx);
         let colors = chrome(cx);
         let root = div()
@@ -253,8 +284,14 @@ impl Render for Workspace {
             .bg(colors.background)
             .text_color(colors.text)
             .text_size(px(13.));
+        let side_panel = match self.mode {
+            AppMode::View => None,
+            AppMode::Build => Some(self.render_inspector(cx).into_any_element()),
+            AppMode::Play => Some(self.render_play_panel(cx).into_any_element()),
+        };
         actions::register(root, cx)
             .child(self.render_toolbar(window, cx))
+            .children(self.render_build_bar(cx))
             .children(self.render_banner(cx))
             .child(
                 div()
@@ -263,7 +300,8 @@ impl Render for Workspace {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_sidebar(cx))
-                    .child(self.render_canvas_area(window, cx)),
+                    .child(self.render_canvas_area(window, cx))
+                    .children(side_panel),
             )
             .child(self.render_status_bar(cx))
     }

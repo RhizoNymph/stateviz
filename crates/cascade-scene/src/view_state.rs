@@ -95,6 +95,9 @@ pub struct ViewState {
     pub hidden_machines: BTreeSet<String>,
     /// Collapsed composite states and machines (structure view).
     pub collapsed: BTreeSet<ElementKey>,
+    /// Causal view: one lane per machine on shared causal columns (link
+    /// parameter `lanes=1`).
+    pub group_by_machine: bool,
     pub search: Option<String>,
     /// Restrict the causal view to two machines (from a matrix cell click).
     pub machine_pair: Option<(String, String)>,
@@ -194,6 +197,9 @@ impl ViewState {
             let keys: Vec<String> = self.collapsed.iter().map(ToString::to_string).collect();
             params.push(format!("collapse={}", join_encoded(keys.iter().map(String::as_str))));
         }
+        if self.group_by_machine {
+            params.push("lanes=1".to_owned());
+        }
         if let Some(q) = &self.search {
             params.push(format!("q={}", encode(q)));
         }
@@ -254,6 +260,13 @@ impl ViewState {
                 }
                 "hide" => state.hidden_machines = split_decoded(value, "hide")?.into_iter().collect(),
                 "collapse" => state.collapsed = keys(value, "collapse")?.into_iter().collect(),
+                "lanes" => {
+                    state.group_by_machine = match value {
+                        "1" => true,
+                        "0" => false,
+                        _ => return Err(ViewLinkError::InvalidValue { param: "lanes", value: value.to_owned() }),
+                    }
+                }
                 "q" => state.search = Some(decode(value, "q")?),
                 "pair" => {
                     let parts = split_decoded(value, "pair")?;
@@ -321,6 +334,7 @@ mod tests {
             outside: OutsideFocus::Hide,
             hidden_machines: ["Payment".to_owned(), "Shipment".to_owned()].into_iter().collect(),
             collapsed: ["state:Job:running".parse().expect("key")].into_iter().collect(),
+            group_by_machine: true,
             search: Some("paid & co, 100%".to_owned()),
             machine_pair: Some(("Order".into(), "Shipment".into())),
             scenario: Some("happy path".into()),

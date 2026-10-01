@@ -14,6 +14,7 @@ use gpui::{AppContext as _, Context};
 use super::Workspace;
 use crate::diffmode::{self, DiffRequest, DiffRun};
 use crate::locate::race_finding;
+use crate::mode::{self, AppMode};
 use crate::trace::{self, TraceRequest, TraceRun};
 use crate::viewport::{self, ScreenRect};
 
@@ -52,13 +53,21 @@ impl Workspace {
             .view
             .diff
             .as_ref()
-            .filter(|_| diffmode::applies_to(self.view.view))
+            .filter(|_| diffmode::applies_to(self.view.view) && self.mode == AppMode::View)
             .and_then(|refs| self.diff_run.display_for(refs))
             .cloned();
         let (model, graph, findings, diff): (&Model, &CausalGraph, &[Finding], Option<&ModelDiff>) = match &diff_display
         {
             Some(display) => (&display.model, &display.graph, &[], Some(&display.diff)),
             None => (&loaded.model, &loaded.graph, &loaded.findings, None),
+        };
+        // Play overlays are keyed by name, but only drawn over the model the
+        // session was built from (never over a diff's merged model).
+        let overlay = match (&self.play.state, self.mode, &diff_display) {
+            (Some(state), AppMode::Play, None) if state.generation() == loaded.generation => {
+                Some(state.overlay(&loaded.model))
+            }
+            _ => None,
         };
         let measure = MonoMeasure::default();
         let input = SceneInput {
@@ -70,6 +79,8 @@ impl Workspace {
             measure: &measure,
             sidecar: &self.sidecar,
             traces,
+            mode: self.mode.scene_mode(),
+            play: overlay.as_ref(),
             diff,
         };
         let started = Instant::now();
@@ -143,6 +154,8 @@ impl Workspace {
             return false;
         }
         self.parked_viewports.insert(self.view.view, self.view.viewport);
+        // A view the mode cannot show drops back to View mode.
+        self.mode = mode::view_for(self.mode, view);
         self.view.view = view;
         self.view.viewport = self.parked_viewports.get(&view).copied().flatten();
         if view == ViewKind::Trace && self.view.scenario.is_none() {

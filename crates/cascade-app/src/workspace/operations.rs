@@ -1,6 +1,7 @@
 //! What the user can do: commands, selection, pins, search, diff, links,
 //! click-to-source, and keeping up with files on disk.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use cascade_core::{Check, ElementKey};
@@ -10,13 +11,16 @@ use futures::StreamExt;
 use gpui::{AppContext as _, ClipboardItem, Context, Focusable, Window};
 
 use super::{Status, Workspace};
+use crate::build::disk::{DiskChange, DiskSync};
+use crate::build::undo::Direction;
 use crate::commands::{self, Command, HostEffect, Outcome};
 use crate::diffmode::refs_from_fields;
-use crate::document::{load_definition, scenarios};
+use crate::document::{Document, Reread, load_definition, reread, scenarios};
 use crate::editor;
 use crate::input::InputEvent;
 use crate::link;
 use crate::locate;
+use crate::mode::AppMode;
 use crate::viewport;
 use crate::watch::{Changes, DEBOUNCE, FileWatcher, WatchTargets};
 
@@ -38,9 +42,19 @@ impl Workspace {
 
     // --- Files ---------------------------------------------------------------
 
-    /// Load synchronously at startup so the first frame has content.
+    /// Load synchronously at startup (and when opening another file) so
+    /// the first frame has content.
     pub(super) fn load_initial(&mut self) {
-        let result = load_definition(self.doc.path());
+        let result = match reread(self.doc.path(), DiskSync::default()) {
+            Reread::Changed { text, result } => {
+                if let Some(text) = &text {
+                    self.disk.note(text);
+                }
+                *result
+            }
+            // Unreachable with nothing known; treat it as an empty read.
+            Reread::Unchanged => load_definition(self.doc.path()),
+        };
         if let Err(failure) = &result {
             tracing::warn!(path = %self.doc.path().display(), problems = failure.count(), "definition does not load");
         }
@@ -60,6 +74,55 @@ impl Workspace {
                 self.set_status(format!("{unknown} linked element(s) are not in this definition"), false);
             }
         }
+    }
+
+    /// Switch the window to another definition file (after "New").
+    pub(crate) fn open_path(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        tracing::info!(path = %path.display(), "opening");
+        self.watcher = None;
+        self._watch_task = None;
+        self.reload_task = None;
+        self.sidecar_path = cascade_scene::sidecar_path(&path);
+        self.sidecar = cascade_scene::LayoutSidecar::default();
+        self.doc = Document::new(path);
+        self.disk.reset();
+        self.builder.reset();
+        self.build = super::building::BuildUi::default();
+        self.play.state = None;
+        self.view.selection.clear();
+        self.view.cone = None;
+        self.view.scenario = None;
+        self.view.race = None;
+        self.view.viewport = None;
+        self.view.hidden_machines.clear();
+        self.parked_viewports.clear();
+        self.invalidate_traces();
+        self.load_initial();
+        self.start_watching(cx);
+        window.set_window_title(&super::window_title(self.doc.path()));
+        self.set_status(format!("Opened {}", self.doc.path().display()), false);
+        self.changed(cx);
+    }
+
+    /// Switch between View, Build and Play.
+    pub(crate) fn set_mode(&mut self, mode: AppMode, cx: &mut Context<Self>) {
+        if mode == self.mode {
+            return;
+        }
+        tracing::info!(mode = mode.label(), "mode");
+        let view = mode.entry_view(self.view.view);
+        self.switch_view(view);
+        self.mode = mode;
+        match mode {
+            AppMode::Play => self.ensure_play(),
+            AppMode::Build => {
+                if let Err(message) = self.editable() {
+                    self.set_status(message, true);
+                }
+            }
+            AppMode::View => {}
+        }
+        self.changed(cx);
     }
 
     pub(super) fn start_watching(&mut self, cx: &mut Context<Self>) {
@@ -105,25 +168,56 @@ impl Workspace {
         }
     }
 
-    /// Re-read the definition on a background thread.
+    /// Re-read the definition on a background thread. The app's own saves
+    /// come back unchanged and are ignored (keeping the undo history); any
+    /// other change reloads and clears the history.
     pub(crate) fn start_reload(&mut self, cx: &mut Context<Self>) {
         let path = self.doc.path().to_owned();
-        let work = cx.background_spawn(async move { load_definition(&path) });
+        let known = self.disk;
+        let work = cx.background_spawn(async move { reread(&path, known) });
         self.reload_task = Some(cx.spawn(async move |this, cx| {
-            let result = work.await;
-            if let Err(error) = this.update(cx, |ws, cx| {
-                match &result {
-                    Ok(_) => tracing::info!(path = %ws.doc.path().display(), "definition reloaded"),
-                    Err(failure) => {
-                        tracing::warn!(problems = failure.count(), "reload failed; keeping last good model")
-                    }
-                }
-                ws.doc.apply(result, Local::now());
-                ws.changed(cx);
-            }) {
+            let reread = work.await;
+            if let Err(error) = this.update(cx, |ws, cx| ws.finish_reload(reread, cx)) {
                 tracing::debug!(%error, "workspace gone before the reload finished");
             }
         }));
+    }
+
+    fn finish_reload(&mut self, reread: Reread, cx: &mut Context<Self>) {
+        let (text, result) = match reread {
+            Reread::Unchanged => {
+                tracing::debug!("definition unchanged (own write)");
+                return;
+            }
+            Reread::Changed { text, result } => (text, *result),
+        };
+        match &text {
+            Some(text) => {
+                // Re-check against what is known now: another save may have
+                // happened while this read was in flight.
+                if self.disk.classify(text) == DiskChange::Own {
+                    tracing::debug!("definition unchanged (own write)");
+                    return;
+                }
+                self.disk.note(text);
+            }
+            // Unreadable (e.g. mid-rename): whatever comes back next is new.
+            None => self.disk.reset(),
+        }
+        match &result {
+            Ok(_) => tracing::info!(path = %self.doc.path().display(), "definition reloaded"),
+            Err(failure) => tracing::warn!(problems = failure.count(), "reload failed; keeping last good model"),
+        }
+        let reloaded = result.is_ok();
+        self.doc.apply(result, Local::now());
+        if !self.build.history.is_empty() {
+            self.build.history.clear();
+            self.set_status("The file changed on disk; the undo history was cleared", false);
+        }
+        if reloaded {
+            self.on_model_replaced();
+        }
+        self.changed(cx);
     }
 
     /// Re-read the pins sidecar; true when it changed.
@@ -228,6 +322,13 @@ impl Workspace {
                 self.changed(cx);
             }
             HostEffect::Quit => cx.quit(),
+            HostEffect::SetMode(mode) => self.set_mode(mode, cx),
+            HostEffect::Undo => self.undo_redo(Direction::Undo, cx),
+            HostEffect::Redo => self.undo_redo(Direction::Redo, cx),
+            HostEffect::DeleteSelection => self.delete_selection(cx),
+            HostEffect::NewFile => self.new_file(window, cx),
+            HostEffect::PlayStep => self.play_step(None, cx),
+            HostEffect::PlayRun => self.play_run(cx),
         }
     }
 

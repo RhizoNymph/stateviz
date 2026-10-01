@@ -30,6 +30,8 @@ fn build(builder: &mut SceneBuilder, yaml: &str, view: ViewKind) -> Scene {
         measure: &MonoMeasure::default(),
         sidecar: &sidecar,
         traces: &[],
+        mode: cascade_scene::SceneMode::View,
+        play: None,
         diff: None,
     };
     builder.build(&input).expect("scene builds")

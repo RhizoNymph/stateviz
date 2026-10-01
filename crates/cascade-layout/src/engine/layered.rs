@@ -95,6 +95,8 @@ pub(crate) struct Chain {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BandGraph {
+    /// Reported layer of each column, ascending.
+    pub values: Vec<u32>,
     pub items: Vec<Item>,
     /// Items of each column, in order.
     pub layers: Vec<Vec<ItemId>>,
@@ -225,7 +227,7 @@ pub(crate) fn build(
     for (i, item) in items.iter().enumerate() {
         layers[item.layer].push(i);
     }
-    BandGraph { items, layers, chains }
+    BandGraph { values, items, layers, chains }
 }
 
 fn label_item(chain: usize, layer: usize, label: Size, gap: f32) -> Item {

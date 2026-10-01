@@ -14,6 +14,8 @@ use chrono::{DateTime, Local};
 
 use cascade_core::{CausalGraph, Diagnostic, Finding, Model, Severity, analyze, load_str};
 
+use crate::build::disk::{DiskChange, DiskSync};
+
 /// A definition that loaded: the model and what is derived from it once
 /// per load.
 #[derive(Debug)]
@@ -21,6 +23,8 @@ pub struct Analyzed {
     pub model: Model,
     pub graph: CausalGraph,
     pub findings: Vec<Finding>,
+    /// The text the model was loaded from; build mode patches it.
+    pub text: String,
 }
 
 /// Why a load attempt failed.
@@ -54,14 +58,40 @@ pub fn analyze_text(text: &str) -> Result<Analyzed, LoadFailure> {
     let model = load_str(text).map_err(|e| LoadFailure::Invalid { diagnostics: e.diagnostics })?;
     let graph = CausalGraph::build(&model);
     let findings = analyze(&model, &graph);
-    Ok(Analyzed { model, graph, findings })
+    Ok(Analyzed { model, graph, findings, text: text.to_owned() })
+}
+
+/// Read `path` as text.
+pub fn read_text(path: &Path) -> Result<String, LoadFailure> {
+    std::fs::read_to_string(path)
+        .map_err(|e| LoadFailure::Io { message: format!("cannot read {}: {e}", path.display()) })
 }
 
 /// Read `path` and analyze it.
 pub fn load_definition(path: &Path) -> Result<Analyzed, LoadFailure> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| LoadFailure::Io { message: format!("cannot read {}: {e}", path.display()) })?;
-    analyze_text(&text)
+    analyze_text(&read_text(path)?)
+}
+
+/// A re-read of the definition, compared with what the app knows is on disk.
+#[derive(Debug)]
+pub enum Reread {
+    /// The text the app last read or wrote (its own save echoing back).
+    Unchanged,
+    /// Different text (or an unreadable file): `text` is what was read.
+    Changed { text: Option<String>, result: Box<Result<Analyzed, LoadFailure>> },
+}
+
+/// Read `path`; analyze it only when it differs from what `known` says is
+/// on disk.
+pub fn reread(path: &Path, known: DiskSync) -> Reread {
+    match read_text(path) {
+        Ok(text) if known.classify(&text) == DiskChange::Own => Reread::Unchanged,
+        Ok(text) => {
+            let result = Box::new(analyze_text(&text));
+            Reread::Changed { text: Some(text), result }
+        }
+        Err(failure) => Reread::Changed { text: None, result: Box::new(Err(failure)) },
+    }
 }
 
 /// A successful load, shared cheaply with scene builds and background work.
@@ -74,6 +104,8 @@ pub struct Loaded {
     pub model: Arc<Model>,
     pub graph: Arc<CausalGraph>,
     pub findings: Arc<Vec<Finding>>,
+    /// The file text of this load.
+    pub text: Arc<str>,
     pub loaded_at: DateTime<Local>,
 }
 
@@ -138,6 +170,7 @@ impl Document {
                         model: Arc::new(analyzed.model),
                         graph: Arc::new(analyzed.graph),
                         findings: Arc::new(analyzed.findings),
+                        text: Arc::from(analyzed.text),
                         loaded_at: at,
                     },
                 }
@@ -248,5 +281,38 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/order-fulfillment/cascade.yaml");
         let analyzed = load_definition(&path).expect("example loads");
         assert_eq!(analyzed.model.machine_count(), 2);
+    }
+
+    #[test]
+    fn reread_skips_the_apps_own_text() {
+        let dir = std::env::temp_dir().join(format!("cascade-reread-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("cascade.yaml");
+        std::fs::write(&path, GOOD).expect("write");
+        let mut known = DiskSync::default();
+        match reread(&path, known) {
+            Reread::Changed { text: Some(text), result } => {
+                assert_eq!(text, GOOD);
+                assert_eq!(result.map(|a| a.text).ok().as_deref(), Some(GOOD));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        known.note(GOOD);
+        assert!(matches!(reread(&path, known), Reread::Unchanged));
+        std::fs::write(&path, BAD).expect("write");
+        assert!(matches!(reread(&path, known), Reread::Changed { text: Some(_), result } if result.is_err()));
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(
+            reread(&path, known),
+            Reread::Changed { text: None, result } if matches!(*result, Err(LoadFailure::Io { .. }))
+        ));
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn loaded_keeps_the_text() {
+        let mut doc = Document::new("x.yaml".into());
+        doc.apply(analyze_text(GOOD), t(0));
+        assert_eq!(doc.loaded().map(|l| l.text.as_ref()), Some(GOOD));
     }
 }

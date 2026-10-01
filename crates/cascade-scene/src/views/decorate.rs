@@ -198,7 +198,7 @@ pub(crate) fn focus_width(theme: &Theme) -> f32 {
     (theme.stroke_width + theme.selected_stroke_width) / 2.0
 }
 
-fn halo_radius(shape: Shape, rect: Rect) -> f32 {
+pub(crate) fn halo_radius(shape: Shape, rect: Rect) -> f32 {
     match shape {
         Shape::Pill => rect.size.height / 2.0 + HALO_GAP,
         Shape::RoundedRect { radius } => radius + HALO_GAP,

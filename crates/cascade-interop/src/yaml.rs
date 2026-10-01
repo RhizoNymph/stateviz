@@ -16,7 +16,7 @@
 //! the same model as `def` (spans aside); the tests check this for every
 //! example and every import fixture.
 
-mod quote;
+pub(crate) mod quote;
 
 use std::fmt::Write as _;
 

@@ -1,4 +1,4 @@
-//! The toolbar: view tabs, cone controls, diff controls, link and theme
+//! The toolbar: view tabs, the causal view's lane toggle, cone controls, diff controls, link and theme
 //! buttons.
 
 use cascade_core::Direction;
@@ -7,6 +7,7 @@ use gpui::{Context, Window, div, prelude::*, px};
 
 use super::{button, caption, separator};
 use crate::commands::{Command, depth_label, key_hint};
+use crate::mode::AppMode;
 use crate::theme::chrome;
 use crate::workspace::Workspace;
 
@@ -34,8 +35,10 @@ impl Workspace {
         let backward = cone.is_some_and(|c| c.direction == Direction::Backward);
         let hide = self.view.outside == OutsideFocus::Hide;
         let in_diff = self.view.diff.is_some();
+        let lanes = self.view.group_by_machine;
+        let causal = self.view.view == ViewKind::Causal;
 
-        let tabs = ViewKind::ALL.into_iter().map(|view| {
+        let tabs = ViewKind::ALL.into_iter().filter(|view| self.mode.allows(*view)).map(|view| {
             button(
                 format!("tab-{view}"),
                 with_key(tab_label(view), Command::ShowView(view)),
@@ -43,6 +46,16 @@ impl Workspace {
                 colors,
             )
             .on_click(cx.listener(move |ws, _, _, cx| ws.show_view(view, cx)))
+        });
+
+        let modes = AppMode::ALL.into_iter().map(|mode| {
+            button(
+                format!("mode-{}", mode.label()),
+                with_key(mode.label(), Command::SetMode(mode)),
+                self.mode == mode,
+                colors,
+            )
+            .on_click(cx.listener(move |ws, _, window, cx| ws.run_command(Command::SetMode(mode), window, cx)))
         });
 
         div()
@@ -56,7 +69,15 @@ impl Workspace {
             .border_b_1()
             .border_color(colors.border)
             .bg(colors.panel)
+            .children(modes)
+            .child(separator(colors))
             .children(tabs)
+            .when(causal, |el| {
+                el.child(
+                    button("group-by-machine", with_key("Group by machine", Command::ToggleLanes), lanes, colors)
+                        .on_click(cx.listener(|ws, _, window, cx| ws.run_command(Command::ToggleLanes, window, cx))),
+                )
+            })
             .child(separator(colors))
             .child(caption("Cone", colors))
             .child(
@@ -81,19 +102,21 @@ impl Workspace {
                 button("outside", if hide { "Hide  H" } else { "Dim  H" }, hide, colors)
                     .on_click(cx.listener(|ws, _, window, cx| ws.run_command(Command::ToggleOutside, window, cx))),
             )
-            .child(separator(colors))
-            .child(caption("Diff", colors))
-            .child(self.diff_base.clone())
-            .child(self.diff_head.clone())
-            .child(
-                button("diff-compare", "Compare", in_diff, colors)
-                    .on_click(cx.listener(|ws, _, window, cx| ws.start_diff(window, cx))),
-            )
-            .when(in_diff, |el| {
-                el.child(
-                    button("diff-exit", "Exit diff", false, colors)
-                        .on_click(cx.listener(|ws, _, _, cx| ws.exit_diff(cx))),
-                )
+            .when(self.mode == AppMode::View, |el| {
+                el.child(separator(colors))
+                    .child(caption("Diff", colors))
+                    .child(self.diff_base.clone())
+                    .child(self.diff_head.clone())
+                    .child(
+                        button("diff-compare", "Compare", in_diff, colors)
+                            .on_click(cx.listener(|ws, _, window, cx| ws.start_diff(window, cx))),
+                    )
+                    .when(in_diff, |el| {
+                        el.child(
+                            button("diff-exit", "Exit diff", false, colors)
+                                .on_click(cx.listener(|ws, _, _, cx| ws.exit_diff(cx))),
+                        )
+                    })
             })
             .child(separator(colors))
             .child(

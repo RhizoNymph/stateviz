@@ -1,11 +1,11 @@
 //! Drafting one machine of the structure view: its lane, states, nested
 //! bands and transition pills, honouring collapse and the entity filter.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 
 use cascade_core::model::StateKind;
 use cascade_core::{CausalGraph, ElementKey, ElementRef, MachineId, Model, StateId};
-use cascade_layout::{Insets, LayerConstraint};
+use cascade_layout::{Insets, LayerConstraint, Port, PortSide};
 
 use crate::emphasis::Anchor;
 use crate::scene::{Arrow, EdgeKind, HitTarget};
@@ -18,6 +18,23 @@ pub(super) const PORT_WEST: u16 = 0;
 pub(super) const PORT_EAST: u16 = 1;
 pub(super) const PORT_NORTH: u16 = 2;
 pub(super) const PORT_SOUTH: u16 = 3;
+/// Edit mode only: a second South port where emits leave for a gutter
+/// below, right of [`PORT_SOUTH`] where fires and triggers from below
+/// arrive.
+pub(super) const PORT_SOUTH_OUT: u16 = 4;
+/// Edit mode only: a second North port where emits leave for a gutter
+/// above, right of [`PORT_NORTH`] where fires and triggers from above
+/// arrive.
+pub(super) const PORT_NORTH_OUT: u16 = 5;
+
+/// Pill ports in edit mode: the standard four plus [`PORT_SOUTH_OUT`] and
+/// [`PORT_NORTH_OUT`].
+fn edit_pill_ports() -> Vec<Port> {
+    let mut ports = standard_ports();
+    ports.push(Port { side: PortSide::South });
+    ports.push(Port { side: PortSide::North });
+    ports
+}
 
 /// Collapsed composite states and machines.
 pub(super) struct Collapse {
@@ -72,10 +89,20 @@ pub(super) enum EndKind {
     Stub,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Endpoint {
     pub node: usize,
     pub kind: EndKind,
+    /// Roughly which column of its lane the node sits in (0 for anything
+    /// but a pill), so the build canvas can line wiring up with it before
+    /// layout.
+    pub column: f32,
+}
+
+impl Endpoint {
+    fn other(node: usize, kind: EndKind) -> Self {
+        Self { node, kind, column: 0.0 }
+    }
 }
 
 /// What was drafted for a machine, for building its lane after layout.
@@ -91,6 +118,8 @@ pub(super) struct Drafter<'a> {
     pub graph: &'a CausalGraph,
     pub painter: &'a Painter<'a>,
     pub collapse: &'a Collapse,
+    /// Edit mode: pills get [`PORT_SOUTH_OUT`] too.
+    pub edit: bool,
 }
 
 impl Drafter<'_> {
@@ -127,7 +156,7 @@ impl Drafter<'_> {
             meta: Meta::new(vec![ElementRef::Machine(m)], Anchor::Nodes(self.transition_nodes(m))),
         });
         for &t in &machine.transitions {
-            endpoints[t.index()] = Some(Endpoint { node: stub, kind: EndKind::Stub });
+            endpoints[t.index()] = Some(Endpoint::other(stub, EndKind::Stub));
         }
         MachinePlan::Hidden { machine: m, stub }
     }
@@ -149,7 +178,7 @@ impl Drafter<'_> {
             meta: Meta::new(vec![ElementRef::Machine(m)], Anchor::Nodes(self.transition_nodes(m))),
         });
         for &t in &machine.transitions {
-            endpoints[t.index()] = Some(Endpoint { node, kind: EndKind::Other });
+            endpoints[t.index()] = Some(Endpoint::other(node, EndKind::Other));
         }
         MachinePlan::Collapsed { machine: m, group }
     }
@@ -178,6 +207,7 @@ impl Drafter<'_> {
             }
         }
         let scope_group = |s: StateId| model.state(s).parent.and_then(|p| band_of.get(&p).copied()).unwrap_or(top);
+        let columns = Columns::estimate(model, m, self.collapse, &band_of, top);
 
         let mut state_node: HashMap<StateId, usize> = HashMap::new();
         for &s in &machine.states {
@@ -224,7 +254,7 @@ impl Drafter<'_> {
             }
             if rf == rt && (rf != tr.from || rt != tr.to) {
                 // Inside a collapsed state: no pill; links attach to it.
-                endpoints[t.index()] = Some(Endpoint { node: a, kind: EndKind::Other });
+                endpoints[t.index()] = Some(Endpoint::other(a, EndKind::Other));
                 continue;
             }
             let group = common_scope(model, rf, rt).and_then(|p| band_of.get(&p).copied()).unwrap_or(top);
@@ -235,7 +265,7 @@ impl Drafter<'_> {
                 key: key.to_string(),
                 group: Some(group),
                 layer: LayerConstraint::Free,
-                ports: standard_ports(),
+                ports: if self.edit { edit_pill_ports() } else { standard_ports() },
                 look: painter.pill(label, model.trigger(tr.trigger).name.clone(), style),
                 target: HitTarget::Element(key.clone()),
                 meta: meta.clone(),
@@ -255,9 +285,80 @@ impl Drafter<'_> {
             };
             draft.edges.push(arrow(a, None, pill, Some(PORT_WEST), Arrow::None, bracketed(tr.guard.as_deref())));
             draft.edges.push(arrow(pill, Some(PORT_EAST), b, None, Arrow::End, None));
-            endpoints[t.index()] = Some(Endpoint { node: pill, kind: EndKind::Pill });
+            let column = columns.pill(model, rf, group);
+            endpoints[t.index()] = Some(Endpoint { node: pill, kind: EndKind::Pill, column });
         }
         MachinePlan::Expanded { machine: m, top, bands }
+    }
+}
+
+/// Estimated columns of a machine's pills, from breadth-first depth in
+/// each band: the layered layout puts a band's states in roughly these
+/// layers from its initial state, a pill between two of them.
+struct Columns {
+    /// Per band (layout group): each drawn state's depth from the band's
+    /// initial state. States nothing reaches count as depth 0.
+    depth: HashMap<(usize, StateId), u32>,
+    /// The band of each drawn compound state's children.
+    band_of: HashMap<StateId, usize>,
+    top: usize,
+}
+
+impl Columns {
+    fn estimate(
+        model: &Model,
+        m: MachineId,
+        collapse: &Collapse,
+        band_of: &HashMap<StateId, usize>,
+        top: usize,
+    ) -> Self {
+        let machine = model.machine(m);
+        let mut this = Self { depth: HashMap::new(), band_of: band_of.clone(), top };
+        let mut next: HashMap<usize, Vec<(StateId, StateId)>> = HashMap::new();
+        for &t in &machine.transitions {
+            let tr = model.transition(t);
+            let (rf, rt) = (collapse.rep(model, tr.from), collapse.rep(model, tr.to));
+            let group = common_scope(model, rf, rt).and_then(|p| band_of.get(&p).copied()).unwrap_or(top);
+            if let (Some(a), Some(b)) = (this.project(model, rf, group), this.project(model, rt, group))
+                && a != b
+            {
+                next.entry(group).or_default().push((a, b));
+            }
+        }
+        let mut starts: Vec<(usize, StateId)> = band_of
+            .iter()
+            .filter_map(|(&s, &g)| match &model.state(s).kind {
+                StateKind::Compound { initial, .. } => Some((g, *initial)),
+                StateKind::Atomic | StateKind::Final | StateKind::History { .. } => None,
+            })
+            .collect();
+        starts.extend(this.project(model, machine.initial, top).map(|s| (top, s)));
+        for (group, start) in starts {
+            let edges = next.get(&group).map(Vec::as_slice).unwrap_or(&[]);
+            let mut queue = VecDeque::from([(start, 0u32)]);
+            while let Some((s, d)) = queue.pop_front() {
+                if this.depth.contains_key(&(group, s)) {
+                    continue;
+                }
+                this.depth.insert((group, s), d);
+                queue.extend(edges.iter().filter(|(a, _)| *a == s).map(|&(_, b)| (b, d + 1)));
+            }
+        }
+        this
+    }
+
+    /// The ancestor-or-self of `s` drawn in `group`.
+    fn project(&self, model: &Model, s: StateId, group: usize) -> Option<StateId> {
+        std::iter::once(s).chain(model.ancestors(s)).find(|&a| {
+            let own = model.state(a).parent.and_then(|p| self.band_of.get(&p).copied()).unwrap_or(self.top);
+            own == group
+        })
+    }
+
+    /// A pill leaving `from` in `group` sits right of its source state.
+    fn pill(&self, model: &Model, from: StateId, group: usize) -> f32 {
+        let depth = self.project(model, from, group).and_then(|s| self.depth.get(&(group, s)).copied()).unwrap_or(0);
+        (2 * depth + 1) as f32
     }
 }
 

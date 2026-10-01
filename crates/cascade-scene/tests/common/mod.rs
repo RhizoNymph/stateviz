@@ -103,6 +103,8 @@ impl Fixture {
             measure: &MonoMeasure::default(),
             sidecar: &self.sidecar,
             traces: &self.traces,
+            mode: cascade_scene::SceneMode::View,
+            play: None,
             diff: self.diff.as_ref(),
         };
         match builder.build(&input) {

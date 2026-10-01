@@ -8,8 +8,9 @@ use cascade_core::model::StateKind;
 
 use crate::scenario::Payload;
 
-/// Index into the engine's instance list, in creation order: declared
-/// instances first (declaration order), then spawned ones.
+/// Index into the engine's instance list, in creation order (declared or
+/// added instances and spawned ones, as they were created). Removed
+/// instances keep their index, so recorded steps stay valid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct InstanceIx(pub usize);
 
@@ -18,6 +19,9 @@ pub(crate) struct Instance {
     pub name: String,
     pub machine: MachineId,
     pub fields: Payload,
+    /// Removed from play: no longer selectable or targetable. Its lifeline
+    /// and last state stay in the trace.
+    pub removed: bool,
     /// Always an atomic or final state of `machine`.
     leaf: StateId,
     /// The last active leaf under each compound state (`Some`) and under
@@ -28,7 +32,7 @@ pub(crate) struct Instance {
 impl Instance {
     /// A new instance in `start`, entered by default entry.
     pub fn new(model: &Model, name: String, machine: MachineId, fields: Payload, start: StateId) -> Self {
-        Self { name, machine, fields, leaf: model.default_entry(start), history: HashMap::new() }
+        Self { name, machine, fields, removed: false, leaf: model.default_entry(start), history: HashMap::new() }
     }
 
     pub fn leaf(&self) -> StateId {

@@ -24,21 +24,36 @@
 //!   link between lanes rather than through them.
 //! - **Hidden machines** become a stub in a thin band of their own, and
 //!   their links attach to it.
+//!
+//! **Edit mode** (the build canvas) keeps the lanes and replaces the
+//! cross-lane links with the wiring (see `wiring`): event tags, controller
+//! hexagons and source boxes in gutters between the lanes (see `gutters`),
+//! joined to the pills by real emit, subscribe, fire and trigger edges. Connectable nodes get connect
+//! handles, a machine without transitions says how to add one, and an empty
+//! definition says how to start.
 
+mod edit;
+mod gutters;
 mod links;
 mod machines;
+mod selector;
+mod wiring;
+
+pub(crate) use gutters::memo::WiringMemo;
 
 use cascade_core::ElementRef;
 use cascade_layout::{LayoutOptions, Point, Rect};
 
 use crate::color::machine_styles;
 use crate::emphasis::Interaction;
+use crate::play::SceneMode;
 use crate::scene::{FontWeight, HitTarget, Label, Lane, Scene, Stroke};
 use crate::view_state::ViewKind;
 use crate::views::cache::LayoutCache;
 use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{DraftGraph, RealizeCtx, realize};
 use crate::views::filters::{apply_hide, hidden_machines};
+use crate::views::overlays::{Placement, PlayDecor, add_handles};
 use crate::views::style::Painter;
 use crate::views::{SceneError, SceneInput};
 
@@ -51,18 +66,25 @@ pub(super) fn build(
     input: &SceneInput<'_>,
     interaction: &Interaction,
     cache: &mut LayoutCache,
+    memo: &mut WiringMemo,
 ) -> Result<Scene, SceneError> {
     let model = input.model;
     let theme = input.theme;
     let painter = Painter { theme, measure: input.measure, styles: machine_styles(model, theme) };
     let hidden = hidden_machines(model, &input.view.hidden_machines);
     let collapse = Collapse::resolve(model, &input.view.collapsed);
-    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse };
+    let edit = input.mode == SceneMode::Edit;
+    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse, edit };
 
     let mut draft = DraftGraph::default();
     let mut endpoints = vec![None; model.transition_count()];
     let mut plans = Vec::with_capacity(model.machine_count());
+    // Edit mode: a gutter above every machine's groups and one below all.
+    let mut gutters = Vec::new();
     for m in model.machine_ids() {
+        if edit {
+            gutters.push(draft.add_group(wiring::gutter_group(wiring::gutter_key_above(&model.machine(m).name))));
+        }
         let plan = if hidden.contains(&m) {
             drafter.hidden(&mut draft, m, &mut endpoints)
         } else if collapse.machine(m) {
@@ -72,6 +94,9 @@ pub(super) fn build(
         };
         plans.push(plan);
     }
+    if edit {
+        gutters.push(draft.add_group(wiring::gutter_group(wiring::LAST_GUTTER_KEY.to_owned())));
+    }
     let stubs: Vec<_> = plans
         .iter()
         .filter_map(|p| match p {
@@ -79,7 +104,12 @@ pub(super) fn build(
             MachinePlan::Collapsed { .. } | MachinePlan::Expanded { .. } => None,
         })
         .collect();
-    links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
+    if edit {
+        let wiring = wiring::Wiring { model, graph: input.graph, painter: &painter };
+        wiring.draft(&mut draft, &endpoints, &gutters, &stubs, memo);
+    } else {
+        links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
+    }
 
     let cuts = apply_hide(&mut draft, interaction);
     let ctx = RealizeCtx {
@@ -87,7 +117,7 @@ pub(super) fn build(
         theme,
         measure: input.measure,
         sidecar: input.sidecar,
-        options: LayoutOptions { layer_spacing: 48.0, ..LayoutOptions::default() },
+        options: LayoutOptions { layer_spacing: 48.0, align_across_groups: true, ..LayoutOptions::default() },
     };
     let realized = realize(draft, cuts, &ctx, cache)?;
     let mut scene = realized.scene;
@@ -116,6 +146,7 @@ pub(super) fn build(
             }
         }
     }
+    edit::gutter_lanes(&mut scene, &painter, &gutters, group_rect);
     // A selected machine or compound state shows on its lane by weight.
     let selected: Vec<_> = interaction.selected().iter().map(|e| model.key_of(*e)).collect();
     for lane in &mut scene.lanes {
@@ -123,12 +154,21 @@ pub(super) fn build(
             lane.stroke.width = theme.selected_stroke_width;
         }
     }
+    let mut notes = interaction.notes().to_vec();
+    if edit {
+        edit::hints(&mut scene, model, &painter, &plans, &mut notes);
+        add_handles(&mut scene, theme);
+    }
+    if let Some(play) = input.play {
+        let play_decor = PlayDecor { model, painter: &painter };
+        play_decor.apply(&mut scene, &realized.nodes, &realized.edges, play, Placement::States);
+    }
     scene.bounds = scene_bounds(&scene, input.measure);
-    scene.notes = interaction.notes().to_vec();
+    scene.notes = notes;
     Ok(scene)
 }
 
-fn machine_lane(
+pub(crate) fn machine_lane(
     input: &SceneInput<'_>,
     painter: &Painter<'_>,
     machine: cascade_core::MachineId,

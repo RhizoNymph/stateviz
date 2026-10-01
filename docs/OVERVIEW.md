@@ -20,16 +20,21 @@ Overview:
       model diffing. Pure; no UI, the only I/O is load_file.
     cascade-layout: >
       Generic layered (Sugiyama-style) graph layout: sized nodes, ports,
-      groups (lanes) stacked and routed around, orthogonal edge routing,
-      stability from the previous layout, pins. Knows nothing about Cascade.
+      groups (lanes) stacked with edges routed through the gaps and free
+      passages between them, orthogonal edge routing, collision-free
+      labels, stability from the previous layout, pins. Knows nothing
+      about Cascade.
     cascade-sim: >
       Scenario files and the simulator: instances, one global FIFO queue of
       events and controller fires, target selectors, traces with cause
-      links; replays race candidates with the contested fires swapped.
+      links; replays race candidates with the contested fires swapped. One
+      steppable engine serves batch runs and the interactive PlaySession
+      (rewind, branches, replay after edits, save as a scenario).
     cascade-scene: >
       Model + view state → Scene, a backend-neutral display list with hit
       targets, for all four views. Owns the visual encoding (Okabe-Ito hues,
-      shapes, dashes, emphasis/dimming, badges, diff decorations), the
+      shapes, dashes, emphasis/dimming, badges, diff decorations, edit-mode
+      wiring and connect handles, play markers and highlights), the
       cascade:// view link format, the pins sidecar, and SVG/PNG export.
     cascade-interop: >
       XState v5 and SCXML import through a shared statechart IR (names
@@ -43,7 +48,12 @@ Overview:
     cascade-app: >
       The `cascade-app` GPUI binary: paints scenes, pan/zoom, selection, cone
       tracing, search, legend/entity filter, findings panel, trace and matrix
-      interaction, live reload, click-to-source, diff mode, pin dragging.
+      interaction, the causal view's group-by-machine toggle (G), live
+      reload, click-to-source, diff mode, pin dragging; a
+      workbench with Build mode (edit ops with undo saved to the file in
+      place, drag-to-connect, inspector, new files) and Play mode
+      (interactive session with instances, trigger palette, queue, timeline,
+      scenarios).
 
   data_flow: >
     Text → cascade_core::parse_definition → Definition → resolve → Model.
@@ -83,29 +93,39 @@ Features Index:
       Sugiyama-style layered layout: constrained network-simplex layering
       with cycle breaking, port-aware crossing minimisation, L1 coordinate
       placement, orthogonal channel routing with track assignment, lanes
-      stacked and routed around, stability from the previous layout, pins
-      with an obstacle router.
-    entry_points: [cascade_layout::layout, cascade_layout::metrics]
+      stacked with edges between them run through gaps and free passages
+      (side corridors only as a last resort), optional cross-lane
+      alignment, optional shared layers (one layering and one column
+      position per layer across every lane, edges between lanes always
+      heading with the flow through zoned channels and reserved
+      verticals), collision-free labels, stability from the previous
+      layout, pins with an obstacle router.
+    entry_points: [cascade_layout::layout, cascade_layout::metrics, cascade_layout::LayoutOptions::shared_layers]
     depends_on: []
     doc: docs/features/layered-layout.md
   simulator:
     description: >
-      Scenario files (parse, validate, discover), FIFO simulation with
-      selectors, spawn, history and payloads, traces with cause links and
-      stable lifelines, race candidates replayed in both orders.
-    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade simulate]
+      Scenario files (parse, validate, discover, write; manual queue steps,
+      mid-run create/remove, end: pause), FIFO simulation with selectors,
+      spawn, history and payloads, traces with cause links and stable
+      lifelines, race candidates replayed in both orders, and the play
+      session (actions, pending queue, available fires, seek, branches,
+      replay, to_scenario) on the same engine.
+    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::PlaySession, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:
-    description: Scene builders for the causal, structure, trace and matrix views; the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export.
-    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
+    description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles) and play overlays (instance markers, active and pending items).
+    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md
   interop_and_diff:
     description: >
       XState/SCXML import with warnings, SCXML/Mermaid (structure and causal)/P/YAML export,
-      model diff, ghost merge for diff mode, and git revision loading.
-    entry_points: [cascade_interop::import, cascade_interop::import_with, cascade_interop::export, cascade_interop::to_yaml, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade_core::diff::merge_for_display, cascade export, cascade import, cascade diff]
+      comment-preserving YAML patches for edit ops (span index over the file,
+      rewrite fallback flagged), model diff, ghost merge for diff mode, and
+      git revision loading.
+    entry_points: [cascade_interop::import, cascade_interop::import_with, cascade_interop::export, cascade_interop::to_yaml, cascade_interop::patch_text, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade_core::diff::merge_for_display, cascade export, cascade import, cascade diff]
     depends_on: [definition_format]
     doc: docs/features/interop-and-diff.md
   native_app:
@@ -115,10 +135,32 @@ Features Index:
       entity filter, findings panel, fuzzy search, trace scenario/race picker,
       matrix drill-down, click-to-source, pin dragging, diff mode, view links
       via the clipboard, light/dark theme, and live reload that keeps the last
-      good model on screen.
-    entry_points: [cascade-app, cascade open, cascade_app::workspace::Workspace]
+      good model on screen. View/Build/Play modes: Build edits the definition
+      (toolbar, drag-to-connect, inspector, undo/redo, own-write-aware saves,
+      `--new`); Play drives an interactive simulator session with an overlay.
+    entry_points: [cascade-app, cascade-app --new, cascade open, cascade_app::workspace::Workspace]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
+  build_and_play:
+    description: >
+      Build systems in the app (typed edit ops with exact inverses for undo,
+      rename propagation and cascading removal, saved to the YAML file in
+      place keeping comments) and play them (interactive simulator
+      session with instances, trigger palette, queue stepping, branchable
+      timeline, record as scenario).
+    entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes]
+    depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
+    doc: docs/features/build-and-play.md
+  readability:
+    description: >
+      Scene readability metrics (crossings, length, bends, label overlaps,
+      corridor use, leftward forward edges) with a report over the examples
+      (causal lanes included) and asserted targets,
+      and the placement (wiring in gutters between the lanes, short fire
+      labels said once) and routing work that improves them.
+    entry_points: [cascade_scene::metrics::measure, cascade-scene tests/readability.rs, cascade-scene tests/readability_targets.rs, cascade_scene::views::structure::gutters::assign (crate), cascade_layout::LayoutOptions::align_across_groups]
+    depends_on: [view_scenes, layered_layout, build_and_play]
+    doc: docs/features/readability.md
   workstream_contracts:
     description: The interface types each crate exposes and which workstream implements each stub.
     entry_points: []

@@ -52,6 +52,10 @@ enum Command {
         /// Use the dark theme.
         #[arg(long)]
         dark: bool,
+        /// Draw the build canvas: the structure view with its wiring band
+        /// (events, controllers, sources).
+        #[arg(long)]
+        edit: bool,
         /// Pixels per scene unit for PNG output.
         #[arg(long, default_value_t = 2.0)]
         scale: f32,
@@ -87,13 +91,18 @@ enum Command {
     /// Run a scenario through the simulator and print the trace.
     Simulate {
         file: PathBuf,
-        scenario: PathBuf,
+        /// The scenario to run; with `--interactive`, where to start (optional).
+        #[arg(required_unless_present = "interactive")]
+        scenario: Option<PathBuf>,
         #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
         format: OutputFormat,
         /// Print both orderings of this race candidate (numbered from 0 in
         /// `cascade check` order).
         #[arg(long)]
         race: Option<usize>,
+        /// Play step by step at a prompt (type `help` for the commands).
+        #[arg(long, conflicts_with_all = ["race", "format"])]
+        interactive: bool,
     },
     /// Open the definition in the native app.
     Open {
@@ -116,13 +125,15 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Check { file, format, deny_warnings } => commands::check::run(&file, format, deny_warnings),
-        Command::Render { file, view, state, scenario, out, dark, scale } => {
-            commands::render::run(&commands::render::RenderArgs { file, view, state, scenario, out, dark, scale })
+        Command::Render { file, view, state, scenario, out, dark, edit, scale } => {
+            commands::render::run(&commands::render::RenderArgs { file, view, state, scenario, out, dark, edit, scale })
         }
         Command::Export { file, to, out } => commands::export::run(&file, &to, out.as_deref()),
         Command::Import { file, from, out } => commands::import::run(&file, &from, out.as_deref()),
         Command::Diff { file, base, head, format } => commands::diff::run(&file, &base, head.as_deref(), format),
-        Command::Simulate { file, scenario, format, race } => commands::simulate::run(&file, &scenario, format, race),
+        Command::Simulate { file, scenario, format, race, interactive } => {
+            commands::simulate::run(&file, scenario.as_deref(), format, race, interactive)
+        }
         Command::Open { file, view } => commands::open::run(&file, view.as_deref()),
     };
     match result {

@@ -5,6 +5,7 @@ use crate::geometry::{Rect, Size};
 
 use super::layered::{BandGraph, Item};
 use super::problem::Problem;
+use super::shared::Shared;
 use super::slots::Slots;
 
 pub(crate) struct Ctx<'a, 'g> {
@@ -13,6 +14,8 @@ pub(crate) struct Ctx<'a, 'g> {
     /// Item of every non-pinned node in its band.
     pub item_of: &'a [Option<usize>],
     pub slots: &'a Slots,
+    /// The shared columns and channel zones, with shared layers.
+    pub shared: Option<&'a Shared>,
 }
 
 impl Ctx<'_, '_> {

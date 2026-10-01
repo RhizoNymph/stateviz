@@ -326,7 +326,11 @@ pub(crate) fn realize(
                 let route = result.edge(id);
                 (route.points.clone(), route.reversed, route.label)
             }
-            None => (self_loop(rects[edge.from]), false, None),
+            None => {
+                let label_box =
+                    edge.label.as_ref().map(|t| self_loop_label(rects[edge.from], label_size(ctx.measure, t), &rects));
+                (self_loop(rects[edge.from]), false, label_box)
+            }
         };
         let back_edge = edge.on_cycle && reversed;
         let stroke = if back_edge { Stroke { color: ctx.theme.finding, ..edge.stroke } } else { edge.stroke };
@@ -432,12 +436,26 @@ fn self_loop(r: Rect) -> Vec<Point> {
     ]
 }
 
+/// Where a hand-drawn self-loop's label goes: beside the loop's outer
+/// corner, else above the loop, else left of it at the same height,
+/// whichever first stays clear of every node (the first if none does).
+fn self_loop_label(r: Rect, size: Size, nodes: &[Rect]) -> Rect {
+    let side = r.right() + LOOP_SIZE;
+    let top = r.top() - LOOP_SIZE;
+    let candidates = [
+        Rect::new(side + 4.0, top - size.height / 2.0, size.width, size.height),
+        Rect::new(side - size.width / 2.0 - LOOP_SIZE / 2.0, top - size.height - 2.0, size.width, size.height),
+        Rect::new(r.right() - size.width - LOOP_SIZE, top - size.height / 2.0, size.width, size.height),
+    ];
+    candidates.iter().copied().find(|c| nodes.iter().all(|n| !n.intersects(c))).unwrap_or(candidates[0])
+}
+
 pub(crate) fn label_size(measure: &dyn TextMeasure, text: &EdgeText) -> Size {
     Size::new(measure.width(&text.text, text.font_size), measure.line_height(text.font_size))
 }
 
-/// Put an edge label in the layout's label box when it reserved one,
-/// otherwise just above the middle of the polyline.
+/// Put an edge label in its box (reserved by the layout, or chosen beside a
+/// hand-drawn self-loop), otherwise just above the middle of the polyline.
 pub(crate) fn place_edge_label(
     measure: &dyn TextMeasure,
     text: EdgeText,

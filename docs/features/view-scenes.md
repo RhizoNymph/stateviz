@@ -17,6 +17,9 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
   pair, collapse, hide mode.
 - Layout caching and stability across rebuilds, pins from the sidecar.
 - SVG and PNG export, and `cascade render`.
+- Build and play drawing: `SceneMode::Edit` (the structure view's wiring
+  in gutters between the lanes, and connect handles) and the `PlayOverlay` (instance markers,
+  active and pending items) over the causal and structure views.
 
 ## Non-scope
 
@@ -25,12 +28,13 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 - Painting, pan/zoom and hit-test dispatch (the GPUI app).
 - Producing traces (`cascade-sim`) and findings (`cascade_core::analyze`).
 - The `cascade://` link format and the pins sidecar file format
-  (`view_state.rs`, `pins.rs`; unchanged here).
+  (`view_state.rs`, `pins.rs`). The format is unchanged apart from the
+  `lanes=1` parameter (`ViewState::group_by_machine`, left out when off).
 
 ## Data and control flow
 
 ```text
-SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff }
+SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff, mode, play }
       │
       ├─ Interaction::new(model, graph, view)          selection, focus region, search hits
       │
@@ -40,10 +44,13 @@ SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff
       │        apply_hide: hide mode removes outside items, records cut links
       │     realize(draft, cuts) ──LayoutCache──▶ Scene items (+ metas aligned with them)
       │     lanes from group rects (structure)
+      │     edit mode (structure): gutter lanes, hints, connect handles
       │
       ├─ trace / matrix: placed directly, metas kept alongside
       │
-      └─ Decor::apply(scene, metas)                    emphasis, badges, diff; bounds; notes
+      ├─ Decor::apply(scene, metas)                    emphasis, badges, diff
+      │
+      └─ PlayDecor::apply (causal, structure)          active, pending, markers; bounds; notes
 ```
 
 Every scene item carries a `Meta` while it is built: the model elements it
@@ -105,6 +112,61 @@ anything.
    (both ends in one strongly connected component), so stub links and
    reversals made for other reasons are never mistaken for cascade cycles.
 
+### Causal lanes (`views/causal/lanes.rs`)
+
+`ViewState::group_by_machine` (link parameter `lanes=1`, the app's **Group
+by machine** toggle and `G`) draws the same causal graph with one lane per
+machine. Everything above still applies (machine pair, hidden-machine
+stubs, hide mode, emphasis, cones, path queries, search, badges, diff, play
+overlay, red back edges); only these change:
+
+- **Lanes:** one layout group per machine in definition order, drawn like
+  the structure view's machine lanes (`structure::machine_lane`: pale hue
+  fill, header with the machine name in its hue, bold; a selected machine
+  outlines its lane at the selected width), then an **Unattached** lane
+  (neutral fill, dashed rule outline, muted title, no hit target). Lanes
+  without nodes (hide mode, pair filter) are not drawn.
+- **Placement** (looked up in the model, so filters never move a node to
+  another lane):
+
+  | Node | Lane |
+  | --- | --- |
+  | Transition pill | its machine |
+  | Hidden machine's stub | that machine (the lane is marked `collapsed`) |
+  | Event | the machine of the first transition in definition order that emits it |
+  | Handler | the machine its first rule fires into |
+  | External source | the machine of its first trigger |
+  | An event nothing emits, a handler without rules, a source without triggers | Unattached |
+
+  Alternatives were measured (readability.md, "Causal lanes"); these rules
+  are kept.
+- **Pills** read `from → to` over the trigger, without the machine name
+  (the lane says it). States are still not drawn.
+- **Layout:** `LayoutOptions::shared_layers` (layered-layout.md). A node's
+  column is its causal layer, shared by every lane; columns are as wide as
+  their widest item in any lane.
+
+Guarantees (tested in `tests/causal_lanes.rs`, measured in the readability
+report):
+
+- Every edge that is not a cascade-cycle back edge points right: it ends
+  right of where it starts and no horizontal segment of it runs right to
+  left, within a lane or across lanes (`metrics::leftward_edges` is 0 for
+  both examples, in hide mode and with hidden machines). Back edges of
+  genuine cascade cycles stay red and are the only edges running left.
+- No side corridors, no edge through a node, no label overlaps in either
+  example.
+- Emphasis never relayouts; an edit in one machine leaves the other lanes'
+  nodes in place; toggling lanes off returns exactly the flat layout (the
+  cache seeds a layout only from one made with the same options, so the
+  lanes are never seeded by the flat layout or the other way round).
+- With the toggle off the causal scene is exactly as before
+  (`tests/view_mode_golden.rs` unchanged).
+
+Known gap: the pins sidecar keys pins by view, so the flat causal view and
+its lanes share one set of pins; a node pinned in one is placed at the
+same point in the other.
+
 ### Structure view (`views/structure/`)
 
 - **Lanes:** one layout group per machine in definition order, drawn as a
@@ -141,6 +203,35 @@ anything.
 - Hide mode drops lanes whose nodes are all hidden. A selected machine or
   compound state outlines its lane at the selected width. Reversed edges
   are never marked red here: the graph includes ordinary state cycles.
+
+### Edit mode (`views/structure/wiring.rs`, `gutters/`, `selector.rs`, `edit.rs`)
+
+`SceneMode::Edit` changes only the structure view: pills get second South
+(4) and North (5) ports for emits, and the cross-lane links are replaced
+by the wiring (event tags, controller hexagons, source boxes) in
+*gutters*: thin untitled layout groups, one above each machine's groups
+and one below the last, drawn as quiet neutral lanes (pale fill, dashed
+rule-colored outline). Each wiring node goes into the gutter next to what
+it wires, in a row ordered by the pills it wires; pill ends face their
+gutter. Edges are the real emit, subscribe, fire and trigger edges; fire
+labels are short (`by orderId`, `new with orderId`, `[when]`) and said
+once. Every state, pill, controller and source gets a connect handle.
+Details, including the placement rules, column memory, empty-machine hint
+and empty-definition note, are in build-and-play.md ("Build and play
+drawing") and readability.md ("Placement"). The layout cache is per view,
+so switching modes feeds one mode's layout to the other as the previous
+layout (lanes open up for the gutters, and states keep their place within
+their lane) and switching back hits the cache.
+
+### Play overlay (`views/overlays/`)
+
+Drawn after decoration on the causal and structure views: instance
+marker chips (on states in the structure view; on pills leaving the
+current state in the causal view, hollow on the pills entering a dead
+end), active items (selected width plus a translucent glow ring in their
+own color), pending items (dotted outline, queue-position chips with the
+head `1` filled). It never enters the layout input, so it never
+relayouts. See build-and-play.md for the rules.
 
 ### Trace view (`views/trace.rs`)
 
@@ -200,6 +291,8 @@ miss, the view's most recent layout is passed as `LayoutHints::previous`
 (`LayoutResult::to_previous`), and pins come from
 `sidecar.pins_for(view)` keyed by element-key strings (filtered to nodes in
 the graph). Toggling a filter back returns exactly the earlier picture.
+Only a layout made with the same options seeds a miss, so the causal
+view's lanes and its flat layout never seed each other.
 Layout node keys are element-key strings; a hidden machine's stub uses the
 machine's key, so it can be pinned too.
 
@@ -211,7 +304,9 @@ edges, nodes, over-overlays, each item a `<g class="lane|overlay|edge|node">`
 carrying its opacity. Shapes: `Rect`/`RoundedRect`/`Pill`/`Stub` as rects
 with the right radius, `Tag` and `Hexagon` as paths. `Border::Double` adds
 an inner outline, `Border::ThickLeft` a bar clipped to the shape. Dashes
-map to `stroke-dasharray`. Arrowheads are markers, one per stroke color.
+map to `stroke-dasharray`. Connect handles (`HitTarget::ConnectHandle`
+overlays) are left out; every other overlay, including play chips and
+glow rings, is written. Arrowheads are markers, one per stroke color.
 Labels use a monospace font family with the baseline 0.95 em below the
 origin (the line box is 1.3 em), text escaped; edge labels get a halo in
 the background color. Badges are red-outlined circles with the count,
@@ -228,7 +323,8 @@ exit 2), applies the link (its view is overridden by `--view`), runs the
 checks for badges, loads the pins sidecar, simulates the scenario (or, with
 `race=N` in the link, replays the N-th race candidate in both orders),
 builds the scene, prints its notes to stderr and writes SVG or PNG by
-extension.
+extension. `--view causal --state 'cascade://causal?lanes=1'` renders the
+causal lanes.
 
 With `diff=<base>,<head>` in the link, `render` reads the definition at
 `base` (and at `head`, or the working tree when `head` is empty) with
@@ -262,6 +358,13 @@ revision or an invalid version exits with code 2.
 | Diff added / removed | — | Green outline / red dashed ghost at 45% opacity |
 | Selected / focused / dimmed / search | — | Selected width / middle width / 15% opacity / dotted halo; never a hue change |
 | Matrix cell | `Rect` with count | Neutral gray by count |
+| Controller (edit mode) | `Hexagon` per controller, name in bold over "on Event" lines | Dark neutral outline, no fill |
+| Gutter (edit mode) | Untitled lane between machine lanes holding wiring | Neutral pale fill, dashed rule-colored outline |
+| Fire label (edit mode) | Short selector then `[when]`: `by orderId`, `all by f`, `new with f`; none for a singleton | Default text color; once per parallel fires |
+| Connect handle (edit mode) | Circle on the east edge | Background fill, muted outline; not exported |
+| Instance marker | Chip on the top edge, `o1` | Machine hue fill, on-hue bold text; hollow (hue outline) on a dead end's way in (causal) |
+| Active (play) | — | Selected width; nodes also a glow ring in their own outline color at 35% alpha |
+| Pending (play) | Queue-position chip | Dotted outline; head chip filled with the text color, others hollow |
 
 ## Files
 
@@ -279,23 +382,35 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/style.rs` | Node looks and link strokes per element kind | `Painter` (crate) |
 | `crates/cascade-scene/src/views/filters.rs` | Hidden machines, machine pair, hide mode | crate-private |
 | `crates/cascade-scene/src/views/links.rs` | Derived transition links, cycle edges | `causal_links`, `cycle_edges` (crate) |
-| `crates/cascade-scene/src/views/causal.rs` | Causal flow view | crate-private |
-| `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | crate-private |
+| `crates/cascade-scene/src/views/causal/mod.rs` | Causal flow view | crate-private |
+| `crates/cascade-scene/src/views/causal/lanes.rs` | Causal lanes: lane rules, lane groups and drawing | `LaneRules`, `LaneOf`, `LaneGroups` (crate) |
+| `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | `machine_lane` (crate) |
 | `crates/cascade-scene/src/views/structure/machines.rs` | Per-machine drafting, nesting, collapse | crate-private |
 | `crates/cascade-scene/src/views/structure/links.rs` | Cross-lane links, stub counts | crate-private |
+| `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring: nodes, merged edges, gutter placement glue, ports facing the gutter | crate-private |
+| `crates/cascade-scene/src/views/structure/gutters/mod.rs` | Which gutter each wiring node goes to | `Stack`, `Gutter`, `Wires`, `assign` (crate) |
+| `crates/cascade-scene/src/views/structure/gutters/order.rs` | Row order inside a gutter | `order`, `WiringNode` (crate) |
+| `crates/cascade-scene/src/views/structure/gutters/memo.rs` | Gutter columns kept across edits | `WiringMemo` (crate, owned by `SceneBuilder`) |
+| `crates/cascade-scene/src/views/structure/selector.rs` | Fire label policy (short selectors, said once) | crate-private |
+| `crates/cascade-scene/src/views/structure/edit.rs` | Gutter lanes, empty hints | crate-private |
+| `crates/cascade-scene/src/views/overlays/*.rs` | Connect handles, markers, active/pending, chips | `PlayDecor`, `Placement`, `add_handles` (crate) |
+| `crates/cascade-scene/src/play.rs` | Build/play inputs (contract) | `SceneMode`, `PlayOverlay`, `PlayMarker` |
 | `crates/cascade-scene/src/views/trace.rs` | Trace view | crate-private |
 | `crates/cascade-scene/src/views/matrix.rs` | Matrix view and seriation | `seriate` (crate) |
 | `crates/cascade-scene/src/export/mod.rs` | Export entry points and errors | `to_svg`, `to_png`, `ExportError` |
 | `crates/cascade-scene/src/export/svg.rs` | SVG writer | crate-private |
 | `crates/cascade-scene/src/export/png.rs` | resvg rasteriser and font loading | crate-private |
-| `crates/cascade-scene/tests/*.rs` | Per-view, export and performance tests | — |
+| `crates/cascade-scene/src/metrics.rs` | Readability measures | `measure`, `SceneMetrics`, `leftward_edges` |
+| `crates/cascade-scene/tests/*.rs` | Per-view, export and performance tests (`causal_lanes.rs`, `view_link_lanes.rs` for causal lanes) | — |
 | `crates/cascade-cli/src/commands/render.rs` | `cascade render` | `run`, `RenderArgs` |
 | `crates/cascade-cli/tests/render.rs` | CLI render tests | — |
+| `crates/cascade-cli/tests/render_lanes.rs` | `render --state 'cascade://causal?lanes=1'` | — |
 
 ## Invariants and constraints
 
-- Hue means entity: only machine-owned things take a hue; emphasis changes
-  outline weight and opacity only. The exceptions are the finding red
+- Hue means entity: only machine-owned things take a hue (instance marker
+  chips included); emphasis, active and pending change outline weight,
+  dash and opacity only. The exceptions are the finding red
   (badged outlines, cycle back edges) and diff outlines, which never fill.
 - Emphasis never relayouts: the layout cache key is the layout input, and
   decoration runs after layout. Tested by comparing node rects and
@@ -304,7 +419,9 @@ revision or an invalid version exits with code 2.
   order, definition order, deterministic seriation and tie-breaks).
 - Selected items are never hidden or dimmed.
 - Every `SceneEdge` has at least two points; self-links are drawn as small
-  loops rather than passed to the layout.
+  loops rather than passed to the layout. A self-link's label goes beside
+  the loop's outer corner, else above the loop, else left of it, whichever
+  first clears every node.
 - Scene bounds cover every node, badge, edge point, label, lane and
   overlay.
 - Non-test code never panics on user input: unknown keys, names and
@@ -312,7 +429,16 @@ revision or an invalid version exits with code 2.
   geometry and oversized images with typed errors.
 - Performance: at about 20 machines, 200 states and 50 controllers each
   view builds well under a second in a debug build (tested, including the
-  current layout engine).
+  current layout engine), edit mode included; a play overlay change costs
+  no layout. Pinning a wiring node with many lane-crossing edges (a busy
+  controller) goes through the engine's obstacle router: 14–18 ms release
+  for the pinned shop build canvas, scene included.
+- Play overlays never relayout, and `SceneMode::View` scenes are
+  unchanged by build and play drawing (fingerprinted in
+  `tests/view_mode_golden.rs`; re-blessed only for intended view-mode
+  changes, last for the self-link label placement).
+- `Scene::hit_test` checks connect handles before nodes; nothing else
+  in its order changed.
 - `Scene` and its item types are unchanged; additions are
   `SceneBuilder::layouts_run`, `cascade_scene::emphasis`,
   `machine_colors`, and a reworked `ExportError` (no `NotImplemented`).

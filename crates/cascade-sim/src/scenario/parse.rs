@@ -11,8 +11,8 @@ use cascade_core::error::Expected;
 use cascade_core::parse::grammar::parse_trigger_ref;
 use cascade_core::span::{SourceSpan, Spanned};
 
-use super::node::{Diags, as_mapping, is_null, pos, scalar_text, span_of};
-use super::{InstanceDecl, Scenario, Step, StepTiming, ValueMap};
+use super::node::{Diags, Mapping, as_mapping, is_null, pos, scalar_text, span_of};
+use super::{Directive, InstanceDecl, Scenario, ScenarioEnd, Step, StepTiming, ValueMap};
 use crate::error::{ScenarioError, ScenarioErrorKind};
 
 /// Parse a scenario file. Names are not checked against a model here; see
@@ -49,11 +49,17 @@ pub fn parse_scenario(text: &str) -> Result<Scenario, ScenarioError> {
 /// Walk the document. When a diagnostic is recorded the returned scenario is
 /// incomplete and is discarded by the caller.
 fn parse_root(root: &MarkedYamlOwned, diags: &mut Diags) -> Scenario {
-    let mut scenario = Scenario { name: String::new(), instances: Vec::new(), steps: Vec::new() };
+    let mut scenario = Scenario {
+        name: String::new(),
+        instances: Vec::new(),
+        steps: Vec::new(),
+        trailing: Vec::new(),
+        end: ScenarioEnd::default(),
+    };
     let Some(mapping) = diags.mapping(root, "scenario file") else {
         return scenario;
     };
-    let fields = diags.fields(mapping, "scenario file", &["scenario", "instances", "steps"]);
+    let fields = diags.fields(mapping, "scenario file", &["scenario", "instances", "steps", "end"]);
 
     if let Some(name) =
         fields.require("scenario", diags, "scenario file", span_of(root)).and_then(|n| diags.string(n, "scenario"))
@@ -75,14 +81,102 @@ fn parse_root(root: &MarkedYamlOwned, diags: &mut Diags) -> Scenario {
         && !is_null(node)
         && let Some(items) = diags.sequence(node, "steps")
     {
+        let mut directives = Vec::new();
         for (i, item) in items.iter().enumerate() {
-            if let Some(step) = parse_step(i + 1, item, diags) {
-                scenario.steps.push(step);
+            match parse_entry(i + 1, item, diags) {
+                Some(Entry::Fire(mut step)) => {
+                    step.before = std::mem::take(&mut directives);
+                    scenario.steps.push(step);
+                }
+                Some(Entry::Directive(directive)) => directives.push(directive),
+                None => {}
             }
+        }
+        scenario.trailing = directives;
+    }
+
+    if let Some(text) = fields.get("end").and_then(|n| diags.string(n, "end")) {
+        match text.value.as_str() {
+            "drain" => scenario.end = ScenarioEnd::Drain,
+            "pause" => scenario.end = ScenarioEnd::Pause,
+            _ => diags.push(ScenarioErrorKind::UnknownEnd { text: text.value }, text.span),
         }
     }
 
     scenario
+}
+
+enum Entry {
+    Fire(Step),
+    Directive(Directive),
+}
+
+/// One `steps:` item: an external fire, or a directive (`step`, `run`,
+/// `{ step: n }`, `{ create: … }`, `{ remove: … }`). A mapping is a
+/// directive when it has the directive's key, and an external fire
+/// otherwise.
+fn parse_entry(number: usize, item: &MarkedYamlOwned, diags: &mut Diags) -> Option<Entry> {
+    let span = span_of(item);
+    if as_mapping(item).is_none() {
+        match scalar_text(item).as_deref() {
+            Some("step") => return Some(Entry::Directive(Directive::Deliver { choice: None, span })),
+            Some("run") => return Some(Entry::Directive(Directive::Run { span })),
+            // Anything else is a misplaced mapping, reported below.
+            _ => {}
+        }
+    }
+    let context = format!("step {number}");
+    let mapping = diags.mapping(item, &context)?;
+    let has = |key: &str| mapping.iter().any(|(k, _)| scalar_text(k).as_deref() == Some(key));
+    if has("step") {
+        parse_deliver(mapping, &context, span, diags).map(Entry::Directive)
+    } else if has("create") {
+        parse_create(mapping, &context, span, diags).map(Entry::Directive)
+    } else if has("remove") {
+        let fields = diags.fields(mapping, &context, &["remove"]);
+        let name = fields.get("remove").and_then(|n| diags.name(n, &format!("{context} remove")))?;
+        Some(Entry::Directive(Directive::Remove { name, span }))
+    } else {
+        parse_step(&context, mapping, span, diags).map(Entry::Fire)
+    }
+}
+
+/// `{ step: n }`: `n` is a whole number, 0 for the head.
+fn parse_deliver(mapping: &Mapping, context: &str, span: SourceSpan, diags: &mut Diags) -> Option<Directive> {
+    let fields = diags.fields(mapping, context, &["step"]);
+    let node = fields.get("step")?;
+    let text = match scalar_text(node) {
+        Some(text) => text,
+        None if is_null(node) => "~".to_owned(),
+        None => {
+            diags.wrong_type(node, &format!("{context} step"), Expected::String);
+            return None;
+        }
+    };
+    match text.parse::<u32>() {
+        Ok(choice) => Some(Directive::Deliver { choice: Some(choice), span }),
+        Err(_) => {
+            diags.push(ScenarioErrorKind::InvalidQueuePosition { text }, span_of(node));
+            None
+        }
+    }
+}
+
+/// `{ create: name, machine: M, fields: {…}, state: s }`.
+fn parse_create(mapping: &Mapping, context: &str, span: SourceSpan, diags: &mut Diags) -> Option<Directive> {
+    let fields = diags.fields(mapping, context, &["create", "machine", "fields", "state"]);
+    let name = fields.get("create").and_then(|n| diags.name(n, &format!("{context} create")));
+    let instance_context = match &name {
+        Some(name) => format!("instance `{}`", name.value),
+        None => context.to_owned(),
+    };
+    let machine = fields
+        .require("machine", diags, context, span)
+        .and_then(|n| diags.name(n, &format!("{instance_context} machine")));
+    let values =
+        fields.get("fields").map(|n| value_map(n, &format!("{instance_context} fields"), diags)).unwrap_or_default();
+    let state = fields.get("state").and_then(|n| diags.path(n, &format!("{instance_context} state")));
+    Some(Directive::Create(InstanceDecl { name: name?, machine: machine?, fields: values, state, span }))
 }
 
 /// `name: { machine: M, fields: {…}, state: s }`, or `name: M` for an
@@ -108,16 +202,13 @@ fn parse_instance(name: Spanned<String>, body: &MarkedYamlOwned, diags: &mut Dia
     Some(InstanceDecl { name, machine: machine?, fields: values, state, span })
 }
 
-fn parse_step(number: usize, item: &MarkedYamlOwned, diags: &mut Diags) -> Option<Step> {
-    let context = format!("step {number}");
-    let span = span_of(item);
-    let mapping = diags.mapping(item, &context)?;
-    let fields = diags.fields(mapping, &context, &["source", "fire", "target", "payload", "timing"]);
+fn parse_step(context: &str, mapping: &Mapping, span: SourceSpan, diags: &mut Diags) -> Option<Step> {
+    let fields = diags.fields(mapping, context, &["source", "fire", "target", "payload", "timing"]);
 
     let source =
-        fields.require("source", diags, &context, span).and_then(|n| diags.name(n, &format!("{context} source")));
+        fields.require("source", diags, context, span).and_then(|n| diags.name(n, &format!("{context} source")));
     let fire = fields
-        .require("fire", diags, &context, span)
+        .require("fire", diags, context, span)
         .and_then(|n| diags.string(n, &format!("{context} fire")))
         .and_then(|text| trigger_ref(text, diags));
     let target = fields.get("target").and_then(|n| diags.name(n, &format!("{context} target")));
@@ -134,7 +225,7 @@ fn parse_step(number: usize, item: &MarkedYamlOwned, diags: &mut Diags) -> Optio
         },
     };
 
-    Some(Step { source: source?, fire: fire?, target, payload, timing, span })
+    Some(Step { source: source?, fire: fire?, target, payload, timing, span, before: Vec::new() })
 }
 
 fn trigger_ref(text: Spanned<String>, diags: &mut Diags) -> Option<Spanned<TriggerRef>> {

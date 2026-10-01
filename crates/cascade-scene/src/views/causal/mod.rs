@@ -12,6 +12,11 @@
 //! the machine pair (matrix click), hidden machines (collapsed to a stub
 //! keeping their links, counted), and hide mode (outside the focus removed,
 //! cut links left as stubs). Emphasis is applied after layout.
+//!
+//! With `ViewState::group_by_machine` the same graph is laid out in one
+//! lane per machine on shared causal columns (see [`lanes`]).
+
+mod lanes;
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -27,8 +32,10 @@ use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{DraftEdge, DraftGraph, DraftNode, EdgeText, Meta, RealizeCtx, realize};
 use crate::views::filters::{apply_hide, hidden_machines, machine_pair, pair_nodes};
 use crate::views::links::cycle_edges;
+use crate::views::overlays::{Placement, PlayDecor};
 use crate::views::style::{Painter, bracketed};
 use crate::views::{SceneError, SceneInput};
+use lanes::{LaneGroups, LaneOf, LaneRules};
 
 /// Pill ports: input West, output East.
 const PORT_IN: u16 = 0;
@@ -60,8 +67,12 @@ pub(super) fn build(
     let included = pair_nodes(model, graph, pair);
     let hidden = hidden_machines(model, &input.view.hidden_machines);
     let on_cycle = cycle_edges(graph);
+    let grouped = input.view.group_by_machine;
+    let rules = grouped.then(|| LaneRules::new(model));
 
     let mut draft = DraftGraph::default();
+    // The lane of every draft node, for causal lanes.
+    let mut lane_of: Vec<LaneOf> = Vec::new();
     let mut slot: Vec<Option<usize>> = vec![None; graph.node_count()];
     let mut stubs: Vec<(MachineId, usize, Vec<NodeIx>)> = Vec::new();
     for (ix, node) in graph.nodes() {
@@ -75,6 +86,7 @@ pub(super) fn build(
                     Some(at) => at,
                     None => {
                         let n = draft.add_node(stub_node(input, &painter, machine));
+                        lane_of.push(LaneOf::Machine(machine));
                         stubs.push((machine, n, Vec::new()));
                         stubs.len() - 1
                     }
@@ -84,7 +96,8 @@ pub(super) fn build(
                 continue;
             }
         }
-        slot[ix.index()] = Some(draft.add_node(causal_node(input, &painter, ix, node)));
+        slot[ix.index()] = Some(draft.add_node(causal_node(input, &painter, ix, node, grouped)));
+        lane_of.push(rules.as_ref().map_or(LaneOf::Unattached, |r| r.of(model, node)));
     }
     // Hidden machines with nothing in the graph still get a stub, unless a
     // pair filter excludes them.
@@ -92,6 +105,7 @@ pub(super) fn build(
         let in_scope = pair.is_none_or(|p| p.contains(&machine));
         if in_scope && !stubs.iter().any(|(m, _, _)| *m == machine) {
             let n = draft.add_node(stub_node(input, &painter, machine));
+            lane_of.push(LaneOf::Machine(machine));
             stubs.push((machine, n, Vec::new()));
         }
     }
@@ -173,24 +187,48 @@ pub(super) fn build(
         notes.push("Nothing to draw: no transitions, events, controllers or sources in view.".to_owned());
     }
 
+    let lane_groups = grouped.then(|| {
+        let groups = LaneGroups::add(&mut draft, model, &painter);
+        for (node, lane) in draft.nodes.iter_mut().zip(&lane_of) {
+            node.group = Some(groups.group(*lane));
+        }
+        groups
+    });
+
     let cuts = apply_hide(&mut draft, interaction);
     let ctx = RealizeCtx {
         view: ViewKind::Causal,
         theme,
         measure: input.measure,
         sidecar: input.sidecar,
-        options: LayoutOptions::default(),
+        options: LayoutOptions { shared_layers: grouped, ..LayoutOptions::default() },
     };
     let realized = realize(draft, cuts, &ctx, cache)?;
     let mut scene = realized.scene;
     let decor = Decor { model, theme, interaction, findings: FindingIndex::new(input.findings), diff: input.diff };
     decor.apply(&mut scene, &realized.nodes, &realized.edges, &realized.overlay_owner);
+    if let Some(groups) = &lane_groups {
+        let group_rect = |g: usize| realized.groups.get(g).copied().flatten();
+        groups.draw(&mut scene, input, &painter, interaction, &hidden, group_rect);
+    }
+    if let Some(play) = input.play {
+        let play_decor = PlayDecor { model, painter: &painter };
+        play_decor.apply(&mut scene, &realized.nodes, &realized.edges, play, Placement::Transitions);
+    }
     scene.bounds = scene_bounds(&scene, input.measure);
     scene.notes = notes;
     Ok(scene)
 }
 
-fn causal_node(input: &SceneInput<'_>, painter: &Painter<'_>, ix: NodeIx, node: CausalNode) -> DraftNode {
+/// The draft node of a causal node. In causal lanes a pill leaves out its
+/// machine, which its lane names.
+fn causal_node(
+    input: &SceneInput<'_>,
+    painter: &Painter<'_>,
+    ix: NodeIx,
+    node: CausalNode,
+    grouped: bool,
+) -> DraftNode {
     let model = input.model;
     let element = node.element();
     let key = model.key_of(element);
@@ -203,12 +241,13 @@ fn causal_node(input: &SceneInput<'_>, painter: &Painter<'_>, ix: NodeIx, node: 
         ),
         CausalNode::Transition(t) => {
             let tr = model.transition(t);
+            let label = if grouped {
+                format!("{} → {}", model.state(tr.from).path, model.state(tr.to).path)
+            } else {
+                model.transition_label(t)
+            };
             (
-                painter.pill(
-                    model.transition_label(t),
-                    model.trigger(tr.trigger).name.clone(),
-                    painter.machine(tr.machine),
-                ),
+                painter.pill(label, model.trigger(tr.trigger).name.clone(), painter.machine(tr.machine)),
                 LayerConstraint::Free,
                 vec![Port { side: PortSide::West }, Port { side: PortSide::East }],
                 Meta::new(vec![element], Anchor::Nodes(vec![ix])),

@@ -7,6 +7,8 @@
 use cascade_core::{Direction, ElementKey, ElementKind};
 use cascade_scene::{ConeFocus, OutsideFocus, ViewKind, ViewState};
 
+use crate::mode::AppMode;
+
 /// Deepest finite cone depth the stepper offers; one more step is ∞.
 pub const MAX_CONE_DEPTH: u32 = 12;
 
@@ -19,6 +21,9 @@ pub enum Command {
     ConeBackward,
     /// Dim or hide what is outside the cone or path query.
     ToggleOutside,
+    /// Causal view: one lane per machine on shared causal columns, or the
+    /// flat layout.
+    ToggleLanes,
     DepthLess,
     DepthMore,
     ShowView(ViewKind),
@@ -37,6 +42,18 @@ pub enum Command {
     UnpinSelection,
     Reload,
     Quit,
+    /// Switch between View, Build and Play.
+    SetMode(AppMode),
+    Undo,
+    Redo,
+    /// Build mode: delete the selected element.
+    DeleteSelection,
+    /// Create a new definition file and open it.
+    NewFile,
+    /// Play mode: deliver the queue's head.
+    PlayStep,
+    /// Play mode: deliver until the queue is empty.
+    PlayRun,
 }
 
 /// Where a binding applies.
@@ -81,6 +98,7 @@ pub const KEYMAP: &[Binding] = &[
     canvas("f", Command::ConeForward),
     canvas("b", Command::ConeBackward),
     canvas("h", Command::ToggleOutside),
+    canvas("g", Command::ToggleLanes),
     canvas("[", Command::DepthLess),
     canvas("]", Command::DepthMore),
     canvas("1", Command::ShowView(ViewKind::Causal)),
@@ -98,6 +116,10 @@ pub const KEYMAP: &[Binding] = &[
     canvas("/", Command::FocusSearch),
     canvas("o", Command::OpenSource),
     canvas("u", Command::UnpinSelection),
+    canvas("delete", Command::DeleteSelection),
+    canvas("backspace", Command::DeleteSelection),
+    canvas("space", Command::PlayStep),
+    canvas("r", Command::PlayRun),
     global("ctrl-f", Command::FocusSearch),
     global("cmd-f", Command::FocusSearch),
     global("ctrl-shift-c", Command::CopyLink),
@@ -110,6 +132,19 @@ pub const KEYMAP: &[Binding] = &[
     global("cmd-r", Command::Reload),
     global("ctrl-q", Command::Quit),
     global("cmd-q", Command::Quit),
+    global("ctrl-1", Command::SetMode(AppMode::View)),
+    global("cmd-1", Command::SetMode(AppMode::View)),
+    global("ctrl-2", Command::SetMode(AppMode::Build)),
+    global("cmd-2", Command::SetMode(AppMode::Build)),
+    global("ctrl-3", Command::SetMode(AppMode::Play)),
+    global("cmd-3", Command::SetMode(AppMode::Play)),
+    global("ctrl-z", Command::Undo),
+    global("cmd-z", Command::Undo),
+    global("ctrl-shift-z", Command::Redo),
+    global("cmd-shift-z", Command::Redo),
+    global("ctrl-y", Command::Redo),
+    global("ctrl-n", Command::NewFile),
+    global("cmd-n", Command::NewFile),
 ];
 
 /// Every command, for exhaustiveness checks.
@@ -119,6 +154,7 @@ pub const ALL_COMMANDS: &[Command] = &[
     Command::ConeForward,
     Command::ConeBackward,
     Command::ToggleOutside,
+    Command::ToggleLanes,
     Command::DepthLess,
     Command::DepthMore,
     Command::ShowView(ViewKind::Causal),
@@ -140,6 +176,15 @@ pub const ALL_COMMANDS: &[Command] = &[
     Command::UnpinSelection,
     Command::Reload,
     Command::Quit,
+    Command::SetMode(AppMode::View),
+    Command::SetMode(AppMode::Build),
+    Command::SetMode(AppMode::Play),
+    Command::Undo,
+    Command::Redo,
+    Command::DeleteSelection,
+    Command::NewFile,
+    Command::PlayStep,
+    Command::PlayRun,
 ];
 
 /// The first key bound to `command`, for button hints.
@@ -163,6 +208,13 @@ pub enum HostEffect {
     UnpinSelection,
     Reload,
     Quit,
+    SetMode(AppMode),
+    Undo,
+    Redo,
+    DeleteSelection,
+    NewFile,
+    PlayStep,
+    PlayRun,
 }
 
 /// What a command did.
@@ -190,6 +242,12 @@ pub fn reduce(command: Command, state: &mut ViewState, depth: &mut Option<u32>) 
             };
             Outcome::ViewChanged
         }
+        Command::ToggleLanes => {
+            state.group_by_machine = !state.group_by_machine;
+            // The picture changes completely: fit it again.
+            state.viewport = None;
+            Outcome::ViewChanged
+        }
         Command::DepthLess => changed(set_depth(state, depth, depth_less(*depth))),
         Command::DepthMore => changed(set_depth(state, depth, depth_more(*depth))),
         Command::ShowView(view) => changed(show_view(state, view)),
@@ -208,6 +266,13 @@ pub fn reduce(command: Command, state: &mut ViewState, depth: &mut Option<u32>) 
         Command::UnpinSelection => Outcome::Host(HostEffect::UnpinSelection),
         Command::Reload => Outcome::Host(HostEffect::Reload),
         Command::Quit => Outcome::Host(HostEffect::Quit),
+        Command::SetMode(mode) => Outcome::Host(HostEffect::SetMode(mode)),
+        Command::Undo => Outcome::Host(HostEffect::Undo),
+        Command::Redo => Outcome::Host(HostEffect::Redo),
+        Command::DeleteSelection => Outcome::Host(HostEffect::DeleteSelection),
+        Command::NewFile => Outcome::Host(HostEffect::NewFile),
+        Command::PlayStep => Outcome::Host(HostEffect::PlayStep),
+        Command::PlayRun => Outcome::Host(HostEffect::PlayRun),
     }
 }
 
@@ -452,6 +517,22 @@ mod tests {
     }
 
     #[test]
+    fn g_toggles_lanes_and_links_carry_them() {
+        let find = |keys: &str| KEYMAP.iter().find(|b| b.keys == keys).map(|b| (b.command, b.scope));
+        assert_eq!(find("g"), Some((Command::ToggleLanes, Scope::Canvas)));
+        let viewport = cascade_scene::Viewport { center: cascade_layout::Point::new(5.0, 5.0), zoom: 2.0 };
+        let mut state = ViewState { selection: vec![t1()], viewport: Some(viewport), ..ViewState::default() };
+        let mut depth = None;
+        assert_eq!(reduce(Command::ToggleLanes, &mut state, &mut depth), Outcome::ViewChanged);
+        assert!(state.group_by_machine);
+        assert_eq!(state.viewport, None, "the new picture is fitted");
+        assert_eq!(state.selection, vec![t1()], "the selection survives");
+        assert_eq!(ViewState::from_link(&state.to_link()), Ok(state.clone()));
+        reduce(Command::ToggleLanes, &mut state, &mut depth);
+        assert!(!state.group_by_machine);
+    }
+
+    #[test]
     fn escape_peels_one_layer_at_a_time() {
         let mut state = ViewState {
             selection: vec![t1()],
@@ -542,5 +623,39 @@ mod tests {
         open_pair(&mut state, "Order".into(), "Shipment".into());
         assert_eq!(state.view, ViewKind::Causal);
         assert_eq!(state.machine_pair, Some(("Order".into(), "Shipment".into())));
+    }
+
+    #[test]
+    fn workbench_keys_are_bound() {
+        let find = |keys: &str| KEYMAP.iter().find(|b| b.keys == keys).map(|b| b.command);
+        assert_eq!(find("ctrl-1"), Some(Command::SetMode(AppMode::View)));
+        assert_eq!(find("cmd-2"), Some(Command::SetMode(AppMode::Build)));
+        assert_eq!(find("ctrl-3"), Some(Command::SetMode(AppMode::Play)));
+        assert_eq!(find("ctrl-z"), Some(Command::Undo));
+        assert_eq!(find("ctrl-shift-z"), Some(Command::Redo));
+        assert_eq!(find("ctrl-y"), Some(Command::Redo));
+        assert_eq!(find("delete"), Some(Command::DeleteSelection));
+        assert_eq!(find("backspace"), Some(Command::DeleteSelection));
+        assert_eq!(find("ctrl-n"), Some(Command::NewFile));
+        assert_eq!(find("space"), Some(Command::PlayStep));
+        assert_eq!(find("r"), Some(Command::PlayRun));
+    }
+
+    #[test]
+    fn workbench_commands_are_host_effects() {
+        let mut state = ViewState::default();
+        let mut depth = None;
+        for (command, effect) in [
+            (Command::SetMode(AppMode::Build), HostEffect::SetMode(AppMode::Build)),
+            (Command::Undo, HostEffect::Undo),
+            (Command::Redo, HostEffect::Redo),
+            (Command::DeleteSelection, HostEffect::DeleteSelection),
+            (Command::NewFile, HostEffect::NewFile),
+            (Command::PlayStep, HostEffect::PlayStep),
+            (Command::PlayRun, HostEffect::PlayRun),
+        ] {
+            assert_eq!(reduce(command, &mut state, &mut depth), Outcome::Host(effect));
+        }
+        assert_eq!(state, ViewState::default());
     }
 }
