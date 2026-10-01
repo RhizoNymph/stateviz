@@ -20,6 +20,7 @@ use cascade_core::{CausalGraph, Cone, EdgeIx, ElementRef, Model, NodeIx};
 
 pub use seeds::causal_seeds;
 
+use crate::play::SceneMode;
 use crate::scene::Emphasis;
 use crate::view_state::{ConeFocus, OutsideFocus, ViewState};
 
@@ -70,13 +71,21 @@ impl Interaction {
     /// not name an element of `model` are ignored; at most two selections
     /// count.
     pub fn new(model: &Model, graph: &CausalGraph, view: &ViewState) -> Self {
+        Self::for_mode(model, graph, view, SceneMode::View)
+    }
+
+    /// Like [`Interaction::new`], aware of what the canvas is for. In
+    /// [`SceneMode::Edit`] two selections are just two selected elements
+    /// (the build canvas connects them), not a path query.
+    pub fn for_mode(model: &Model, graph: &CausalGraph, view: &ViewState, mode: SceneMode) -> Self {
         let selected: Vec<ElementRef> = view.selection.iter().filter_map(|k| model.resolve_key(k)).take(2).collect();
         let mut notes = Vec::new();
         let focus = match (selected.as_slice(), view.cone) {
+            ([_, _], _) if mode == SceneMode::Edit => None,
             ([a, b], _) => {
                 let region = path_region(model, graph, *a, *b);
                 if region.is_empty() {
-                    notes.push(format!("No causal path between {} and {}.", model.label_of(*a), model.label_of(*b)));
+                    notes.push(no_path_note(model, *a, *b));
                 }
                 Some(FocusRegion { kind: FocusKind::Path, region, outside: view.outside })
             }
@@ -166,6 +175,18 @@ impl Interaction {
 }
 
 /// Every causal path between any seed of `a` and any seed of `b`.
+/// Why a path query found nothing, in terms a designer can act on.
+fn no_path_note(model: &Model, a: ElementRef, b: ElementRef) -> String {
+    let head = format!("No causal path between {} and {}", model.label_of(a), model.label_of(b));
+    match (model.machine_of(a), model.machine_of(b)) {
+        (Some(x), Some(y)) if x == y => format!(
+            "{head}: transitions within one machine don't cause each other. A transition causes another only by \
+             emitting an event that a controller handles by firing the next one."
+        ),
+        _ => format!("{head}: causality runs from a transition's emitted event through a controller's fire."),
+    }
+}
+
 fn path_region(model: &Model, graph: &CausalGraph, a: ElementRef, b: ElementRef) -> Cone {
     let seeds_a = causal_seeds(model, graph, a);
     let seeds_b = causal_seeds(model, graph, b);

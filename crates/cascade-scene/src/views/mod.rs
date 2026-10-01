@@ -92,7 +92,7 @@ impl SceneBuilder {
     }
 
     pub fn build(&mut self, input: &SceneInput<'_>) -> Result<Scene, SceneError> {
-        let interaction = Interaction::new(input.model, input.graph, input.view);
+        let interaction = Interaction::for_mode(input.model, input.graph, input.view, input.mode);
         match input.view.view {
             ViewKind::Causal => causal::build(input, &interaction, &mut self.cache),
             ViewKind::Structure => structure::build(input, &interaction, &mut self.cache, &mut self.wiring),

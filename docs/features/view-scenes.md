@@ -77,7 +77,11 @@ anything.
   `CausalGraph::cone(seeds, direction, depth)`.
 - **Path query:** two selections give the union of
   `paths_between(x, y)` over their seeds; the cone setting is ignored. An
-  empty result leaves a note ("No causal path between …").
+  empty result leaves a note saying why: transitions within one machine
+  never cause each other (causality runs through an emitted event and a
+  controller's fire). In `SceneMode::Edit` two selections are only a
+  selection (the build canvas connects them), so no path query runs and
+  nothing is dimmed (`Interaction::for_mode`).
 - **Emphasis precedence:** selected, then dimmed (outside an active focus:
   `theme.dim_opacity`, 15%), then search match (a dotted halo overlay, no
   hue change), then focused (inside: an outline between normal and
