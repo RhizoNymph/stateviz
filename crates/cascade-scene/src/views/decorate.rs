@@ -19,6 +19,7 @@ use cascade_layout::{Insets, Point, Rect};
 
 use crate::color::Theme;
 use crate::emphasis::Interaction;
+use crate::play::SceneMode;
 use crate::scene::{Badge, Dash, Emphasis, Label, Layer, Overlay, Scene, Shape, Stroke};
 use crate::text::TextMeasure;
 use crate::views::draft::{EdgeInfo, Meta};
@@ -38,8 +39,18 @@ pub(crate) struct FindingIndex<'a> {
 
 impl<'a> FindingIndex<'a> {
     pub fn new(findings: &'a [Finding]) -> Self {
+        Self::for_mode(findings, SceneMode::View)
+    }
+
+    /// Findings as badged in `mode`. Build mode badges only errors: the
+    /// warnings and notes of a half-built system (unreachable states,
+    /// unhandled events, state-dependent fires) would cover the canvas.
+    pub fn for_mode(findings: &'a [Finding], mode: SceneMode) -> Self {
         let mut by_element: HashMap<ElementRef, Vec<usize>> = HashMap::new();
         for (i, f) in findings.iter().enumerate() {
+            if mode == SceneMode::Edit && f.severity != Severity::Error {
+                continue;
+            }
             for subject in f.detail.subjects() {
                 let list = by_element.entry(subject).or_default();
                 if list.last() != Some(&i) {

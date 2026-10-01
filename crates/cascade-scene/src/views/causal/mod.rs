@@ -205,7 +205,13 @@ pub(super) fn build(
     };
     let realized = realize(draft, cuts, &ctx, cache)?;
     let mut scene = realized.scene;
-    let decor = Decor { model, theme, interaction, findings: FindingIndex::new(input.findings), diff: input.diff };
+    let decor = Decor {
+        model,
+        theme,
+        interaction,
+        findings: FindingIndex::for_mode(input.findings, input.mode),
+        diff: input.diff,
+    };
     decor.apply(&mut scene, &realized.nodes, &realized.edges, &realized.overlay_owner);
     if let Some(groups) = &lane_groups {
         let group_rect = |g: usize| realized.groups.get(g).copied().flatten();
