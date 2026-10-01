@@ -95,6 +95,11 @@ Drafter (a gutter group above each machine, lanes, pills with extra ports) ─�
      ──▶ Decor (emphasis, badges, diff) ──▶ gutter lanes, empty hints, connect handles ──▶ play overlay
 ```
 
+- **Badges** show only errors (invalid fires, nondeterminism). Warnings
+  and notes (unreachable states, unhandled events, orphan controllers,
+  state-dependent fires) are normal while a system is half built, so
+  build mode leaves them to the status bar counts and the view-mode
+  findings panel (`FindingIndex::for_mode`).
 - **Lanes** are the view mode's, except that each pill has two extra
   ports where emits leave: South-out (4) toward a gutter below, North-out
   (5) toward a gutter above.
