@@ -31,6 +31,7 @@ use crate::document::scenarios::ScenarioFile;
 use crate::gesture::Gesture;
 use crate::input::{InputEvent, TextInput};
 use crate::mode::AppMode;
+use crate::settings::{self, AppSettings};
 use crate::theme::{ActiveChrome, Chrome, ThemeChoice, chrome, scene_theme};
 use crate::trace::TraceRun;
 use crate::viewport::ScreenRect;
@@ -114,6 +115,9 @@ pub struct Workspace {
     pub(crate) build: BuildUi,
     pub(crate) play: PlayUi,
     pub(crate) watcher: Option<FileWatcher>,
+    /// Where app settings are saved; `None` without a config directory.
+    pub(crate) settings_path: Option<PathBuf>,
+    settings_task: Option<Task<()>>,
     reload_task: Option<Task<()>>,
     trace_task: Option<Task<()>>,
     diff_task: Option<Task<()>>,
@@ -136,12 +140,13 @@ fn system_mode(window: &Window) -> ThemeMode {
 
 impl Workspace {
     /// Open `path` (absolute) with `view` as the initial view state, in
-    /// `mode`.
+    /// `mode`. App settings are saved to `settings_path`.
     pub fn new(
         path: PathBuf,
         view: ViewState,
         mode: AppMode,
         mono: SharedString,
+        settings_path: Option<PathBuf>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -207,6 +212,8 @@ impl Workspace {
             build: BuildUi::default(),
             play: PlayUi::new(cx),
             watcher: None,
+            settings_path,
+            settings_task: None,
             reload_task: None,
             trace_task: None,
             diff_task: None,
@@ -254,6 +261,31 @@ impl Workspace {
             });
             if let Err(error) = cleared {
                 tracing::debug!(%error, "workspace gone before the status expired");
+            }
+        }));
+    }
+
+    /// Remember the settings the view state carries (transition pills) in
+    /// the settings file, written on the background executor. A failure is
+    /// reported in the status bar and changes nothing else.
+    pub(crate) fn save_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.settings_path.clone() else {
+            tracing::warn!("settings: no config directory, not saved");
+            return;
+        };
+        let settings = AppSettings { transition_pills: self.view.transition_pills };
+        let work = cx.background_spawn(async move { settings::save(&path, &settings).map(|()| path) });
+        self.settings_task = Some(cx.spawn(async move |this, cx| match work.await {
+            Ok(path) => tracing::debug!(path = %path.display(), "settings saved"),
+            Err(error) => {
+                tracing::warn!(%error, "settings not saved");
+                let reported = this.update(cx, |ws, cx| {
+                    ws.set_status(format!("Cannot save settings: {error}"), true);
+                    cx.notify();
+                });
+                if let Err(gone) = reported {
+                    tracing::debug!(error = %gone, "workspace gone before the settings were saved");
+                }
             }
         }));
     }

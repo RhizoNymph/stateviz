@@ -1,5 +1,5 @@
 //! Cross-machine links in the structure view: one dashed edge per pair of
-//! endpoints, straight from the causing pill to the caused pill, labelled
+//! endpoints, straight from the causing pill (or arrow) to the caused one, labelled
 //! with the event and controller it runs through ("OrderPaid ›
 //! Fulfillment").
 
@@ -31,6 +31,7 @@ pub(super) fn draft_links(
     painter: &Painter<'_>,
     endpoints: &[Option<Endpoint>],
     stubs: &[(MachineId, usize)],
+    pills: bool,
 ) {
     let theme = painter.theme;
     let mut links: Vec<Link> = Vec::new();
@@ -75,7 +76,11 @@ pub(super) fn draft_links(
         let (from_port, to_port) = if link.from.kind == EndKind::Pill && link.to.kind == EndKind::Pill {
             let (ga, gb) = (draft.nodes[link.from.node].group, draft.nodes[link.to.node].group);
             match ga.cmp(&gb) {
-                std::cmp::Ordering::Equal => (Some(PORT_EAST), Some(PORT_WEST)),
+                // Pills side by side: East → West. Junctions sit on their
+                // arrows, whose West and East ports the arrow itself uses,
+                // so the link dips below the lane's row instead.
+                std::cmp::Ordering::Equal if pills => (Some(PORT_EAST), Some(PORT_WEST)),
+                std::cmp::Ordering::Equal => (Some(PORT_SOUTH), Some(PORT_SOUTH)),
                 std::cmp::Ordering::Less => (Some(PORT_SOUTH), Some(PORT_NORTH)),
                 std::cmp::Ordering::Greater => (Some(PORT_NORTH), Some(PORT_SOUTH)),
             }

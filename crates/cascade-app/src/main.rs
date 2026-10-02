@@ -20,6 +20,7 @@ mod locate;
 mod mode;
 mod panels;
 mod play;
+mod settings;
 mod theme;
 mod trace;
 mod viewport;
@@ -47,7 +48,7 @@ fn init_tracing() {
 fn main() -> ExitCode {
     init_tracing();
     let args = Args::parse();
-    let view = match args.initial_view() {
+    let mut view = match args.initial_view() {
         Ok(view) => view,
         Err(error) => {
             eprintln!("cascade-app: --view: {error}");
@@ -60,6 +61,13 @@ fn main() -> ExitCode {
         eprintln!("cascade-app: --new: {error}");
         return ExitCode::from(2);
     }
+    // Remembered settings seed the view; a `--view` link carries its own.
+    let settings_path = settings::default_path();
+    let remembered = settings::load_or_default(settings_path.as_deref());
+    if args.view.is_none() {
+        view.transition_pills = remembered.transition_pills;
+    }
+    let settings_path = settings_path.ok();
     let mode = args.initial_mode();
     let path = match std::fs::canonicalize(&args.file) {
         Ok(path) => path,
@@ -85,7 +93,7 @@ fn main() -> ExitCode {
                 focus: true,
                 ..Default::default()
             },
-            move |window, cx| cx.new(|cx| Workspace::new(path, view, mode, mono, window, cx)),
+            move |window, cx| cx.new(|cx| Workspace::new(path, view, mode, mono, settings_path, window, cx)),
         );
         if let Err(error) = opened {
             tracing::error!(%error, "cannot open the window");

@@ -25,6 +25,11 @@
 //! - **Hidden machines** become a stub in a thin band of their own, and
 //!   their links attach to it.
 //!
+//! **Arrow mode** (`ViewState::transition_pills` off, in view and edit
+//! mode alike) draws each transition as one labelled state → state arrow
+//! instead of a pill (see `arrows`); links and wiring attach to a point on
+//! the arrow.
+//!
 //! **Edit mode** (the build canvas) keeps the lanes and replaces the
 //! cross-lane links with the wiring (see `wiring`): event tags, controller
 //! hexagons and source boxes in gutters between the lanes (see `gutters`),
@@ -32,6 +37,7 @@
 //! handles, a machine without transitions says how to add one, and an empty
 //! definition says how to start.
 
+mod arrows;
 mod edit;
 mod gutters;
 mod links;
@@ -74,7 +80,8 @@ pub(super) fn build(
     let hidden = hidden_machines(model, &input.view.hidden_machines);
     let collapse = Collapse::resolve(model, &input.view.collapsed);
     let edit = input.mode == SceneMode::Edit;
-    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse, edit };
+    let pills = input.view.transition_pills;
+    let drafter = Drafter { model, graph: input.graph, painter: &painter, collapse: &collapse, edit, pills };
 
     let mut draft = DraftGraph::default();
     let mut endpoints = vec![None; model.transition_count()];
@@ -108,7 +115,7 @@ pub(super) fn build(
         let wiring = wiring::Wiring { model, graph: input.graph, painter: &painter };
         wiring.draft(&mut draft, &endpoints, &gutters, &stubs, memo);
     } else {
-        links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs);
+        links::draft_links(&mut draft, model, input.graph, &painter, &endpoints, &stubs, pills);
     }
 
     let cuts = apply_hide(&mut draft, interaction);
@@ -117,7 +124,11 @@ pub(super) fn build(
         theme,
         measure: input.measure,
         sidecar: input.sidecar,
-        options: LayoutOptions { layer_spacing: 48.0, align_across_groups: true, ..LayoutOptions::default() },
+        options: LayoutOptions {
+            layer_spacing: if pills { 48.0 } else { arrows::LAYER_SPACING },
+            align_across_groups: true,
+            ..LayoutOptions::default()
+        },
     };
     let realized = realize(draft, cuts, &ctx, cache)?;
     let mut scene = realized.scene;
@@ -129,6 +140,10 @@ pub(super) fn build(
         diff: input.diff,
     };
     decor.apply(&mut scene, &realized.nodes, &realized.edges, &realized.overlay_owner);
+    let (mut node_metas, mut edge_infos) = (realized.nodes, realized.edges);
+    if !pills {
+        arrows::fold(&mut scene, &mut node_metas, &mut edge_infos, &painter);
+    }
 
     let group_rect = |g: usize| realized.groups.get(g).copied().flatten();
     for plan in &plans {
@@ -167,7 +182,7 @@ pub(super) fn build(
     }
     if let Some(play) = input.play {
         let play_decor = PlayDecor { model, painter: &painter };
-        play_decor.apply(&mut scene, &realized.nodes, &realized.edges, play, Placement::States);
+        play_decor.apply(&mut scene, &node_metas, &edge_infos, play, Placement::States);
     }
     scene.bounds = scene_bounds(&scene, input.measure);
     scene.notes = notes;

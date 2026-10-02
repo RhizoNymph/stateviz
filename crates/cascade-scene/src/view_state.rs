@@ -84,7 +84,7 @@ pub struct Viewport {
     pub zoom: f32,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ViewState {
     pub view: ViewKind,
     /// Up to two selected elements. Two transitions make a path query.
@@ -98,6 +98,11 @@ pub struct ViewState {
     /// Causal view: one lane per machine on shared causal columns (link
     /// parameter `lanes=1`).
     pub group_by_machine: bool,
+    /// Structure view: draw each transition as a pill between its states
+    /// (on, the default) or as one labelled state → state arrow (off; link
+    /// parameter `pills=0`). The causal view always draws pills, since
+    /// transitions are its nodes.
+    pub transition_pills: bool,
     pub search: Option<String>,
     /// Restrict the causal view to two machines (from a matrix cell click).
     pub machine_pair: Option<(String, String)>,
@@ -108,6 +113,27 @@ pub struct ViewState {
     pub race: Option<u32>,
     pub diff: Option<DiffRefs>,
     pub viewport: Option<Viewport>,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            view: ViewKind::default(),
+            selection: Vec::new(),
+            cone: None,
+            outside: OutsideFocus::default(),
+            hidden_machines: BTreeSet::new(),
+            collapsed: BTreeSet::new(),
+            group_by_machine: false,
+            transition_pills: true,
+            search: None,
+            machine_pair: None,
+            scenario: None,
+            race: None,
+            diff: None,
+            viewport: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -200,6 +226,9 @@ impl ViewState {
         if self.group_by_machine {
             params.push("lanes=1".to_owned());
         }
+        if !self.transition_pills {
+            params.push("pills=0".to_owned());
+        }
         if let Some(q) = &self.search {
             params.push(format!("q={}", encode(q)));
         }
@@ -265,6 +294,13 @@ impl ViewState {
                         "1" => true,
                         "0" => false,
                         _ => return Err(ViewLinkError::InvalidValue { param: "lanes", value: value.to_owned() }),
+                    }
+                }
+                "pills" => {
+                    state.transition_pills = match value {
+                        "1" => true,
+                        "0" => false,
+                        _ => return Err(ViewLinkError::InvalidValue { param: "pills", value: value.to_owned() }),
                     }
                 }
                 "q" => state.search = Some(decode(value, "q")?),
@@ -335,6 +371,7 @@ mod tests {
             hidden_machines: ["Payment".to_owned(), "Shipment".to_owned()].into_iter().collect(),
             collapsed: ["state:Job:running".parse().expect("key")].into_iter().collect(),
             group_by_machine: true,
+            transition_pills: true,
             search: Some("paid & co, 100%".to_owned()),
             machine_pair: Some(("Order".into(), "Shipment".into())),
             scenario: Some("happy path".into()),

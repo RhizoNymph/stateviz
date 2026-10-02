@@ -257,6 +257,9 @@ impl Workspace {
                     self.view.view = before;
                     self.switch_view(after);
                 }
+                if command == Command::TogglePills {
+                    self.save_settings(cx);
+                }
                 if self.view.search.is_none() && !self.search.input.read(cx).text().is_empty() {
                     // Esc cleared the search highlight: clear the box to match.
                     self.search.input.update(cx, |input, cx| input.set_text("", cx));

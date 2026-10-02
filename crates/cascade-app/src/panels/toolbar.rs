@@ -1,4 +1,5 @@
-//! The toolbar: view tabs, the causal view's lane toggle, cone controls, diff controls, link and theme
+//! The toolbar: view tabs, the causal view's lane toggle, the structure
+//! view's pills toggle, cone controls, diff controls, link and theme
 //! buttons.
 
 use cascade_core::Direction;
@@ -37,6 +38,8 @@ impl Workspace {
         let in_diff = self.view.diff.is_some();
         let lanes = self.view.group_by_machine;
         let causal = self.view.view == ViewKind::Causal;
+        let structure = self.view.view == ViewKind::Structure;
+        let pills = self.view.transition_pills;
 
         let tabs = ViewKind::ALL.into_iter().filter(|view| self.mode.allows(*view)).map(|view| {
             button(
@@ -76,6 +79,12 @@ impl Workspace {
                 el.child(
                     button("group-by-machine", with_key("Group by machine", Command::ToggleLanes), lanes, colors)
                         .on_click(cx.listener(|ws, _, window, cx| ws.run_command(Command::ToggleLanes, window, cx))),
+                )
+            })
+            .when(structure, |el| {
+                el.child(
+                    button("transition-pills", with_key("Pills", Command::TogglePills), pills, colors)
+                        .on_click(cx.listener(|ws, _, window, cx| ws.run_command(Command::TogglePills, window, cx))),
                 )
             })
             .child(separator(colors))

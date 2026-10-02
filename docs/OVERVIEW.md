@@ -48,7 +48,8 @@ Overview:
     cascade-app: >
       The `cascade-app` GPUI binary: paints scenes, pan/zoom, selection, cone
       tracing, search, legend/entity filter, findings panel, trace and matrix
-      interaction, the causal view's group-by-machine toggle (G), live
+      interaction, the causal view's group-by-machine toggle (G), the
+      structure view's pills toggle (P, remembered in a settings file), live
       reload, click-to-source, diff mode, pin dragging; a
       workbench with Build mode (edit ops with undo saved to the file in
       place, drag-to-connect, inspector, new files) and Play mode
@@ -115,8 +116,8 @@ Features Index:
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md
   view_scenes:
-    description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles) and play overlays (instance markers, active and pending items).
-    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
+    description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles); arrow mode (`pills=0`: the structure view draws each transition as one labelled state → state arrow through an invisible layout junction, wires attaching to the arrow with a dot) and play overlays (instance markers, active and pending items).
+    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::ViewState::transition_pills, cascade_scene::Scene::hit_test_arrows, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md
   interop_and_diff:
@@ -134,11 +135,13 @@ Features Index:
       selection, cone tracing with a depth stepper, path queries, legend
       entity filter, findings panel, fuzzy search, trace scenario/race picker,
       matrix drill-down, click-to-source, pin dragging, diff mode, view links
-      via the clipboard, light/dark theme, and live reload that keeps the last
-      good model on screen. View/Build/Play modes: Build edits the definition
-      (toolbar, drag-to-connect, inspector, undo/redo, own-write-aware saves,
-      `--new`); Play drives an interactive simulator session with an overlay.
-    entry_points: [cascade-app, cascade-app --new, cascade open, cascade_app::workspace::Workspace]
+      via the clipboard, light/dark theme, the structure view's pills/arrows
+      toggle (P, remembered in $XDG_CONFIG_HOME/cascade/settings.json), and
+      live reload that keeps the last good model on screen. View/Build/Play modes: Build edits the definition
+      (toolbar, drag-to-connect from handles or, with pills off, from
+      anywhere within 8 px of a transition arrow, inspector, undo/redo,
+      own-write-aware saves, `--new`); Play drives an interactive simulator session with an overlay.
+    entry_points: [cascade-app, cascade-app --new, cascade open, cascade_app::workspace::Workspace, cascade_app::settings, cascade_app::build::pick]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
   build_and_play:
@@ -157,7 +160,8 @@ Features Index:
       corridor use, leftward forward edges) with a report over the examples
       (causal lanes included) and asserted targets,
       and the placement (wiring in gutters between the lanes, short fire
-      labels said once) and routing work that improves them.
+      labels said once) and routing work that improves them; arrow mode
+      measured against pill mode.
     entry_points: [cascade_scene::metrics::measure, cascade-scene tests/readability.rs, cascade-scene tests/readability_targets.rs, cascade_scene::views::structure::gutters::assign (crate), cascade_layout::LayoutOptions::align_across_groups]
     depends_on: [view_scenes, layered_layout, build_and_play]
     doc: docs/features/readability.md

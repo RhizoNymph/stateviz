@@ -81,7 +81,8 @@ impl Collapse {
 /// Where a transition attaches for cross-lane links.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EndKind {
-    /// The transition's own pill, which has ports.
+    /// The transition's own pill, or its junction in arrow mode; both have
+    /// ports.
     Pill,
     /// A collapsed state or machine standing in for it.
     Other,
@@ -120,6 +121,9 @@ pub(super) struct Drafter<'a> {
     pub collapse: &'a Collapse,
     /// Edit mode: pills get [`PORT_SOUTH_OUT`] too.
     pub edit: bool,
+    /// Transitions as pills (`ViewState::transition_pills`), or as arrows
+    /// through a junction (see `arrows`).
+    pub pills: bool,
 }
 
 impl Drafter<'_> {
@@ -259,14 +263,23 @@ impl Drafter<'_> {
             }
             let group = common_scope(model, rf, rt).and_then(|p| band_of.get(&p).copied()).unwrap_or(top);
             let key = model.key_of(ElementRef::Transition(t));
-            let label = format!("{} → {}", model.state(tr.from).path, model.state(tr.to).path);
             let meta = Meta::new(vec![ElementRef::Transition(t)], Anchor::Nodes(causal));
+            let trigger = model.trigger(tr.trigger).name.clone();
+            // A pill reads `from → to` over the trigger and its arrow in
+            // carries the guard; an arrow carries both on its way in, and
+            // its junction stands where the pill would be.
+            let (look, label_in) = if self.pills {
+                let label = format!("{} → {}", model.state(tr.from).path, model.state(tr.to).path);
+                (painter.pill(label, trigger, style), bracketed(tr.guard.as_deref()))
+            } else {
+                (painter.junction(), Some(arrow_label(&trigger, tr.guard.as_deref())))
+            };
             let pill = draft.add_node(DraftNode {
                 key: key.to_string(),
                 group: Some(group),
                 layer: LayerConstraint::Free,
                 ports: if self.edit { edit_pill_ports() } else { standard_ports() },
-                look: painter.pill(label, model.trigger(tr.trigger).name.clone(), style),
+                look,
                 target: HitTarget::Element(key.clone()),
                 meta: meta.clone(),
             });
@@ -283,7 +296,7 @@ impl Drafter<'_> {
                 meta: meta.clone(),
                 on_cycle: false,
             };
-            draft.edges.push(arrow(a, None, pill, Some(PORT_WEST), Arrow::None, bracketed(tr.guard.as_deref())));
+            draft.edges.push(arrow(a, None, pill, Some(PORT_WEST), Arrow::None, label_in));
             draft.edges.push(arrow(pill, Some(PORT_EAST), b, None, Arrow::End, None));
             let column = columns.pill(model, rf, group);
             endpoints[t.index()] = Some(Endpoint { node: pill, kind: EndKind::Pill, column });
@@ -369,6 +382,14 @@ fn common_scope(model: &Model, a: StateId, b: StateId) -> Option<StateId> {
     model.ancestors(a).find(|s| above_b.contains(s))
 }
 
+/// An arrow's label: the trigger, then ` [guard]` when there is one.
+fn arrow_label(trigger: &str, guard: Option<&str>) -> String {
+    match bracketed(guard) {
+        Some(guard) => format!("{trigger} {guard}"),
+        None => trigger.to_owned(),
+    }
+}
+
 /// "1 state", "3 states".
 fn count(n: usize, noun: &str) -> String {
     if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
@@ -382,5 +403,17 @@ trait StatesWithin {
 impl StatesWithin for Model {
     fn state_count_within(&self, s: StateId) -> usize {
         self.state(s).children().iter().map(|&c| 1 + self.state_count_within(c)).sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arrow_labels_read_trigger_then_guard() {
+        assert_eq!(arrow_label("pay", None), "pay");
+        assert_eq!(arrow_label("pay", Some("  ")), "pay");
+        assert_eq!(arrow_label("pay", Some("amount > 0")), "pay [amount > 0]");
     }
 }

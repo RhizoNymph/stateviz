@@ -15,7 +15,9 @@ cascade-app [--new] <file> [--view <cascade:// link>] [--mode view|build|play]
 `--new` creates `<file>` with a starter definition (one machine, one state)
 and opens it in Build mode; it refuses to overwrite an existing file.
 
-`CASCADE_EDITOR` sets the click-to-source command (see below); `RUST_LOG`
+`CASCADE_EDITOR` sets the click-to-source command (see below);
+`XDG_CONFIG_HOME` (else `HOME`) locates the settings file (see "Settings");
+`RUST_LOG`
 sets log filters (default `cascade_app=info`). Exit code 2 means a bad
 argument (missing file, invalid `--view` link).
 
@@ -30,7 +32,8 @@ argument (missing file, invalid `--view` link).
   stepper, dim/hide, path queries, legend entity filter, findings panel,
   fuzzy search, trace view scenario/race picker, matrix cell drill-down,
   click-to-source, pins, diff mode, shareable links, light/dark theme,
-  status bar.
+  status bar, the structure view's pills/arrows toggle.
+- App settings remembered between runs (`settings.rs`).
 - Modes: View, Build (toolbar adds and deletes, drag-to-connect, inspector,
   undo/redo, saving edits to the file, new files) and Play (instances,
   trigger palette, queue stepping, timeline with branches, scenarios).
@@ -55,6 +58,9 @@ argument (missing file, invalid `--view` link).
 
 1. `main` parses `Args` (clap). `--view` goes through
    `ViewState::from_link`; the file is canonicalized so watch events match.
+   The settings file is read (`settings::load_or_default`); without a
+   `--view` link its `transition_pills` seeds the initial view state (a
+   link carries its own).
 2. `application().run`: text-input and workspace key bindings are
    installed, a monospace family is picked from the installed fonts
    (`canvas::font::pick_mono`), and one window opens with a `Workspace`.
@@ -145,6 +151,14 @@ render ──▶ rebuild_scene (once per frame at most):
   lanes"). The toggle clears the stored viewport so the new picture is
   fitted; selection, cone and search carry over. `G` was free (no other
   binding uses it), so it needed no substitute.
+- **Pills** (toolbar toggle, shown in the structure view in every mode, or
+  `P`) flips `ViewState::transition_pills`: transitions are drawn as pills
+  or as one labelled state → state arrow each (view-scenes.md, "Arrow
+  mode"; build-and-play.md for building with arrows). The causal view
+  keeps its pills. Like the lanes toggle it clears the stored viewport so
+  the new picture is fitted, and carries over selection, cone and search.
+  The toggle (button or key) also saves the choice to the settings file;
+  a pasted link changes the view but not the setting. `P` was free.
 - Clicking a stub, trace step or lifeline selects the element behind it
   (`locate::target_key`), so selection is shared across all views.
 - A finding click selects `detail.primary()`, switches to the causal view
@@ -206,10 +220,37 @@ previous display stays up. Errors (stubs today) appear in the banner.
   clipboard. Paste link finds the first `cascade://` link in the clipboard
   text and replaces the whole view state (search box and diff fields
   included); unknown keys are kept and counted in the status bar. Links
-  carry the lanes toggle as `lanes=1`.
+  carry the lanes toggle as `lanes=1` and arrow mode as `pills=0`.
 - The theme follows the window appearance; the toolbar button or
   ctrl/cmd-shift-T cycles system → the opposite → system. The chrome
   (`theme::Chrome`, a GPUI global) derives from the scene theme.
+
+### Settings
+
+`settings.rs` keeps what the app remembers between runs in
+`$XDG_CONFIG_HOME/cascade/settings.json`, or
+`~/.config/cascade/settings.json` when `XDG_CONFIG_HOME` is unset or not an
+absolute path:
+
+```json
+{
+  "transition_pills": false
+}
+```
+
+- `AppSettings` is a typed serde struct (`#[serde(default)]`): missing keys
+  take their defaults (`transition_pills: true`) and unknown keys are
+  ignored, so files written by older or newer versions load.
+- Reading happens once at startup, synchronously. A missing or invalid
+  file, or no config directory (neither variable set), logs a warning and
+  falls back to the defaults; it is never fatal.
+- Writing happens when the Pills toggle is used: `Workspace::save_settings`
+  serialises the settings and writes them on the background executor
+  (directory created, atomic temp file + rename through
+  `build::disk::write_atomic`). A failure is logged and shown in the
+  status bar.
+- Errors are `SettingsError` (`NoConfigDir`, `Read`, `Parse`, `Encode`,
+  `Write`, each with the path where there is one).
 
 ## Key bindings
 
@@ -223,6 +264,7 @@ a text field has focus; chords are bound in `Workspace`.
 | `[` / `]` | Cone depth down / up (`0 … 12, ∞`) |
 | `H` | Dim or hide what is outside the cone or path query |
 | `G` | Causal view: group by machine (lanes) on or off |
+| `P` | Structure view: transitions as pills or as arrows (remembered) |
 | `1` `2` `3` `4` | Causal, structure, trace, matrix view |
 | `+` (`=`) / `-` | Zoom in / out |
 | `0` | Fit to view |
@@ -258,6 +300,7 @@ search results, plus the usual editing keys.
 | drag a node (causal, structure) | Pin it where it is dropped |
 | drag the background | Pan |
 | drag a connect handle (Build) | Connect: transition, emit, fire or source trigger (see build-and-play.md) |
+| drag from within 8 px of a transition arrow (Build, pills off) | Connect from that transition, as from its handle; a click selects it |
 | scroll / shift-scroll | Pan / pan horizontally |
 | ctrl/cmd-scroll, pinch | Zoom about the pointer |
 | matrix cell click | Causal view restricted to that machine pair |
@@ -274,6 +317,8 @@ search results, plus the usual editing keys.
 | `crates/cascade-app/src/commands.rs` | Key map and view-state reducer (pure) | `Command`, `Scope`, `KEYMAP`, `reduce`, `Outcome`, `HostEffect`, `select`, `add_to_selection`, `depth_more`, `depth_less` |
 | `crates/cascade-app/src/gesture.rs` | Pointer state machine (click, pan, pin drag, connect drag), click classification (pure) | `Gesture`, `Pick`, `Draggable`, `Mods`, `classify_click`, `ClickAction` |
 | `crates/cascade-app/src/viewport.rs` | Scene ↔ screen transforms, fit, zoom, pan (pure) | `ScreenPoint`, `ScreenRect`, `to_screen`, `to_scene`, `fit`, `zoom_about`, `pan_by`, `center_on` |
+| `crates/cascade-app/src/settings.rs` | Settings file: path, typed load/save, defaults on failure | `AppSettings`, `SettingsError`, `default_path`, `path_from`, `load`, `load_or_default`, `save` |
+| `crates/cascade-app/src/build/pick.rs` | What a press or drop lands on: pick tolerances, arrow picking on the build canvas (pure) | `HIT_TOLERANCE_PX`, `ARROW_PICK_PX`, `scene_units`, `Picking`, `hit`, `connect_source` |
 | `crates/cascade-app/src/locate.rs` | Hit target → key; where a key is drawn; drop targets; race indices | `target_key`, `drop_key`, `drop_targets`, `locate_key`, `locate_with_fallback`, `locate_finding`, `race_finding`, `race_index` |
 | `crates/cascade-app/src/editor.rs` | Click-to-source command builder (pure) and spawn | `build_command`, `command_for`, `split_words`, `find_on_path`, `EditorCommand`, `Location` |
 | `crates/cascade-app/src/link.rs` | Link copy/paste flow (pure) | `link_for`, `parse_pasted`, `unknown_keys` |
@@ -289,7 +334,7 @@ search results, plus the usual editing keys.
 | `crates/cascade-app/src/workspace/scene.rs` | Scene rebuild, viewport helpers, trace and diff orchestration | `Workspace::changed`, `rebuild_scene`, `switch_view`, `trace_request`, `diff_request` |
 | `crates/cascade-app/src/workspace/operations.rs` | Files, commands, selection, findings, pins, source, links, search, diff | `Workspace::run_command`, `open_finding`, `pin`, `unpin`, `open_source`, `pins_supported` |
 | `crates/cascade-app/src/workspace/canvas_events.rs` | Canvas element and pointer handlers | `Workspace::render_canvas_area` |
-| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle), build bar, inspector, play panel, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
+| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle, the structure view's pills toggle), build bar, inspector, play panel, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
 | `crates/cascade-app/src/mode.rs` | View/Build/Play modes (pure) | `AppMode`, `view_for` |
 | `crates/cascade-app/src/build/*` | Build mode logic: ops, connect, inspector, pipeline, undo, disk (pure) | see build-and-play.md |
 | `crates/cascade-app/src/play/*` | Play mode logic: session state, overlay, timeline, forms (pure) | see build-and-play.md |
@@ -309,6 +354,8 @@ search results, plus the usual editing keys.
 - The last good model stays on screen after a failed reload; the banner
   names the failure time and the version shown.
 - Plain-key bindings never fire while a text field has focus.
+- A settings file can never stop the app from starting: every read or
+  write failure falls back to defaults or a status message.
 - Blocking work (file reads for reloads, git, simulation) runs on GPUI's
   background executor; results come back through the entity. The notify
   thread only classifies and sends; there is no other shared state.

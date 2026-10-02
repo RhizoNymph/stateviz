@@ -159,6 +159,12 @@ Drafter (a gutter group above each machine, lanes, pills with extra ports) ─�
   machine, a label identical to one already shown is left off. The full
   selector is in the inspector (the edge's hit target is the rule). The
   layout reserves room for each label.
+- **Arrow mode** (pills off; view-scenes.md, "Arrow mode"): each pill is
+  a junction on its transition's arrow instead. Emits leave and fires and
+  triggers arrive at the junction's ports exactly as at a pill's, so the
+  wiring, gutters and placement are unchanged; after layout the wire ends
+  are extended onto the arrow's line and a dot marks each one. Transitions
+  get no connect handle: the app treats the whole arrow as the handle.
 - **Connect handles:** a circle (radius 4.5) centred on the east edge of
   every state, pill, controller and source, as an `Overlay::Rect` with
   `HitTarget::ConnectHandle { element }`, background fill and a muted
@@ -230,6 +236,7 @@ in parallel.
 | `crates/cascade-scene/src/play.rs` | Build/play drawing inputs | `SceneMode`, `PlayOverlay`, `PlayMarker` |
 | `crates/cascade-scene/src/scene.rs` | New hit target; handles win hit tests | `HitTarget::ConnectHandle`, `Scene::hit_test` |
 | `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring: nodes, aggregated edges, placement glue, ports facing the gutter, fire labels | crate-private |
+| `crates/cascade-scene/src/views/structure/arrows.rs` | Arrow mode: junctions folded into arrows, wire dots | crate-private |
 | `crates/cascade-scene/src/views/structure/gutters/` | Gutter assignment (`mod.rs`), row order (`order.rs`), columns kept across edits (`memo.rs`) | `assign`, `order`, `WiringMemo` (crate) |
 | `crates/cascade-scene/src/views/structure/selector.rs` | Fire label policy | crate-private |
 | `crates/cascade-scene/src/views/structure/edit.rs` | Gutter lanes, empty-machine hint, empty-definition note | crate-private |
@@ -287,6 +294,16 @@ Gestures (`gesture::Gesture::press_handle`, `build::connect`):
 | controller handle | transition or trigger | `AddRule` on the controller's latest handler firing that trigger at the one instance (no `target:`) |
 | handler handle | transition or trigger | `AddRule` on that handler |
 | source handle | transition or trigger | `SetExternalTriggers` with the trigger added |
+
+With transition pills off (arrows), there are no transition handles:
+pressing within `ARROW_PICK_PX` (8 screen pixels, divided by the zoom for
+scene units) of a transition arrow starts the same connect drag from that
+transition, and a press released without dragging selects it. Dropping a
+drag within the same radius of an arrow targets that transition
+(controller or handler → transition fires it; source → transition
+exposes its trigger). A connect handle or node under the pointer wins over
+an arrow, and of several arrows the nearest wins (`build::pick`,
+`Scene::hit_test_arrows`). Other edges keep the 5 px pick.
 
 While dragging, a dashed rubber band follows the pointer, every valid drop
 target gets a dashed outline and the one under the pointer a heavy one
@@ -395,6 +412,7 @@ note.
 | `crates/cascade-app/src/build/defs.rs` | Definition lookups, names in use, synthetic elements (pure) | `machine`, `state`, `trigger_names`, `event_names`, `pascal_case`, `split_list` |
 | `crates/cascade-app/src/build/ops.rs` | Toolbar adds and deletes as ops (pure) | `Planned`, `PlanError`, `add_machine`, `state_target`, `add_state`, `add_controller`, `add_external`, `delete`, `transition_entry` |
 | `crates/cascade-app/src/build/connect.rs` | Drag-to-connect mapping (pure) | `is_source`, `can_connect`, `connect` |
+| `crates/cascade-app/src/build/pick.rs` | Press and drop targets: pick tolerances, arrows as handles on the build canvas, which presses connect (pure) | `ARROW_PICK_PX`, `HIT_TOLERANCE_PX`, `scene_units`, `Picking`, `hit`, `connect_source` |
 | `crates/cascade-app/src/build/inspector/` | Inspector fields, live validation, field → op (pure) | `inspect`, `validate`, `field_op`, `Inspection`, `FieldId`, `FieldInput`, `FieldValue`, `FieldError` |
 | `crates/cascade-app/src/build/pipeline.rs` | apply → patch → load (pure) | `commit`, `commit_with`, `Commit`, `CommitError` |
 | `crates/cascade-app/src/build/undo.rs` | Undo/redo stacks (pure) | `History`, `Entry`, `Direction` |
