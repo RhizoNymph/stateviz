@@ -5,6 +5,7 @@ pub mod check;
 pub mod diff;
 pub mod export;
 pub mod import;
+pub mod new;
 pub mod open;
 pub mod render;
 pub mod simulate;

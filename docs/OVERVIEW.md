@@ -44,7 +44,7 @@ Overview:
       git revision for diff mode.
     cascade-cli: >
       The `cascade` binary: check (CI exit codes), render, export, import,
-      diff, simulate, open.
+      diff, simulate, open, new (blank definition opened in Build mode).
     cascade-app: >
       The `cascade-app` GPUI binary: paints scenes, pan/zoom, selection, cone
       tracing, search, legend/entity filter, findings panel, trace and matrix
@@ -141,7 +141,7 @@ Features Index:
       (toolbar, drag-to-connect from handles or, with pills off, from
       anywhere within 8 px of a transition arrow, inspector, undo/redo,
       own-write-aware saves, `--new`); Play drives an interactive simulator session with an overlay.
-    entry_points: [cascade-app, cascade-app --new, cascade open, cascade_app::workspace::Workspace, cascade_app::settings, cascade_app::build::pick]
+    entry_points: [cascade-app, cascade-app --new, cascade new, cascade open, cascade_app::workspace::Workspace, cascade_app::settings, cascade_app::build::pick]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
   build_and_play:
