@@ -42,6 +42,7 @@ command_actions! {
     ConeBackward => Command::ConeBackward,
     ToggleOutside => Command::ToggleOutside,
     ToggleLanes => Command::ToggleLanes,
+    TogglePills => Command::TogglePills,
     DepthLess => Command::DepthLess,
     DepthMore => Command::DepthMore,
     ShowCausal => Command::ShowView(ViewKind::Causal),

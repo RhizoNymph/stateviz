@@ -8,5 +8,6 @@ pub mod defs;
 pub mod disk;
 pub mod inspector;
 pub mod ops;
+pub mod pick;
 pub mod pipeline;
 pub mod undo;

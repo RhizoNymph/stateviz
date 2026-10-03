@@ -15,14 +15,12 @@ use gpui::{
 use super::Workspace;
 use super::operations::pins_supported;
 use crate::build::connect;
+use crate::build::pick::{self, Picking};
 use crate::canvas::paint::{ConnectPaint, PaintInput, paint_scene};
 use crate::gesture::{ClickAction, Draggable, Gesture, Mods, MoveOutcome, Pick, ReleaseOutcome, classify_click};
 use crate::locate;
-use crate::mode::AppMode;
 use crate::viewport::{self, ScreenPoint, ScreenRect};
 
-/// Edge pick distance in screen pixels.
-const HIT_TOLERANCE_PX: f32 = 5.0;
 /// Pixels per line for line-based scroll deltas.
 const SCROLL_LINE_PX: f32 = 20.0;
 
@@ -129,9 +127,10 @@ impl Workspace {
             return (Pick::Nothing, None, None);
         }
         let p = viewport::to_scene(vp, canvas, at);
-        let Some(target) = self.scene.hit_test(p, HIT_TOLERANCE_PX / vp.zoom) else {
+        let Some(target) = pick::hit(&self.scene, p, vp.zoom, self.picking()) else {
             return (Pick::Nothing, None, None);
         };
+        let target = &target;
         let pick = match target {
             HitTarget::MatrixCell { row, column, .. } => Pick::Pair { row: row.clone(), column: column.clone() },
             other => self
@@ -148,19 +147,21 @@ impl Workspace {
         (pick, draggable, Some(target.clone()))
     }
 
+    /// How the canvas hit tests now: arrows are connect handles on the
+    /// build canvas without pills.
+    fn picking(&self) -> Picking {
+        Picking::for_view(self.mode, &self.view)
+    }
+
     fn canvas_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus, cx);
         self.search.open = false;
         let at = screen_point(event.position);
         let (pick, draggable, target) = self.pick_at(at);
         let mods = mods(&event.modifiers);
-        self.canvas.gesture = match target {
-            Some(HitTarget::ConnectHandle { element })
-                if self.mode == AppMode::Build && connect::is_source(&element) && !mods.any() =>
-            {
-                Gesture::press_handle(at, element, mods, event.click_count)
-            }
-            _ => Gesture::press(at, pick, draggable, mods, event.click_count),
+        self.canvas.gesture = match pick::connect_source(target.as_ref(), self.mode, mods) {
+            Some(element) => Gesture::press_handle(at, element, mods, event.click_count),
+            None => Gesture::press(at, pick, draggable, mods, event.click_count),
         };
         cx.notify();
     }
@@ -171,8 +172,8 @@ impl Workspace {
         if !canvas.contains(at) {
             return None;
         }
-        let target = self.scene.hit_test(viewport::to_scene(vp, canvas, at), HIT_TOLERANCE_PX / vp.zoom)?;
-        locate::drop_key(target).cloned()
+        let target = pick::hit(&self.scene, viewport::to_scene(vp, canvas, at), vp.zoom, self.picking())?;
+        locate::drop_key(&target).cloned()
     }
 
     /// The rubber band and drop highlights of a connect drag, in screen

@@ -20,6 +20,9 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 - Build and play drawing: `SceneMode::Edit` (the structure view's wiring
   in gutters between the lanes, and connect handles) and the `PlayOverlay` (instance markers,
   active and pending items) over the causal and structure views.
+- Arrow mode: the structure view with transitions drawn as labelled
+  state → state arrows instead of pills (`ViewState::transition_pills`
+  off), in view and edit mode.
 
 ## Non-scope
 
@@ -29,7 +32,9 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 - Producing traces (`cascade-sim`) and findings (`cascade_core::analyze`).
 - The `cascade://` link format and the pins sidecar file format
   (`view_state.rs`, `pins.rs`). The format is unchanged apart from the
-  `lanes=1` parameter (`ViewState::group_by_machine`, left out when off).
+  `lanes=1` parameter (`ViewState::group_by_machine`, left out when off)
+  and the `pills=0` parameter (`ViewState::transition_pills`, on by
+  default and left out when on; `pills=1` also parses).
 
 ## Data and control flow
 
@@ -43,6 +48,7 @@ SceneInput { model, graph, findings, view, theme, measure, sidecar, traces, diff
       │        filters: machine pair → hidden-machine stubs → collapse (structure)
       │        apply_hide: hide mode removes outside items, records cut links
       │     realize(draft, cuts) ──LayoutCache──▶ Scene items (+ metas aligned with them)
+      │     arrow mode (structure): arrows::fold merges each junction into its arrow
       │     lanes from group rects (structure)
       │     edit mode (structure): gutter lanes, hints, connect handles
       │
@@ -208,6 +214,54 @@ same point in the other.
   compound state outlines its lane at the selected width. Reversed edges
   are never marked red here: the graph includes ordinary state cycles.
 
+### Arrow mode (`views/structure/arrows.rs`)
+
+With `ViewState::transition_pills` off (link `pills=0`, the app's **Pills**
+toggle and `P`), the structure view draws each transition as one arrow,
+in view and edit mode. The causal view ignores the setting: transitions
+are its nodes.
+
+- **Drafting:** where the pill would be, a *junction*: an 8 × 8 layout
+  node (`Painter::junction`) with the pill's key, group and ports (the
+  edit-mode South-out and North-out ports included). The two edges are
+  the pill's: state → junction West, carrying the label `trigger` or
+  `trigger [guard]` (so the layout reserves its room and keeps it clear
+  of other labels), and junction East → state with the arrowhead. Links
+  between two junctions in the same band leave and enter South (a pill's
+  East → West would run along the arrow itself). Everything downstream
+  (gutter assignment, wiring ports, layout cache, stability, pins keyed by
+  the transition key) works unchanged.
+- **Fold** (after decoration, before connect handles and the play
+  overlay): the two edges become one polyline state → junction → state
+  (straight runs through the junction merged), with the arrowhead only at
+  the target and the label on its way in. It keeps the transition's hit
+  target (`HitTarget::Element`) and meta, so clicking selects the
+  transition, emphasis is the arrow's weight (selected, focused, active)
+  and opacity (dimmed), and diff status is the transition's. Every other
+  edge ending on a junction (view-mode links; edit-mode emits, fires and
+  triggers; a hand-drawn self-link loop) has its vertical end segment
+  extended to the arrow's line and gets a dot (radius 3, the arrow's
+  color and opacity, an `Overlay::Rect` without a hit target) where it
+  meets the arrow. Junction nodes are then removed from the scene, so
+  nothing invisible is hit tested, measured or given a connect handle.
+- **Findings** that would badge the pill turn the arrow's stroke the
+  finding red and draw the badge as two overlays (circle and count, like a
+  node badge) just above the junction, aimed at the transition. A search
+  match keeps the junction's dotted halo, marking the hit on the arrow.
+- **Self-loops** stay loops: the junction sits beside its state, and the
+  arrow leaves the state, passes through it and comes back.
+- **Hide mode:** a transition whose other end is hidden keeps the one
+  edge left, with the arrowhead.
+- `Scene::arrow_at(p, tolerance)` returns the transition whose arrow runs
+  nearest `p` within the tolerance; `Scene::hit_test_arrows(p,
+  tolerance, arrow_tolerance)` is the build canvas's hit test in arrow
+  mode: connect handles and nodes first, then an arrow within
+  `arrow_tolerance` as `HitTarget::ConnectHandle` of its transition (the
+  whole arrow is its handle), then `hit_test`. Both are additive;
+  `hit_test` is unchanged.
+- With pills on, every scene is exactly as before
+  (`tests/view_mode_golden.rs` unchanged).
+
 ### Edit mode (`views/structure/wiring.rs`, `gutters/`, `selector.rs`, `edit.rs`)
 
 `SceneMode::Edit` changes only the structure view: pills get second South
@@ -328,7 +382,8 @@ checks for badges, loads the pins sidecar, simulates the scenario (or, with
 `race=N` in the link, replays the N-th race candidate in both orders),
 builds the scene, prints its notes to stderr and writes SVG or PNG by
 extension. `--view causal --state 'cascade://causal?lanes=1'` renders the
-causal lanes.
+causal lanes; `--view structure --state 'cascade://structure?pills=0'`
+renders arrow mode (add `--edit` for the build canvas).
 
 With `diff=<base>,<head>` in the link, `render` reads the definition at
 `base` (and at `head`, or the working tree when `head` is empty) with
@@ -346,6 +401,8 @@ revision or an invalid version exits with code 2.
 | Machine | Lane (structure), header chip (matrix), header box (trace) | Okabe-Ito hue; declared colors win; undeclared take the least-used hue; past 8 machines grouped by `domain`, sharing the domain's hue; machines sharing a hue get successive lightness steps |
 | State | `RoundedRect` | Pale machine fill, hue outline; initial (machine or compound) `ThickLeft`, final `Double`, history a circled `H` / `H*` |
 | Transition | `Pill`, `before → after` over the trigger | Full hue fill, outline a darker (lighter in dark mode) hue so weight stays visible |
+| Transition (arrow mode) | One state → state arrow labelled `trigger [guard]` | Machine hue, arrowhead at the target only; selection and emphasis by weight |
+| Wire on an arrow (arrow mode) | Dot (radius 3) where the wire meets the arrow | The arrow's color |
 | Event | `Tag` | Neutral gray fill and outline |
 | Controller | `Hexagon` (one per handler) | Dark neutral outline, no fill |
 | External source | `Rect` | Neutral outline, no fill |
@@ -375,7 +432,7 @@ revision or an invalid version exits with code 2.
 | File | Role | Key exports |
 | --- | --- | --- |
 | `crates/cascade-scene/src/lib.rs` | Crate root and re-exports | — |
-| `crates/cascade-scene/src/scene.rs` | The display-list contract (unchanged) | `Scene`, `SceneNode`, `SceneEdge`, `Lane`, `Overlay`, `HitTarget`, `Shape`, `Border`, `Stroke`, `Badge`, `Emphasis` |
+| `crates/cascade-scene/src/scene.rs` | The display-list contract (types unchanged; arrow picking added) | `Scene`, `SceneNode`, `SceneEdge`, `Lane`, `Overlay`, `HitTarget`, `Shape`, `Border`, `Stroke`, `Badge`, `Emphasis`, `Scene::arrow_at`, `Scene::hit_test_arrows` |
 | `crates/cascade-scene/src/color.rs` | Palette, themes, machine hues with domain grouping | `machine_styles`, `machine_colors`, `style_for`, `Theme`, `Rgba` |
 | `crates/cascade-scene/src/emphasis/mod.rs` | Interaction model | `Interaction`, `Anchor`, `FocusRegion`, `FocusKind` |
 | `crates/cascade-scene/src/emphasis/seeds.rs` | Element → causal nodes | `causal_seeds` |
@@ -391,6 +448,7 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | `machine_lane` (crate) |
 | `crates/cascade-scene/src/views/structure/machines.rs` | Per-machine drafting, nesting, collapse | crate-private |
 | `crates/cascade-scene/src/views/structure/links.rs` | Cross-lane links, stub counts | crate-private |
+| `crates/cascade-scene/src/views/structure/arrows.rs` | Arrow mode: folds junctions into arrows, snaps wires onto them with dots, badges arrows | `fold` (module-private), `DOT_RADIUS` |
 | `crates/cascade-scene/src/views/structure/wiring.rs` | Edit mode's wiring: nodes, merged edges, gutter placement glue, ports facing the gutter | crate-private |
 | `crates/cascade-scene/src/views/structure/gutters/mod.rs` | Which gutter each wiring node goes to | `Stack`, `Gutter`, `Wires`, `assign` (crate) |
 | `crates/cascade-scene/src/views/structure/gutters/order.rs` | Row order inside a gutter | `order`, `WiringNode` (crate) |
@@ -409,6 +467,8 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-cli/src/commands/render.rs` | `cascade render` | `run`, `RenderArgs` |
 | `crates/cascade-cli/tests/render.rs` | CLI render tests | — |
 | `crates/cascade-cli/tests/render_lanes.rs` | `render --state 'cascade://causal?lanes=1'` | — |
+| `crates/cascade-scene/tests/arrow_mode.rs` | Arrow mode: links, drawing, wiring dots, handles, emphasis, toggling, badges, play, filters, readability against pills | — |
+| `crates/cascade-cli/tests/render_pills.rs` | `render --state 'cascade://structure?pills=0'` (view and `--edit`) | — |
 
 ## Invariants and constraints
 
@@ -442,7 +502,11 @@ revision or an invalid version exits with code 2.
   `tests/view_mode_golden.rs`; re-blessed only for intended view-mode
   changes, last for the self-link label placement).
 - `Scene::hit_test` checks connect handles before nodes; nothing else
-  in its order changed.
+  in its order changed. `Scene::hit_test_arrows` (arrow mode's build
+  canvas) adds arrows as connect handles after handles and nodes.
+- Arrow mode leaves no node standing for a transition in the structure
+  scene, and every drawn transition is exactly one `EdgeKind::Transition`
+  edge targeting it (two halves only when hide mode cut one end).
 - `Scene` and its item types are unchanged; additions are
   `SceneBuilder::layouts_run`, `cascade_scene::emphasis`,
   `machine_colors`, and a reworked `ExportError` (no `NotImplemented`).

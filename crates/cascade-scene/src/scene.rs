@@ -261,15 +261,8 @@ impl Scene {
     /// overlays, overlays over lanes. `tolerance` is the pick distance for
     /// edges in scene units.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> Option<&HitTarget> {
-        let clickable = |t: &HitTarget| !matches!(t, HitTarget::None);
-        if let Some(handle) = self.overlays.iter().rev().find_map(|o| match o {
-            Overlay::Rect { rect, target: t @ HitTarget::ConnectHandle { .. }, .. } if rect.contains(p) => Some(t),
-            _ => None,
-        }) {
-            return Some(handle);
-        }
-        if let Some(node) = self.nodes.iter().rev().find(|n| clickable(&n.target) && n.rect.contains(p)) {
-            return Some(&node.target);
+        if let Some(target) = self.handle_or_node_at(p) {
+            return Some(target);
         }
         if let Some(edge) = self
             .edges
@@ -294,6 +287,54 @@ impl Scene {
         self.lanes.iter().rev().find(|l| clickable(&l.target) && l.rect.contains(p)).map(|l| &l.target)
     }
 
+    /// A connect handle at `p`, else the topmost clickable node there.
+    fn handle_or_node_at(&self, p: Point) -> Option<&HitTarget> {
+        if let Some(handle) = self.overlays.iter().rev().find_map(|o| match o {
+            Overlay::Rect { rect, target: t @ HitTarget::ConnectHandle { .. }, .. } if rect.contains(p) => Some(t),
+            _ => None,
+        }) {
+            return Some(handle);
+        }
+        self.nodes.iter().rev().find(|n| clickable(&n.target) && n.rect.contains(p)).map(|n| &n.target)
+    }
+
+    /// The transition whose arrow passes nearest `p`, within `tolerance`
+    /// (scene units). Arrows are `EdgeKind::Transition` edges targeting a
+    /// transition; that is what the structure view draws with
+    /// `ViewState::transition_pills` off. (With pills on, the state → pill
+    /// halves match too, so hosts ask only in arrow mode.)
+    pub fn arrow_at(&self, p: Point, tolerance: f32) -> Option<&ElementKey> {
+        self.edges
+            .iter()
+            .rev()
+            .filter_map(|e| match &e.target {
+                HitTarget::Element(key @ ElementKey::Transition { .. }) if e.kind == EdgeKind::Transition => {
+                    Some((key, polyline_distance(&e.points, p)))
+                }
+                _ => None,
+            })
+            .filter(|(_, d)| *d <= tolerance)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(key, _)| key)
+    }
+
+    /// Hit testing for a build canvas with transition arrows, where the
+    /// whole arrow is its transition's connect handle: a connect handle or
+    /// node at `p` wins, then an arrow within `arrow_tolerance` (see
+    /// [`Scene::arrow_at`]) comes back as `HitTarget::ConnectHandle` for its
+    /// transition, then everything else as in [`Scene::hit_test`] with
+    /// `tolerance`. A plain click on that handle still selects the
+    /// transition, as a press on any connect handle does.
+    pub fn hit_test_arrows(&self, p: Point, tolerance: f32, arrow_tolerance: f32) -> Option<HitTarget> {
+        if let Some(target) = self.handle_or_node_at(p) {
+            return Some(target.clone());
+        }
+        if let Some(key) = self.arrow_at(p, arrow_tolerance) {
+            return Some(HitTarget::ConnectHandle { element: key.clone() });
+        }
+        self.hit_test(p, tolerance).cloned()
+    }
+
     /// The rectangle of the first node or lane for `target`, for centering
     /// the viewport on a search result or finding.
     pub fn locate(&self, target: &HitTarget) -> Option<Rect> {
@@ -303,6 +344,11 @@ impl Scene {
             .map(|n| n.rect)
             .or_else(|| self.lanes.iter().find(|l| &l.target == target).map(|l| l.rect))
     }
+}
+
+/// Whether a click can land on an item with this target.
+fn clickable(target: &HitTarget) -> bool {
+    !matches!(target, HitTarget::None)
 }
 
 /// Shortest distance from `p` to a polyline.
@@ -385,6 +431,92 @@ mod tests {
         assert_eq!(scene.hit_test(Point::new(38.0, 10.0), 3.0), Some(&handle), "inside the node too");
         assert_eq!(scene.hit_test(Point::new(44.0, 10.0), 3.0), Some(&handle));
         assert_eq!(scene.hit_test(Point::new(20.0, 10.0), 3.0), Some(&state));
+    }
+
+    fn edge(target: HitTarget, kind: EdgeKind, points: Vec<Point>) -> SceneEdge {
+        SceneEdge {
+            target,
+            kind,
+            points,
+            stroke: Stroke::solid(Rgba::hex(0), 1.0),
+            arrow: Arrow::End,
+            label: None,
+            opacity: 1.0,
+            emphasis: Emphasis::Normal,
+            back_edge: false,
+            diff: None,
+        }
+    }
+
+    fn transition(trigger: &str) -> ElementKey {
+        ElementKey::Transition {
+            machine: "M".into(),
+            from: "a".into(),
+            to: "b".into(),
+            trigger: trigger.into(),
+            ordinal: 0,
+        }
+    }
+
+    /// Two arrows 20 apart, a fire wire between them and a state on the
+    /// first.
+    fn arrows() -> Scene {
+        let mut scene = Scene::empty(ViewKind::Structure, Rgba::hex(0xFFFFFF));
+        scene.edges.push(edge(
+            HitTarget::Element(transition("go")),
+            EdgeKind::Transition,
+            vec![Point::new(0.0, 0.0), Point::new(100.0, 0.0)],
+        ));
+        scene.edges.push(edge(
+            HitTarget::Element(transition("back")),
+            EdgeKind::Transition,
+            vec![Point::new(0.0, 20.0), Point::new(100.0, 20.0)],
+        ));
+        scene.edges.push(edge(
+            HitTarget::Element(ElementKey::Event { event: "Wire".into() }),
+            EdgeKind::Fire,
+            vec![Point::new(50.0, 9.0), Point::new(50.0, 11.0)],
+        ));
+        let state = HitTarget::Element(ElementKey::State { machine: "M".into(), path: "a".into() });
+        scene.nodes.push(node(state, Rect::new(90.0, -10.0, 30.0, 20.0)));
+        scene
+    }
+
+    #[test]
+    fn arrow_at_picks_the_nearest_transition_arrow_within_tolerance() {
+        let scene = arrows();
+        assert_eq!(scene.arrow_at(Point::new(30.0, 7.0), 8.0), Some(&transition("go")));
+        assert_eq!(scene.arrow_at(Point::new(30.0, 13.0), 8.0), Some(&transition("back")));
+        assert_eq!(scene.arrow_at(Point::new(30.0, 9.0), 12.0), Some(&transition("go")), "nearest wins");
+        assert_eq!(scene.arrow_at(Point::new(30.0, 30.0), 8.0), None, "10 away");
+        assert_eq!(scene.arrow_at(Point::new(30.0, 30.0), 12.0), Some(&transition("back")));
+        // The fire wire is no arrow, however close.
+        assert_eq!(scene.arrow_at(Point::new(50.0, 10.0), 0.5), None);
+    }
+
+    #[test]
+    fn arrows_are_connect_handles_but_nodes_and_handles_win() {
+        let mut scene = arrows();
+        let go = HitTarget::ConnectHandle { element: transition("go") };
+        assert_eq!(scene.hit_test_arrows(Point::new(30.0, 6.0), 3.0, 8.0), Some(go.clone()));
+        // Plain hit testing finds no edge 6 away: the arrow pick is wider.
+        assert_eq!(scene.hit_test(Point::new(30.0, 6.0), 3.0), None);
+        // On the state: the node wins over the arrow under it.
+        let state = HitTarget::Element(ElementKey::State { machine: "M".into(), path: "a".into() });
+        assert_eq!(scene.hit_test_arrows(Point::new(95.0, 0.0), 3.0, 8.0), Some(state.clone()));
+        // Beyond the arrow pick: plain hit testing (here, nothing).
+        assert_eq!(scene.hit_test_arrows(Point::new(30.0, 40.0), 3.0, 8.0), None);
+        let handle = HitTarget::ConnectHandle { element: ElementKey::State { machine: "M".into(), path: "a".into() } };
+        scene.overlays.push(Overlay::Rect {
+            rect: Rect::new(115.0, -5.0, 10.0, 10.0),
+            fill: None,
+            stroke: None,
+            radius: 5.0,
+            opacity: 1.0,
+            layer: Layer::Over,
+            target: handle.clone(),
+        });
+        assert_eq!(scene.hit_test_arrows(Point::new(118.0, 0.0), 3.0, 8.0), Some(handle));
     }
 
     #[test]

@@ -23,6 +23,8 @@ pub(crate) const STATE_RADIUS: f32 = 8.0;
 pub(crate) const INITIAL_BORDER: f32 = 5.0;
 /// Corner radius of stubs and notes.
 pub(crate) const STUB_RADIUS: f32 = 6.0;
+/// Side of an arrow-mode junction (see [`Painter::junction`]).
+pub(crate) const JUNCTION_SIZE: f32 = 8.0;
 
 /// A label positioned relative to its node's top-left corner.
 #[derive(Clone, Debug, PartialEq)]
@@ -168,6 +170,22 @@ impl Painter<'_> {
             stroke: Stroke::solid(self.hue_outline(style), self.theme.stroke_width),
             border: Border::Single,
             labels,
+            circles: Vec::new(),
+        }
+    }
+
+    /// Arrow mode: the junction standing where a transition's pill would
+    /// be. It only reserves a point on the arrow for layout and wiring; the
+    /// structure view removes it from the scene after layout, so it draws
+    /// nothing.
+    pub fn junction(&self) -> NodeLook {
+        NodeLook {
+            shape: Shape::Rect,
+            size: Size::new(JUNCTION_SIZE, JUNCTION_SIZE),
+            fill: None,
+            stroke: Stroke::solid(self.theme.background.with_alpha(0.0), 0.0),
+            border: Border::Single,
+            labels: Vec::new(),
             circles: Vec::new(),
         }
     }

@@ -23,7 +23,8 @@ labels and with foreign nodes), edges routed through a side corridor
 (points outside every lane's horizontal extent), and bounding area.
 
 Report: `cargo test -p cascade-scene --test readability -- --nocapture`
-(structure view and build modes, the causal view, and the causal lanes).
+(structure view and build modes, the same two in arrow mode, the causal
+view, and the causal lanes).
 
 ### Baseline (before this work)
 
@@ -387,8 +388,46 @@ after the transition emitting it), measure within a few crossings of the
 best, and were kept. Sources in a lane of their own are clearly worse:
 every trigger crosses lanes.
 
+## Arrow mode
+
+With transition pills off (view-scenes.md, "Arrow mode") the report prints
+`arrows/view` and `arrows/build`. `tests/arrow_mode.rs`
+(`arrows_read_at_least_as_well_as_pills`) asserts that arrow mode is no
+worse than pill mode on crossings, total edge length, label overlaps and
+corridor edges, with no edge through a node, for both examples in both
+modes.
+
+| Scene | Crossings | Length | Bends | Label overlaps | Corridor | Area |
+| --- | --- | --- | --- | --- | --- | --- |
+| order-fulfillment structure/view, pills | 1 | 1 354 | 6 | 0 | 0 | 365 913 |
+| order-fulfillment structure/view, arrows | 1 | **1 297** | 8 | 0 | 0 | **196 991** |
+| order-fulfillment structure/build, pills | 4 | 2 607 | 16 | 0 | 0 | 503 733 |
+| order-fulfillment structure/build, arrows | 4 | **2 309** | 16 | 0 | 0 | **314 457** |
+| shop structure/view, pills | 33 | 24 789 | 111 | 0 | 0 | 2 902 022 |
+| shop structure/view, arrows | **32** | **22 298** | 159 | 0 | 0 | **1 599 162** |
+| shop structure/build, pills | 84 | 39 541 | 196 | 0 | 0 | 4 148 657 |
+| shop structure/build, arrows | **76** | **39 180** | 216 | 0 | 0 | **2 987 382** |
+
+An arrow's length includes the stretch a pill would cover (pill mode does
+not count the pill), and its label gets a layer of its own (a labelled
+edge spans two layers), so arrow mode uses a layer spacing of 32 instead
+of 48. Bends rise because each arrow is one polyline with the jogs of
+both halves. Areas shrink by a third to a half.
+
+Tried on the way:
+
+| Change | order-fulfillment build crossings | shop view crossings / label overlaps | Why |
+| --- | --- | --- | --- |
+| Layer spacing 48 (as pills) | 5 | 30 / 1 | length regressed: 1 601 vs 1 354 (order-fulfillment view) |
+| Layer spacing 24–40, junction 4–16 | 5 | 32–36 / 1 | 32 with an 8-unit junction was best overall |
+| Wire ends extended to the junction's centre | 5 | 32 / 1 | a junction the arrow crosses at a slight slant leaves the wire end just past the line: a counted crossing |
+| **Wire ends extended to where the arrow crosses them (kept)** | **4** | 32 / 1 | — |
+| **Self-link loop labels moved clear of labels too (kept)** | 4 | **32 / 0** | the `TrackingPolled › Tracking` loop label sat on `poll_tracking` |
+
 ## Invariants and constraints
 
 - Stability guarantees still hold (an edit moves no unrelated node).
 - View mode must not get worse on any metric.
+- Arrow mode is no worse than pill mode on crossings, length, label
+  overlaps and corridor edges (asserted).
 - Determinism: the same input gives the same scene.

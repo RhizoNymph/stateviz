@@ -49,6 +49,11 @@ fn report() {
         ] {
             println!("{name:<18} {label:<16} {}", metrics_of(yaml, view, mode));
         }
+        // Arrow mode: transitions as state → state arrows (pills off).
+        for (label, mode) in [("arrows/view", SceneMode::View), ("arrows/build", SceneMode::Edit)] {
+            let arrows = ViewState { view: ViewKind::Structure, transition_pills: false, ..ViewState::default() };
+            println!("{name:<18} {label:<16} {}", measure(&scene_of(yaml, &arrows, mode)));
+        }
         let lanes = ViewState { group_by_machine: true, ..ViewState::default() };
         let scene = scene_of(yaml, &lanes, SceneMode::View);
         println!("{name:<18} {:<16} {}  leftward {}", "causal/lanes", measure(&scene), leftward_edges(&scene));
