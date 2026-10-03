@@ -111,6 +111,15 @@ enum Command {
         #[arg(long)]
         view: Option<String>,
     },
+    /// Create a blank definition and open it in the app's Build mode.
+    New {
+        /// Where to create it; never overwrites an existing file.
+        #[arg(default_value = "cascade.yaml")]
+        file: PathBuf,
+        /// Only create the file; don't open the app.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -135,6 +144,7 @@ fn main() -> ExitCode {
             commands::simulate::run(&file, scenario.as_deref(), format, race, interactive)
         }
         Command::Open { file, view } => commands::open::run(&file, view.as_deref()),
+        Command::New { file, no_open } => commands::new::run(&file, !no_open),
     };
     match result {
         Ok(code) => code,

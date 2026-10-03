@@ -15,6 +15,13 @@ cascade-app [--new] <file> [--view <cascade:// link>] [--mode view|build|play]
 `--new` creates `<file>` with a starter definition (one machine, one state)
 and opens it in Build mode; it refuses to overwrite an existing file.
 
+From the CLI, `cascade new [file]` (default `cascade.yaml`) creates a
+**blank** definition (`machines: {}`, no machines yet) and launches the app
+on it in Build mode (`--mode build`); `--no-open` only creates the file. It
+never overwrites an existing file (exit code 2). The canvas shows the
+empty-system note until the first machine is added, and that first edit
+patches the blank file in place, keeping its header comment.
+
 `CASCADE_EDITOR` sets the click-to-source command (see below);
 `XDG_CONFIG_HOME` (else `HOME`) locates the settings file (see "Settings");
 `RUST_LOG`
