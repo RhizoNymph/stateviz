@@ -18,6 +18,7 @@ mod causal;
 mod decorate;
 mod draft;
 mod filters;
+mod labels;
 mod links;
 mod matrix;
 mod overlays;

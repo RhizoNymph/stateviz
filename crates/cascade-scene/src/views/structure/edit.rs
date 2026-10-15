@@ -4,7 +4,7 @@
 use cascade_core::{ElementRef, Model};
 use cascade_layout::{Point, Rect};
 
-use crate::scene::{FontWeight, HitTarget, Label, Lane, Layer, Overlay, Scene, Stroke};
+use crate::scene::{FontStyle, FontWeight, HitTarget, Label, Lane, Layer, Overlay, Scene, Stroke};
 use crate::views::structure::machines::MachinePlan;
 use crate::views::style::Painter;
 
@@ -38,6 +38,7 @@ pub(super) fn gutter_lanes(
                 font_size: theme.small_font_size,
                 color: theme.text_muted,
                 weight: FontWeight::Normal,
+                style: FontStyle::Normal,
             },
             opacity: 1.0,
             collapsed: false,
@@ -66,6 +67,7 @@ pub(super) fn hints(
                 font_size: theme.font_size,
                 color: theme.text_muted,
                 weight: FontWeight::Normal,
+                style: FontStyle::Normal,
             },
             opacity: 1.0,
             layer: Layer::Over,
@@ -92,6 +94,7 @@ pub(super) fn hints(
                 font_size: small,
                 color: theme.text_muted,
                 weight: FontWeight::Normal,
+                style: FontStyle::Normal,
             },
             opacity,
             layer: Layer::Over,

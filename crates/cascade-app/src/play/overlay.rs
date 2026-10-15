@@ -70,7 +70,7 @@ pub fn build_overlay(
     for item in pending {
         push_unique(&mut queued, model.key_of(pending_element(&item.kind)));
     }
-    PlayOverlay { markers, active, pending: queued }
+    PlayOverlay { markers, active, pending: queued, timers: Vec::new() }
 }
 
 #[cfg(test)]

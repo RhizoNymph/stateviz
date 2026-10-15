@@ -88,6 +88,7 @@ fn play_overlays_on_the_large_model_are_cheap() {
         markers,
         active: (0..MACHINES).map(|m| k(&format!("event:E{m}_0"))).collect(),
         pending: (0..MACHINES).map(|m| k(&format!("event:E{m}_2"))).collect(),
+        timers: Vec::new(),
     };
     for (view, mode) in [
         (ViewKind::Causal, SceneMode::View),
