@@ -27,8 +27,10 @@ Overview:
       about Cascade.
     cascade-sim: >
       Scenario files and the simulator: instances, one global FIFO queue of
-      events and controller fires, target selectors, traces with cause
-      links; replays race candidates with the contested fires swapped. One
+      events, controller fires and expired timers, guards and choice points,
+      sets/with, subscriptions, a virtual clock, target selectors, traces
+      with cause links; replays race candidates with the contested fires
+      swapped. One
       steppable engine serves batch runs and the interactive PlaySession
       (rewind, branches, replay after edits, save as a scenario).
     cascade-scene: >
@@ -130,13 +132,27 @@ Features Index:
       spawn, history and payloads, traces with cause links and stable
       lifelines, race candidates replayed in both orders, and the play
       session (actions, pending queue, available fires, seek, branches,
-      replay, to_scenario) on the same engine. Contract types for timers,
-      choices and per-consumer delivery (new trace step kinds, Advance /
-      Choose / Step consumer, wait / choose directives, state keys) exist
-      but are rejected as unsupported until wave 2.
+      replay, to_scenario) on the same engine. Guards, `where` filters and
+      `when:` conditions are evaluated with declared types; `?choice`
+      guards and conditions are choice points decided by pending decisions
+      (`choose`, `PlayAction::Choose`) or the first option; `sets` and emit
+      `with` shape fields and payloads; events can be delivered to one
+      consumer at a time; scenario values are checked against declared
+      types; `state_key` and `choice_points` support exploration.
     entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::PlaySession, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
-    depends_on: [definition_format, static_analysis]
+    depends_on: [definition_format, expressions, static_analysis]
     doc: docs/features/simulator.md
+  timers_and_subscriptions:
+    description: >
+      Run-time subscriptions and timers in the simulator: events delivered
+      to subscribing instances first (Notify steps, ignored when nothing is
+      enabled), per-consumer delivery with consumers_left, timers armed on
+      entry and cancelled on exit, a virtual clock advanced by `wait` /
+      `PlayAction::Advance` (Wait and TimerExpired steps, Timer queue
+      items), `now()` and `timers()`.
+    entry_points: [cascade_sim::PlaySession::now, cascade_sim::PlaySession::timers, cascade_sim::PlayAction::Advance, "cascade_sim::PlayAction::Step { consumer }", cascade simulate --interactive (wait, timers, now)]
+    depends_on: [simulator, definition_format, expressions]
+    doc: docs/features/timers-and-subscriptions.md
   view_scenes:
     description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles); arrow mode (`pills=0`: the structure view draws each transition as one labelled state → state arrow through an invisible layout junction, wires attaching to the arrow with a dot) and play overlays (instance markers, active and pending items).
     entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::ViewState::transition_pills, cascade_scene::Scene::hit_test_arrows, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
