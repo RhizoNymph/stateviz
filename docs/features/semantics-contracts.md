@@ -648,7 +648,59 @@ semantics yet:
   for `Wait`, `Choice`, `SetFields`); `cascade simulate --format json`
   writes them as `notify`, `wait`, `timer-expired`, `choice`, `set-fields`.
 - `PlaySession::{now, timers, pending_decisions, choice_points}` return
-  zero / empty / `Ok(vec![])`; `state_key` is real.
+  zero / empty / `Ok(vec![])`; `state_key` is real. (Superseded by wave 2,
+  below.)
+
+### Simulator semantics (wave 2, `feat/sim-semantics`)
+
+As landed in cascade-sim; the details the sections above leave open:
+
+- **Picking a transition.** Candidates are `enabled_transitions` whose
+  `where` holds. A choice point happens only when `?choice` candidates
+  remain *and* at least two candidates remain; its options are the
+  remaining candidates' labels in definition order: a choice's label, a
+  holding expression's canonical text, `unguarded` for a candidate with no
+  guard, `else`. A single remaining candidate (even a `?choice`) is taken
+  without a choice point. Without choices, several holding expressions
+  take the first in definition order (no choice point; the nondeterminism
+  check flags them) and `else` is taken only when nothing else holds.
+- **Choice steps.** `Choice.at` is the instance (guards) or the controller
+  (conditions). Options for a condition are `label` and `not label`.
+- **Event consumers are fixed when the event is queued** (the subscribing
+  instances alive at emit time, then controllers); a removed instance drops
+  out, an instance created later is not added. A whole delivery equals
+  per-consumer deliveries in order. Each per-consumer delivery counts as
+  one delivery for the step limit.
+- **Per-consumer steps are recorded as `Step { choice: Some(position),
+  consumer }`** (the head as `Some(0)`), so saving round-trips exactly. A
+  consumer not among `consumers_left` is the new
+  `ScenarioErrorKind::UnknownConsumer { consumer, item, consumers }`; a
+  fire or timer with `consumer: Some(target)` is delivered whole.
+- **Timers.** Entering and leaving are computed from the transition's
+  domain (the nearest state properly containing source and target); timers
+  of a state are its own timer transitions' triggers, deduplicated, in
+  definition order; ties between equal deadlines go by arming order (outer
+  state first on creation). `Advance { by: Some(_) }` with nothing armed is
+  allowed (the clock moves); `Advance { by: None }` is `NoTimerArmed`.
+  Removal cancels armed timers and discards queued timer items.
+- **Unused decisions.** Batch runs report `ScenarioErrorKind::UnusedChoice
+  { option }` at each leftover `choose` directive (the run fails with
+  `SimError::Scenario`); `PlaySession::from_scenario` keeps them pending.
+- **Value typing.** `ScenarioErrorKind::InvalidValue { field, value,
+  expected }` (expected from `FieldType::expected`): instance fields
+  against the machine's declarations; step payload entries against the
+  fired machine's field of that name and the declared payload field of
+  that name of every event emitted by a transition accepting the trigger.
+  `AddInstance` and `Fire` actions are checked the same way.
+- **`choice_points`** runs the step on a copy of the session; it returns
+  the same errors the step would (e.g. `QueueEmpty`).
+- **`state_key`** adds timer queue items, armed timers (instance, trigger,
+  arming state, `deadline - now`) and pending decisions; the absolute clock
+  is excluded.
+- **Race replays** treat a `Choice` caused by a contested fire as that
+  fire's delivery; findings other than `RaceCandidate` (including the
+  analysis branch's subscription races) return `SimError::NotARace`.
+- `ScenarioErrorKind::Unsupported` is kept but no longer returned.
 
 ## Invariants
 
