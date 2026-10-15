@@ -11,7 +11,16 @@ mod toolbar;
 
 use gpui::{Div, ElementId, SharedString, Stateful, div, prelude::*, px};
 
+use crate::commands::{Command, key_hint};
 use crate::theme::Chrome;
+
+/// A button label with its key: "Next timer  T".
+pub fn hint(label: &str, command: Command) -> String {
+    match key_hint(command) {
+        Some(key) => format!("{label}  {}", key.to_uppercase()),
+        None => label.to_owned(),
+    }
+}
 
 /// A small push button; `active` shows a pressed state by weight and
 /// background, never by hue.

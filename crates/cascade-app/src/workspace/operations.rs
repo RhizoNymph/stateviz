@@ -332,6 +332,7 @@ impl Workspace {
             HostEffect::NewFile => self.new_file(window, cx),
             HostEffect::PlayStep => self.play_step(None, cx),
             HostEffect::PlayRun => self.play_run(cx),
+            HostEffect::PlayAdvance => self.play_advance(true, cx),
         }
     }
 

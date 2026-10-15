@@ -7,18 +7,22 @@
 //! a committed value into one [`EditOp`](cascade_core::edit::EditOp) (renames use the `Rename*` ops, so
 //! references follow). An unchanged value makes no op.
 
-use cascade_core::definition::FieldDef;
 use cascade_core::definition::{StateKindDef, TriggerRef};
-use cascade_core::expr::{parse_condition, parse_guard};
+use cascade_core::expr::{ExprContext, parse_condition, parse_duration, parse_expr, parse_guard};
 use cascade_core::parse::grammar::{is_valid_name, is_valid_path, parse_target, parse_trigger_ref};
 use cascade_core::{Definition, ElementKey, PaletteColor, Spanned};
 
 mod commit;
+mod feedback;
+pub mod syntax;
+mod transition;
 
 pub use commit::field_op;
+pub use feedback::check;
+pub use syntax::TriggerKindTag;
 
 use super::defs::{self, join_list, split_list};
-use super::ops::{PlanError, transition_entry};
+use super::ops::PlanError;
 
 /// One editable property.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -33,8 +37,30 @@ pub enum FieldId {
     StateInitial,
     TransitionFrom,
     TransitionTo,
+    /// The trigger kind selector (command, subscription, timer).
+    TransitionKind,
+    /// A command trigger's name.
     TransitionTrigger,
+    /// A subscription's event.
+    TransitionEvent,
+    /// A subscription's `where` filter.
+    TransitionWhere,
+    /// A timer's delay.
+    TransitionAfter,
     TransitionGuard,
+    /// Row `n` of `sets:` (`field = value`); an empty commit removes it.
+    TransitionSet(u16),
+    /// The "add a `sets:` row" field.
+    TransitionSetNew,
+    /// Row `row` of the `with:` of emit entry `emit`.
+    EmitWith {
+        emit: u16,
+        row: u16,
+    },
+    /// The "add a `with:` row" field of emit entry `emit`.
+    EmitWithNew {
+        emit: u16,
+    },
     TransitionEmits,
     TransitionBounded,
     EventName,
@@ -57,6 +83,8 @@ enum Syntax {
     Path,
     PathList,
     NameList,
+    /// `name[: type], …`.
+    FieldList,
     TriggerRef,
     TriggerRefList,
     Target,
@@ -64,6 +92,12 @@ enum Syntax {
     Guard,
     /// `?label` or an expression; empty for none.
     Condition,
+    /// A selector filter (`orderId == event.orderId`); empty for none.
+    Filter,
+    /// A timer delay (`30s`).
+    Duration,
+    /// `field = value`; empty removes the row (or adds nothing).
+    Assignment,
     Choice,
     Toggle,
 }
@@ -81,8 +115,16 @@ impl FieldId {
             FieldId::StateInitial => "Initial child",
             FieldId::TransitionFrom => "From",
             FieldId::TransitionTo => "To",
+            FieldId::TransitionKind => "Trigger kind",
             FieldId::TransitionTrigger => "Trigger",
+            FieldId::TransitionEvent => "Event",
+            FieldId::TransitionWhere => "Where",
+            FieldId::TransitionAfter => "After",
             FieldId::TransitionGuard => "Guard",
+            FieldId::TransitionSet(_) => "Set",
+            FieldId::TransitionSetNew => "+ Set",
+            FieldId::EmitWith { .. } => "With",
+            FieldId::EmitWithNew { .. } => "+ With",
             FieldId::TransitionEmits => "Emits",
             FieldId::TransitionBounded | FieldId::RuleBounded => "Bounded",
             FieldId::EventPayload => "Payload",
@@ -102,19 +144,29 @@ impl FieldId {
             | FieldId::ControllerName
             | FieldId::SourceName
             | FieldId::TransitionTrigger
+            | FieldId::TransitionEvent
             | FieldId::ControllerAddHandler => Syntax::Name,
             FieldId::MachineDomain => Syntax::OptionalName,
             FieldId::TransitionTo => Syntax::Path,
             FieldId::TransitionFrom => Syntax::PathList,
-            FieldId::MachineFields | FieldId::TransitionEmits | FieldId::EventPayload => Syntax::NameList,
+            FieldId::TransitionEmits => Syntax::NameList,
+            FieldId::MachineFields | FieldId::EventPayload => Syntax::FieldList,
+            FieldId::TransitionWhere => Syntax::Filter,
+            FieldId::TransitionAfter => Syntax::Duration,
+            FieldId::TransitionSet(_)
+            | FieldId::TransitionSetNew
+            | FieldId::EmitWith { .. }
+            | FieldId::EmitWithNew { .. } => Syntax::Assignment,
             FieldId::RuleFire => Syntax::TriggerRef,
             FieldId::SourceTriggers => Syntax::TriggerRefList,
             FieldId::RuleTarget => Syntax::Target,
             FieldId::TransitionGuard => Syntax::Guard,
             FieldId::RuleWhen => Syntax::Condition,
-            FieldId::MachineColor | FieldId::MachineInitial | FieldId::StateKind | FieldId::StateInitial => {
-                Syntax::Choice
-            }
+            FieldId::MachineColor
+            | FieldId::MachineInitial
+            | FieldId::StateKind
+            | FieldId::StateInitial
+            | FieldId::TransitionKind => Syntax::Choice,
             FieldId::TransitionBounded | FieldId::RuleBounded => Syntax::Toggle,
         }
     }
@@ -127,6 +179,10 @@ impl FieldId {
             Syntax::Path => "state path",
             Syntax::PathList => "a, b.c",
             Syntax::NameList => "a, b",
+            Syntax::FieldList => "id, amount: number, tier: enum [a, b]",
+            Syntax::Filter => "orderId == event.orderId",
+            Syntax::Duration => "30s, 5m, 2h",
+            Syntax::Assignment => "field = event.x",
             Syntax::TriggerRef => "Machine.trigger",
             Syntax::TriggerRefList => "Machine.trigger, …",
             Syntax::Target => "the one instance",
@@ -151,6 +207,8 @@ pub enum FieldInput {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
     pub id: FieldId,
+    /// Usually `id.label()`; rows say what they belong to (`With Paid`).
+    pub label: String,
     pub input: FieldInput,
 }
 
@@ -203,24 +261,16 @@ fn text(value: impl Into<String>) -> FieldInput {
 }
 
 fn field(id: FieldId, input: FieldInput) -> Field {
-    Field { id, input }
+    Field { id, label: id.label().to_owned(), input }
 }
 
 fn opt(value: Option<&Spanned<String>>) -> String {
     value.map(|v| v.value.clone()).unwrap_or_default()
 }
 
-fn names(items: &[Spanned<String>]) -> String {
-    join_list(items.iter().map(|s| s.value.as_str()))
-}
-
 /// Canonical text of an optional guard or condition.
 fn shown<T: std::fmt::Display>(value: Option<&Spanned<T>>) -> String {
     value.map(|v| v.value.to_string()).unwrap_or_default()
-}
-
-fn field_names(fields: &[FieldDef]) -> String {
-    join_list(fields.iter().map(|f| f.name.value.as_str()))
 }
 
 fn kind_options() -> Vec<(String, String)> {
@@ -240,8 +290,19 @@ fn missing(key: &ElementKey) -> PlanError {
     PlanError::NotFound(key.clone())
 }
 
-/// The inspector for `key`.
+/// The inspector for `key` (no draft; the app calls [`inspect_with`]).
+#[cfg(test)]
 pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, PlanError> {
+    inspect_with(definition, key, None)
+}
+
+/// The inspector for `key`, showing a transition's trigger as `draft`
+/// (the kind picked in the selector but not committed yet) when given.
+pub fn inspect_with(
+    definition: &Definition,
+    key: &ElementKey,
+    draft: Option<TriggerKindTag>,
+) -> Result<Inspection, PlanError> {
     let base = |title: String| Inspection {
         key: key.clone(),
         title,
@@ -271,7 +332,7 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
                         FieldId::MachineInitial,
                         FieldInput::Choice { value: opt(m.initial.as_ref()), options: initial_options },
                     ),
-                    field(FieldId::MachineFields, text(field_names(&m.fields))),
+                    field(FieldId::MachineFields, text(syntax::format_field_list(&m.fields))),
                     field(FieldId::MachineDomain, text(opt(m.domain.as_ref()))),
                 ],
                 ..base(format!("Machine {machine}"))
@@ -299,29 +360,7 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
                 ..base(format!("State {machine}.{path}"))
             }
         }
-        ElementKey::Transition { machine, from, to, trigger, .. } => {
-            let title = format!("Transition {machine}: {from} → {to}");
-            match transition_entry(definition, key) {
-                Ok((_, _, t)) => Inspection {
-                    fields: vec![
-                        field(FieldId::TransitionFrom, text(names(&t.from))),
-                        field(FieldId::TransitionTo, text(t.to.value.clone())),
-                        field(FieldId::TransitionTrigger, text(t.trigger.name())),
-                        field(FieldId::TransitionGuard, text(shown(t.guard.as_ref()))),
-                        field(
-                            FieldId::TransitionEmits,
-                            text(join_list(t.emits.iter().map(|e| e.event.value.as_str()))),
-                        ),
-                        field(FieldId::TransitionBounded, FieldInput::Toggle(t.bounded)),
-                    ],
-                    ..base(title)
-                },
-                Err(error) => Inspection {
-                    notes: vec![format!("Trigger: {trigger}"), format!("Read-only: {error}.")],
-                    ..base(title)
-                },
-            }
-        }
+        ElementKey::Transition { .. } => transition::inspect(definition, key, draft, base),
         ElementKey::Trigger { machine, trigger } => Inspection {
             notes: vec![
                 format!("Trigger {trigger} of {machine}."),
@@ -339,7 +378,10 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
             Inspection {
                 fields: vec![
                     field(FieldId::EventName, text(event.clone())),
-                    field(FieldId::EventPayload, text(declared.map(|e| field_names(&e.payload)).unwrap_or_default())),
+                    field(
+                        FieldId::EventPayload,
+                        text(declared.map(|e| syntax::format_field_list(&e.payload)).unwrap_or_default()),
+                    ),
                 ],
                 notes,
                 ..base(format!("Event {event}"))
@@ -461,6 +503,16 @@ pub fn validate(field: FieldId, value: &str) -> Result<(), String> {
             }
         }
         Syntax::NameList => split_list(value).iter().try_for_each(|n| name(n)),
+        Syntax::FieldList => syntax::parse_field_list(value).map(|_| ()),
+        Syntax::Filter if !value.is_empty() => {
+            parse_expr(value, ExprContext::Filter).map(|_| ()).map_err(|e| e.to_string())
+        }
+        Syntax::Duration => match parse_duration(value) {
+            Ok(d) if d.is_zero() => Err("a timer needs a delay above zero".to_owned()),
+            Ok(_) => Ok(()),
+            Err(e) => Err(e.to_string()),
+        },
+        Syntax::Assignment if !value.is_empty() => syntax::parse_assignment(value).map(|_| ()),
         Syntax::TriggerRef => trigger_ref(value).map(|_| ()),
         Syntax::TriggerRefList => split_list(value).iter().try_for_each(|t| trigger_ref(t).map(|_| ())),
         Syntax::Target => {
@@ -472,7 +524,9 @@ pub fn validate(field: FieldId, value: &str) -> Result<(), String> {
         }
         Syntax::Guard if !value.is_empty() => parse_guard(value).map(|_| ()).map_err(|e| e.to_string()),
         Syntax::Condition if !value.is_empty() => parse_condition(value).map(|_| ()).map_err(|e| e.to_string()),
-        Syntax::Guard | Syntax::Condition | Syntax::Choice | Syntax::Toggle => Ok(()),
+        Syntax::Guard | Syntax::Condition | Syntax::Filter | Syntax::Assignment | Syntax::Choice | Syntax::Toggle => {
+            Ok(())
+        }
     }
 }
 
@@ -482,3 +536,5 @@ fn trigger_ref(value: &str) -> Result<TriggerRef, String> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_semantics;
