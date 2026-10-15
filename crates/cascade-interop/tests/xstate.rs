@@ -83,19 +83,20 @@ fn traffic_light_fixture() {
     assert!(has(&model, "state:trafficLight:red.walk"));
     let red = model.state_by_path(model.machine_by_name("trafficLight").expect("machine"), "red").expect("red");
     assert!(matches!(model.state(red).kind, StateKind::Compound { .. }));
-    assert!(has(&model, "transition:trafficLight:green->yellow@after_30000ms"));
+    assert!(has(&model, "transition:trafficLight:green->yellow@after-30s"));
     assert!(has(&model, "transition:trafficLight:red->green@red_done"));
     // The root-level FAULT handler applies to every top-level state.
     for from in ["green", "yellow", "red", "flashing"] {
         assert!(has(&model, &format!("transition:trafficLight:{from}->flashing@FAULT")), "{from}");
     }
     // Entry actions of the entered states are attributed to the transition.
-    assert_eq!(emits_of(&model, "transition:trafficLight:yellow->red@after_5000ms"), ["LightChanged", "WalkSignalOn"]);
+    assert_eq!(emits_of(&model, "transition:trafficLight:yellow->red@after-5s"), ["LightChanged", "WalkSignalOn"]);
     assert_eq!(
         guard_of(&model, "transition:trafficLight:green->yellow@PEDESTRIAN_WAITING").as_deref(),
-        Some(r#"?minimumGreenElapsed({"seconds":10})"#)
+        Some("?minimumGreenElapsed")
     );
-    assert!(source_triggers(&model, "Clock").contains(&"trafficLight.after_5000ms".to_owned()));
+    // Numeric delays are Cascade timers: nothing fires them.
+    assert!(model.external_by_name("Clock").is_none());
     assert!(source_triggers(&model, "Environment").contains(&"trafficLight.FAULT".to_owned()));
     // The start-up emit and the completion approximation are reported.
     let messages: Vec<String> = imported.warnings.iter().map(ToString::to_string).collect();
@@ -121,7 +122,7 @@ fn fetch_fixture() {
     // not expose it.
     assert!(!source_triggers(&model, "Environment").contains(&"fetch.REFRESH".to_owned()));
     assert!(has(&model, "rule:EventRouter/REFRESH#0"));
-    assert_eq!(emits_of(&model, "transition:fetch:loading->failure@after_10000ms"), ["FetchTimedOut"]);
+    assert_eq!(emits_of(&model, "transition:fetch:loading->failure@after-10s"), ["FetchTimedOut"]);
 }
 
 #[test]
@@ -288,18 +289,18 @@ fn guarded_alternatives_and_guard_forms() {
     }"#;
     let model = model(json);
     assert_eq!(guard_of(&model, "transition:m:a->b@GO").as_deref(), Some("?isAdmin"));
-    assert_eq!(guard_of(&model, "transition:m:a->c@GO").as_deref(), Some(r#"?hasRole({"role":"ops"})"#));
+    assert_eq!(guard_of(&model, "transition:m:a->c@GO").as_deref(), Some("?hasRole"));
     assert_eq!(guard_of(&model, "transition:m:a->d@GO").as_deref(), Some("?legacyGuard"));
     assert_eq!(guard_of(&model, "transition:m:a->e@GO"), None);
 }
 
 #[test]
-fn delays_become_clock_triggers() {
+fn delays_become_timers_and_named_delays_clock_triggers() {
     let json = r#"{ "id": "m", "states": { "a": { "after": { "1000": "b", "LONG_DELAY": "c" } }, "b": {}, "c": {} } }"#;
     let model = model(json);
-    assert!(has(&model, "transition:m:a->b@after_1000ms"));
+    assert!(has(&model, "transition:m:a->b@after-1s"));
     assert!(has(&model, "transition:m:a->c@after_LONG_DELAY"));
-    assert_eq!(source_triggers(&model, "Clock"), ["m.after_1000ms", "m.after_LONG_DELAY"]);
+    assert_eq!(source_triggers(&model, "Clock"), ["m.after_LONG_DELAY"]);
     assert!(source_triggers(&model, "Environment").is_empty());
     assert!(model.external_by_name("Environment").is_none(), "no empty sources");
 }
@@ -395,7 +396,7 @@ fn raise_routes_to_the_same_machine_and_send_to_another() {
 #[test]
 fn custom_options_rename_the_conventions() {
     let json = r#"{ "id": "m", "states": {
-        "a": { "on": { "GO": { "target": "b", "actions": ["notify:Done"] } }, "after": { "5": "b" } },
+        "a": { "on": { "GO": { "target": "b", "actions": ["notify:Done"] } }, "after": { "5": "b", "SLOW": "b" } },
         "b": { "on": { "Done": "a" } } } }"#;
     let options = ImportOptions {
         emit_prefix: "notify:".into(),
@@ -407,7 +408,8 @@ fn custom_options_rename_the_conventions() {
     assert_eq!(emits_of(&model, "transition:m:a->b@GO"), ["Done"]);
     assert!(has(&model, "rule:Bus/Done#0"));
     assert_eq!(source_triggers(&model, "User"), ["m.GO"]);
-    assert_eq!(source_triggers(&model, "Timer"), ["m.after_5ms"]);
+    assert!(has(&model, "transition:m:a->b@after-5ms"));
+    assert_eq!(source_triggers(&model, "Timer"), ["m.after_SLOW"]);
 }
 
 // --- Names -------------------------------------------------------------------------------

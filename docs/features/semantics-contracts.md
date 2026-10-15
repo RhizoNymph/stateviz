@@ -549,6 +549,34 @@ builds and every existing test passes (existing guards in examples and
 fixtures are rewritten to expressions or `?choices`). Wave 2 branches stack
 on wave 1 and run in parallel; wave 3 stacks on the wave 2 integration.
 
+## Interop as landed (wave 2, `feat/interop-semantics`)
+
+- **SCXML.** Timers: `<onentry><send event="M.after-30m" delay="1800s"
+  id="<state id>.after-30m"/>` + `<onexit><cancel sendid/>` in the source
+  state and a transition on `M.after-30m`. Subscriptions: a transition on
+  the bare event name; `cond` = filter (plain context) `and` an expression
+  guard, for engines; `cascade:where`/`cascade:guard` carry them apart.
+  Choices stay `cond="?label"` with an XML comment before the transition.
+  `sets` → `<assign location expr>`, emit `with` → `<param name expr>`,
+  typed fields/payloads → `<cascade:field name type/>` children. Import
+  reads all of these back; in foreign documents a delayed `<send>` in
+  `<onentry>` whose event a transition of the same state takes is a timer,
+  and `<assign>`/`<param>` are kept only when `expr` is `event.x`/`self.x`.
+- **XState.** Numeric `after` delays (> 0) are Cascade timers (no `Clock`
+  source); named delays stay `after_NAME` commands fired by `Clock`.
+  `guard: { type, params }` → `?type` (parameters dropped). `assign` with a
+  static `assignment` copying `event.x` → `sets`; other assignments and
+  `assign` in entry/exit are ignored with a warning.
+- **Mermaid.** Structure labels: `after 30s`, `on Event where …`, guards as
+  canonical text. Causal: notify edges `e ==>|where …| t`, delay edges
+  `t -.->|after 30s| t` with a dashed stroke, from `CausalGraph::build`.
+- **P.** `number` → `float`; enums → P `enum`s; instance fields → machine
+  variables; expression guards over typed instance fields and rule
+  conditions over a typed payload → P conditions, else `$`; `else` → the
+  `else` branch; `sets` → assignments; emits also go to subscribers;
+  timers → nondeterministic self-send on entry (TODO comment for a timer
+  machine).
+
 ## Wave 1 as landed
 
 Names and details the Rust blocks above leave open, as implemented on

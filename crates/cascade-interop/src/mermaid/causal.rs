@@ -13,7 +13,10 @@
 //! Edges, in this order: source → transition (solid, labelled with the
 //! trigger), transition → event (dashed emit), event → controller (solid,
 //! one per subscription), controller → transition (dashed fire, labelled
-//! `trigger [when]`, colored with the target machine's hue). A trigger edge
+//! `trigger [when]`, colored with the target machine's hue), event →
+//! subscribing transition (thick `==>` notify, labelled with its `where`
+//! filter, machine hue), transition → timer transition (dotted delay
+//! labelled `after 30s`, machine hue with a short dash). A trigger edge
 //! or fire goes to every transition that accepts the trigger, as in the
 //! causal graph; one that nothing accepts goes to the trigger's `u` node.
 //!
@@ -24,6 +27,8 @@
 
 use std::fmt::Write as _;
 
+use cascade_core::causal::{CausalEdgeKind, CausalGraph, CausalNode};
+use cascade_core::model::TriggerKind;
 use cascade_core::{Model, TransitionId, TriggerId};
 
 use super::escape;
@@ -74,7 +79,7 @@ pub(crate) fn causal(model: &Model) -> String {
     }
     for (tid, transition) in model.transitions() {
         for emit in &transition.emits {
-            edges.push(format!("t{} -.-> e{}", tid.index(), emit.event.index()), Some(EMIT_STROKE));
+            edges.push(format!("t{} -.-> e{}", tid.index(), emit.event.index()), Some(format!("stroke:{EMIT_STROKE}")));
         }
     }
     for (_, handler) in model.handlers() {
@@ -87,9 +92,40 @@ pub(crate) fn causal(model: &Model) -> String {
             let _ = write!(label, " [{condition}]");
         }
         let label = escape::label(&label);
-        let stroke = hues.get(trigger.machine.index()).map(|h| h.fill);
+        let stroke = hues.get(trigger.machine.index()).map(|h| format!("stroke:{}", h.fill));
         for target in targets(model, rule.trigger, &missing) {
-            edges.push(format!("c{} -.->|\"{label}\"| {target}", rule.controller.index()), stroke);
+            edges.push(format!("c{} -.->|\"{label}\"| {target}", rule.controller.index()), stroke.clone());
+        }
+    }
+    // Subscriptions and timers come from the causal graph.
+    let graph = CausalGraph::build(model);
+    for (_, edge) in graph.edges() {
+        let (CausalNode::Event(_) | CausalNode::Transition(_), CausalNode::Transition(to)) =
+            (graph.node(edge.from), graph.node(edge.to))
+        else {
+            continue;
+        };
+        let hue = hues.get(model.transition(to).machine.index()).map(|h| h.fill);
+        match (edge.kind, graph.node(edge.from)) {
+            (CausalEdgeKind::Notify { .. }, CausalNode::Event(event)) => {
+                let line = match &model.transition(to).filter {
+                    Some(filter) => {
+                        let label = escape::label(&format!("where {}", filter.display_filter()));
+                        format!("e{} ==>|\"{label}\"| t{}", event.index(), to.index())
+                    }
+                    None => format!("e{} ==> t{}", event.index(), to.index()),
+                };
+                edges.push(line, hue.map(|h| format!("stroke:{h}")));
+            }
+            (CausalEdgeKind::Delay { trigger }, CausalNode::Transition(from)) => {
+                let label = match model.trigger(trigger).kind {
+                    TriggerKind::Timer(delay) => format!("after {delay}"),
+                    TriggerKind::Command | TriggerKind::Event(_) => model.trigger(trigger).name.clone(),
+                };
+                let line = format!("t{} -.->|\"{}\"| t{}", from.index(), escape::label(&label), to.index());
+                edges.push(line, hue.map(|h| format!("stroke:{h},stroke-dasharray:2 4")));
+            }
+            _ => {}
         }
     }
     for line in &edges.lines {
@@ -98,9 +134,9 @@ pub(crate) fn causal(model: &Model) -> String {
 
     // --- Styles --------------------------------------------------------------
     write_styles(&mut out, model, &hues, missing_count);
-    for (stroke, indices) in edges.styles() {
+    for (style, indices) in edges.styles() {
         let list: Vec<String> = indices.iter().map(ToString::to_string).collect();
-        let _ = writeln!(out, "{INDENT}linkStyle {} stroke:{stroke}", list.join(","));
+        let _ = writeln!(out, "{INDENT}linkStyle {} {style}", list.join(","));
     }
     out
 }
@@ -116,28 +152,28 @@ fn targets(model: &Model, trigger: TriggerId, missing: &[Option<usize>]) -> Vec<
     }
 }
 
-/// Edge lines with their stroke colors, in output order (Mermaid addresses
+/// Edge lines with their link styles, in output order (Mermaid addresses
 /// links by index in `linkStyle`).
 #[derive(Default)]
 struct Edges {
     lines: Vec<String>,
-    strokes: Vec<Option<&'static str>>,
+    styles: Vec<Option<String>>,
 }
 
 impl Edges {
-    fn push(&mut self, line: String, stroke: Option<&'static str>) {
+    fn push(&mut self, line: String, style: Option<String>) {
         self.lines.push(line);
-        self.strokes.push(stroke);
+        self.styles.push(style);
     }
 
-    /// Edge indices grouped by stroke color, colors in order of first use.
-    fn styles(&self) -> Vec<(&'static str, Vec<usize>)> {
-        let mut groups: Vec<(&'static str, Vec<usize>)> = Vec::new();
-        for (index, stroke) in self.strokes.iter().enumerate() {
-            let Some(stroke) = stroke else { continue };
-            match groups.iter_mut().find(|(s, _)| s == stroke) {
+    /// Edge indices grouped by style, styles in order of first use.
+    fn styles(&self) -> Vec<(&str, Vec<usize>)> {
+        let mut groups: Vec<(&str, Vec<usize>)> = Vec::new();
+        for (index, style) in self.styles.iter().enumerate() {
+            let Some(style) = style.as_deref() else { continue };
+            match groups.iter_mut().find(|(s, _)| *s == style) {
                 Some((_, indices)) => indices.push(index),
-                None => groups.push((stroke, vec![index])),
+                None => groups.push((style, vec![index])),
             }
         }
         groups

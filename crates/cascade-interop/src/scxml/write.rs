@@ -32,7 +32,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cascade_core::model::{StateKind, Target};
+use cascade_core::expr::{Assignment, Duration, FieldDecl, FieldType, Guard};
+use cascade_core::model::{StateKind, Target, TriggerKind};
 use cascade_core::{MachineId, Model, StateId, TransitionId, TriggerId};
 
 use crate::scxml::xml::XmlWriter;
@@ -45,15 +46,19 @@ Each machine is a region of the top-level <parallel>; state ids are Machine.path
 triggers are events named Machine.trigger. Emitted events are <send>s. Each controller
 is a region marked cascade:controller: one transition per subscribed event, one <send>
 per rule (inside <if> when the rule has a condition). Guards and conditions are
-Cascade's own syntax (expressions, ?choices, else), not ECMAScript. External sources, declared events, colors,
-domains, fields, selectors and bounded flags live in the cascade: namespace.";
+Cascade's own syntax (expressions, ?choices, else), not ECMAScript. Timers are delayed
+<send>s armed on entry and cancelled on exit; subscriptions are transitions on the
+event itself; sets are <assign>s and emit payloads <param>s. External sources, declared
+events, colors, domains, fields, selectors and bounded flags live in the cascade: namespace.";
 
 const FLAT_HEADER: &str = "\
 Exported by Cascade (docs/features/interop-and-diff.md).
 One machine: its states are the document's states, with ids Machine.path, and its
 triggers are events named Machine.trigger. Emitted events are <send>s. Guards are
-Cascade's own syntax (expressions, ?choices, else), not ECMAScript. External sources, declared events, colors,
-domains, fields and bounded flags live in the cascade: namespace.";
+Cascade's own syntax (expressions, ?choices, else), not ECMAScript. Timers are delayed
+<send>s armed on entry and cancelled on exit; sets are <assign>s and emit payloads
+<param>s. External sources, declared events, colors, domains, fields and bounded flags
+live in the cascade: namespace.";
 
 /// Unique XML ids across the document.
 struct Ids {
@@ -118,7 +123,10 @@ pub(crate) fn export(model: &Model) -> String {
     w.xml.start("scxml", &attrs);
     w.declarations();
     match (flat, only) {
-        (true, Some(mid)) => w.states(&model.machine(mid).top_states),
+        (true, Some(mid)) => {
+            w.typed_fields(&model.machine(mid).fields);
+            w.states(&model.machine(mid).top_states);
+        }
         _ => {
             let system_id = ids.claim("system");
             w.xml.start("parallel", &[("id", &system_id)]);
@@ -155,11 +163,22 @@ impl Writer<'_> {
         if let Some(domain) = &m.domain {
             attrs.push(("cascade:domain", domain.clone()));
         }
-        if !m.fields.is_empty() {
+        if !m.fields.is_empty() && !typed(&m.fields) {
             let names: Vec<&str> = m.fields.iter().map(|f| f.name.as_str()).collect();
             attrs.push(("cascade:fields", names.join(" ")));
         }
         attrs
+    }
+
+    /// Typed fields (or a typed payload) as `<cascade:field name type/>`
+    /// children; untyped ones are a `cascade:fields`/`payload` attribute.
+    fn typed_fields(&mut self, fields: &[FieldDecl]) {
+        if !typed(fields) {
+            return;
+        }
+        for field in fields {
+            self.xml.empty("cascade:field", &[("name", &field.name), ("type", &field.ty.to_string())]);
+        }
     }
 
     /// Declared events and external sources, before the states.
@@ -169,6 +188,12 @@ impl Writer<'_> {
             for (_, event) in model.events().filter(|(_, e)| e.declared) {
                 let payload = event.payload.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(" ");
                 let mut attrs = vec![("name", event.name.as_str())];
+                if typed(&event.payload) {
+                    self.xml.start("cascade:event", &attrs);
+                    self.typed_fields(&event.payload);
+                    self.xml.end("cascade:event");
+                    continue;
+                }
                 if !payload.is_empty() {
                     attrs.push(("payload", payload.as_str()));
                 }
@@ -188,6 +213,7 @@ impl Writer<'_> {
         attrs.extend(self.machine_attrs(mid));
         let attrs: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (*k, v.as_str())).collect();
         self.xml.start("state", &attrs);
+        self.typed_fields(&machine.fields);
         self.states(&machine.top_states);
         self.xml.end("state");
     }
@@ -212,6 +238,7 @@ impl Writer<'_> {
                     self.xml.empty("state", &[("id", &id)]);
                 } else {
                     self.xml.start("state", &[("id", &id)]);
+                    self.timers(&id, &transitions);
                     self.transitions(&transitions);
                     self.xml.end("state");
                 }
@@ -220,6 +247,7 @@ impl Writer<'_> {
                 let initial = self.state_id(*initial);
                 self.xml.start("state", &[("id", &id), ("initial", &initial)]);
                 let transitions = self.outgoing.get(&sid).cloned().unwrap_or_default();
+                self.timers(&id, &transitions);
                 self.transitions(&transitions);
                 self.states(children);
                 self.xml.end("state");
@@ -227,29 +255,110 @@ impl Writer<'_> {
         }
     }
 
+    /// The timers a state arms: one delayed `<send>` per timer trigger on
+    /// entry, cancelled on exit. Its id is `<state id>.<trigger>`.
+    fn timers(&mut self, state_id: &str, transitions: &[TransitionId]) {
+        let model = self.model;
+        let mut timers: Vec<(TriggerId, Duration)> = Vec::new();
+        for &tid in transitions {
+            let trigger = model.transition(tid).trigger;
+            if let TriggerKind::Timer(delay) = model.trigger(trigger).kind
+                && !timers.iter().any(|(t, _)| *t == trigger)
+            {
+                timers.push((trigger, delay));
+            }
+        }
+        if timers.is_empty() {
+            return;
+        }
+        let sends: Vec<(String, String, String)> = timers
+            .iter()
+            .map(|&(trigger, delay)| {
+                (self.trigger_event(trigger), scxml_delay(delay), format!("{state_id}.{}", model.trigger(trigger).name))
+            })
+            .collect();
+        self.xml.start("onentry", &[]);
+        for (event, delay, id) in &sends {
+            self.xml.empty("send", &[("event", event), ("delay", delay), ("id", id)]);
+        }
+        self.xml.end("onentry");
+        self.xml.start("onexit", &[]);
+        for (_, _, id) in &sends {
+            self.xml.empty("cancel", &[("sendid", id)]);
+        }
+        self.xml.end("onexit");
+    }
+
     fn transitions(&mut self, transitions: &[TransitionId]) {
         let model = self.model;
         for &tid in transitions {
             let t = model.transition(tid);
-            let event = self.trigger_event(t.trigger);
             let target = self.state_id(t.to);
             let guard = t.guard.as_ref().map(ToString::to_string);
-            let mut attrs = vec![("event", event.as_str()), ("target", target.as_str())];
-            if let Some(guard) = &guard {
-                attrs.push(("cond", guard.as_str()));
+            let (event, cond, extra) = match model.trigger(t.trigger).kind {
+                // A subscription: the event itself; `cond` holds the filter
+                // and the guard for SCXML engines, the cascade: attributes
+                // hold them apart for the way back.
+                TriggerKind::Event(e) => {
+                    let filter = t.filter.as_ref();
+                    let mut extra = Vec::new();
+                    if let Some(filter) = filter {
+                        extra.push(("cascade:where", filter.display_filter().to_string()));
+                        if let Some(guard) = &guard {
+                            extra.push(("cascade:guard", guard.clone()));
+                        }
+                    }
+                    let cond = match (filter, &t.guard) {
+                        (Some(f), Some(Guard::Expr(g))) => {
+                            Some(cascade_core::expr::Expr::And(vec![f.clone(), g.clone()]).to_string())
+                        }
+                        (Some(f), _) => Some(f.to_string()),
+                        (None, _) => guard.clone(),
+                    };
+                    (model.event(e).name.clone(), cond, extra)
+                }
+                TriggerKind::Command | TriggerKind::Timer(_) => {
+                    (self.trigger_event(t.trigger), guard.clone(), Vec::new())
+                }
+            };
+            if let Some(Guard::Choice(label)) = &t.guard {
+                self.xml.comment(&format!(
+                    "?{label}: a choice the data does not decide (a scenario picks it); SCXML engines see it as an opaque cond"
+                ));
             }
+            let mut attrs = vec![("event", event.as_str()), ("target", target.as_str())];
+            if let Some(cond) = &cond {
+                attrs.push(("cond", cond.as_str()));
+            }
+            attrs.extend(extra.iter().map(|(k, v)| (*k, v.as_str())));
             if t.bounded {
                 attrs.push(("cascade:bounded", "true"));
             }
-            if t.emits.is_empty() {
+            if t.emits.is_empty() && t.sets.is_empty() {
                 self.xml.empty("transition", &attrs);
-            } else {
-                self.xml.start("transition", &attrs);
-                for e in &t.emits {
-                    self.xml.empty("send", &[("event", &model.event(e.event).name)]);
-                }
-                self.xml.end("transition");
+                continue;
             }
+            self.xml.start("transition", &attrs);
+            for a in &t.sets {
+                self.xml.empty("assign", &[("location", &a.field), ("expr", &a.value.to_string())]);
+            }
+            for e in &t.emits {
+                let name = &model.event(e.event).name;
+                if e.with.is_empty() {
+                    self.xml.empty("send", &[("event", name)]);
+                } else {
+                    self.xml.start("send", &[("event", name)]);
+                    self.params(&e.with);
+                    self.xml.end("send");
+                }
+            }
+            self.xml.end("transition");
+        }
+    }
+
+    fn params(&mut self, with: &[Assignment]) {
+        for a in with {
+            self.xml.empty("param", &[("name", &a.field), ("expr", &a.value.to_string())]);
         }
     }
 
@@ -294,6 +403,18 @@ impl Writer<'_> {
         }
         self.xml.end("state");
     }
+}
+
+/// Whether a field list is written typed (any field with a type other
+/// than `any`, or a list the definition wrote as a mapping).
+fn typed(fields: &[FieldDecl]) -> bool {
+    fields.iter().any(|f| f.ty != FieldType::Any)
+}
+
+/// An SCXML delay (CSS2 time: seconds or milliseconds).
+fn scxml_delay(delay: Duration) -> String {
+    let ms = delay.millis();
+    if ms.is_multiple_of(1000) { format!("{}s", ms / 1000) } else { format!("{ms}ms") }
 }
 
 /// The selector text for a rule target, or `None` for "the one instance".

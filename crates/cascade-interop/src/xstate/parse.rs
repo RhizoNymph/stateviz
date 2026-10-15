@@ -12,7 +12,9 @@ use crate::error::InteropError;
 use crate::import::Warnings;
 use crate::import::chart::{Chart, Delay, Edge, Emit, NodeIx, NodeKind, TriggerSpec};
 use crate::xstate::FORMAT;
-use crate::xstate::actions::{emits, guard_text};
+use cascade_core::expr::Assignment;
+
+use crate::xstate::actions::{emits, guard_label, sets};
 use crate::xstate::json::Json;
 
 /// Keys XState accepts on a state node that carry nothing Cascade models.
@@ -58,6 +60,7 @@ struct PendingEdge {
     trigger: TriggerSpec,
     targets: Vec<String>,
     guard: Option<String>,
+    sets: Vec<Assignment>,
     emits: Vec<Emit>,
     reenter: bool,
     location: String,
@@ -148,10 +151,12 @@ impl Parser<'_> {
                 "always" => return Err(unsupported(&at, "eventless `always` transitions")),
                 "entry" => {
                     let list = emits(value, self.emit_prefix, &at, self.warnings)?;
+                    self.state_assigns(value, &at);
                     self.chart.node_mut(ix).entry = list;
                 }
                 "exit" => {
                     let list = emits(value, self.emit_prefix, &at, self.warnings)?;
+                    self.state_assigns(value, &at);
                     self.chart.node_mut(ix).exit = list;
                 }
                 "target" => self.warnings.ignored(at, "the default target of a history state"),
@@ -230,6 +235,16 @@ impl Parser<'_> {
                 Ok(())
             }
             other => Err(invalid(location, format!("`on` must be an object, found {}", other.kind()))),
+        }
+    }
+
+    /// `assign` in entry or exit actions: Cascade only assigns on
+    /// transitions, so these are dropped with a warning.
+    fn state_assigns(&mut self, value: &Json, location: &str) {
+        let mut scratch = Warnings::default();
+        if !sets(value, location, &mut scratch).is_empty() || !scratch.list.is_empty() {
+            self.warnings
+                .ignored(location, "`assign` in entry or exit actions (Cascade assigns fields on transitions)");
         }
     }
 
@@ -319,6 +334,7 @@ impl Parser<'_> {
             trigger,
             targets: Vec::new(),
             guard: None,
+            sets: Vec::new(),
             emits: Vec::new(),
             reenter: false,
             location: location.to_owned(),
@@ -346,8 +362,11 @@ impl Parser<'_> {
                                 }
                             };
                         }
-                        "guard" | "cond" => edge.guard = Some(guard_text(v, &at)?),
-                        "actions" => edge.emits = emits(v, self.emit_prefix, &at, self.warnings)?,
+                        "guard" | "cond" => edge.guard = Some(guard_label(v, &at)?),
+                        "actions" => {
+                            edge.emits = emits(v, self.emit_prefix, &at, self.warnings)?;
+                            edge.sets = sets(v, &at, self.warnings);
+                        }
                         "reenter" => edge.reenter = matches!(v, Json::Bool(true)),
                         "internal" => edge.reenter = matches!(v, Json::Bool(false)),
                         "in" => self.warnings.ignored(at, "an `in` state guard"),
@@ -393,6 +412,7 @@ impl Parser<'_> {
                 trigger: edge.trigger,
                 target,
                 guard: edge.guard,
+                sets: edge.sets,
                 emits: edge.emits,
                 reenter: edge.reenter,
                 bounded: false,
