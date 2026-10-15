@@ -20,11 +20,17 @@ ordering.
   ambiguous selector, dropped trigger, skipped input, unused decision, step
   limit), the shortest witness found, and a path count.
 - `cascade explore` (text and JSON, exit codes, `--save-witness`).
+- Watched runs for hosts: `explore_from_watched` with an `ExploreProgress`
+  (states visited so far, cancellation).
+- The app's Explore panel (Play mode, `E`): explore from the session's
+  position off the UI thread, list outcomes, preview one on the canvas, open
+  it as a timeline branch.
 
 ## Non-scope
 
-- The app's Explore panel (a later step; the API is shaped for it: explore
-  from the session's position, open a witness as a branch).
+- Exploring a scenario file from the app (the panel explores from the play
+  session; load the scenario into play first, or use `cascade explore`).
+- Editing the state bound in the app (it uses `DEFAULT_MAX_STATES`).
 - Livelock detection: paths that never settle (a cascade cycling forever)
   produce no outcome; they are cut by the visited set, not reported. Only
   when no path settles at all (complete, zero outcomes) is there a note.
@@ -184,6 +190,73 @@ false` on the examples, the fixtures and ~1200 random explorations).
   nodes in the explored graph minus the back edges of a DFS from the root
   (so cycles count once), saturating at `u64::MAX`. Reduction lowers it.
 
+## Watched runs
+
+```rust
+pub struct ExploreProgress { /* AtomicUsize states, AtomicBool cancelled */ }
+impl ExploreProgress { fn new(); fn states(&self) -> usize; fn cancel(&self); fn is_cancelled(&self) -> bool }
+pub fn explore_from_watched(session, model, options, progress: &ExploreProgress) -> Result<Exploration, SimError>
+```
+
+The search publishes the number of distinct states before every move and
+checks the flag there; once cancelled it returns
+`SimError::ExploreCancelled { states }` (no partial result). `explore` and
+`explore_from` use a private, never-cancelled progress, so their results
+are unchanged.
+
+## The app's Explore panel
+
+`E` (or the queue section's **Explore** button) opens a panel between the
+canvas and the play panel in Play mode.
+
+```text
+controls (ordering, branch on choices, timers anytime) ──Run──▶
+ExploreUi::start(PlayState, Arc<Model>)
+   run := Running { origin, controls, progress }   (any running job cancelled)
+   ExploreJob { session clone, model, origin, controls, progress }
+       └─ cx.background_spawn(job.run())  ──explore_from_watched──▶ ExploreResult
+            rows (outcome_rows) and summary built there, with the job's model
+   ticker task: every 150 ms repaint ("Exploring… N states") while Running
+   Cancel: progress.cancel() ──▶ the job ends with ExploreCancelled ──▶ Idle
+ExploreUi::finish(progress, result)  (ignored unless progress is the running job's)
+   ──▶ Done(Arc<ExploreResult>) | Failed { origin, error } | Idle (cancelled); status bar line
+```
+
+- **Origin and freshness.** `Origin { generation, actions }` is the model
+  generation and the actions applied when the run started. Against the
+  current play state a result is `Current` (same generation and applied
+  actions), `Moved` (same generation; the origin is still a prefix of the
+  current line: the session stepped on or back) or `Stale` (the model
+  changed, or the line no longer passes through the origin). `Moved` and
+  `Stale` show a "Stale" line; only `Stale` disables preview and opening
+  (rows stay readable: they were built with the explored model).
+- **Rows** (`rows::outcome_rows`): `Outcome n · k paths`; outcome 1 lists
+  every instance (`instance_text`), the others only the instances that
+  differ from outcome 1 (`differing_instances`; "Instances as in outcome
+  1." when only timers or anomalies differ); timers left armed
+  (`timer_text`); anomalies (`Display`) coloured by `anomaly_severity` with
+  the findings' severity colours: step limit and ambiguous selectors are
+  errors, drops, missing targets and skipped inputs warnings, unused
+  decisions info. The header is `summary_text` (`2 outcomes, 7 states
+  (complete)` or `(incomplete: bound of N states hit)`), the run's origin
+  step and controls, and the exploration's notes.
+- **Preview** (click a row; again to stop): `branch::preview` applies the
+  witness from the origin to a copy of the play state and draws that
+  copy's overlay instead of the session's: markers where every instance
+  ends, armed timers, no pending items, and as `active` the states of the
+  instances that make the outcome different (outcome 1: those differing
+  from any other outcome; others: those differing from outcome 1). The
+  preview remembers the session's generation and timeline and is dropped
+  from the canvas as soon as either changes, so it never hides what the
+  session does.
+- **Open as branch** (`branch::open` → `PlayState::open_witness`): seek to
+  the origin's position (when the session moved), then apply the witness
+  with `PlaySession::apply`, which forks the timeline exactly as acting
+  after a seek does (the old line becomes a branch; nothing forks when the
+  line already continues with the witness). All or nothing, on a copy. The
+  last-action emphasis covers every step of the witness; the session lands
+  at the outcome and the timeline chips step back through the ordering.
+
 ## CLI
 
 ```text
@@ -219,11 +292,19 @@ precedence over 0/1).
 | `crates/cascade-sim/src/explore/key.rs` | Search keys, canonical queue linearization | crate-private `search_key`, `item_text` |
 | `crates/cascade-sim/src/explore/search.rs` | DFS with visited set and sleep sets; outcome grouping | crate-private `search` |
 | `crates/cascade-sim/src/explore/graph.rs` | Explored graph: BFS shortest paths, path counts | crate-private `Graph` |
+| `crates/cascade-sim/src/explore/progress.rs` | Progress and cancellation for watched runs | `ExploreProgress` |
 | `crates/cascade-sim/src/explore/report.rs` | Text helpers for hosts | `instance_text`, `timer_text`, `differing_instances` |
 | `crates/cascade-sim/src/engine/record.rs` | `Recorder::forget`/`kinds_since` (cheap core clones) | crate-private |
 | `crates/cascade-sim/tests/explore.rs` | Race fixture, handler order (#30), timers, choices, bounds, notes, skipped inputs, unordered, `explore_from`, saved witnesses | — |
 | `crates/cascade-sim/tests/explore_properties.rs` | Witness replay and reduction-equivalence over the corpus and random models | — |
 | `crates/cascade-sim/tests/fixtures/explore/shop-order.yaml` | A shop order from checkout to delivery | — |
+| `crates/cascade-sim/tests/explore_watched.rs` | Watched runs: progress equals `states`, cancellation | — |
+| `crates/cascade-app/src/play/explore/mod.rs` | Panel state, run lifecycle, origin/freshness, jobs | `ExploreUi`, `ExploreControls`, `ExploreJob`, `ExploreResult`, `ExploreRun`, `Origin`, `Freshness` |
+| `crates/cascade-app/src/play/explore/rows.rs` | Outcome rows and the summary | `OutcomeRow`, `outcome_rows`, `anomaly_severity`, `summary_text` |
+| `crates/cascade-app/src/play/explore/branch.rs` | Preview and open as branch | `preview`, `open`, `OpenError` |
+| `crates/cascade-app/src/play/explore/tests.rs` | The panel's logic on the race fixture, the checkout saga and a queued-choice model | — |
+| `crates/cascade-app/src/workspace/exploring.rs` | GPUI glue: background run, ticker, cancel, select, open | `ExploreTasks` |
+| `crates/cascade-app/src/panels/explore.rs` | The panel | `render_explore_panel` |
 | `crates/cascade-cli/src/commands/explore.rs` | `cascade explore` | `run`, `ExploreArgs` |
 | `crates/cascade-cli/tests/explore.rs` | CLI end to end | — |
 
@@ -241,3 +322,7 @@ precedence over 0/1).
   stopped the search.
 - The public behaviour of the simulator and play session is unchanged;
   exploration uses the same `exec` and only adds `Recorder::forget`.
+- The app never explores on its UI thread; a result is only applied to the
+  run that is current (restarting cancels the old job and ignores its
+  result), and opening an outcome changes the play session only when the
+  whole witness applies.

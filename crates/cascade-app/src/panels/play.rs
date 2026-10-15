@@ -1,6 +1,7 @@
 //! Play mode's panel on the right: session, instances, trigger palette,
 //! clock, queue (with the choice prompt and per-consumer delivery), last
-//! action, timeline and saving as a scenario.
+//! action, timeline and saving as a scenario. The queue's Explore button
+//! (`E`) opens the Explore panel next to it.
 
 use cascade_core::ElementRef;
 use gpui::{Context, div, prelude::*, px};
@@ -246,6 +247,10 @@ impl Workspace {
                     .child(
                         button("run", "Run until quiet  R", false, colors)
                             .on_click(cx.listener(|ws, _, _, cx| ws.play_run(cx))),
+                    )
+                    .child(
+                        button("explore", hint("Explore", Command::ToggleExplore), self.play.explore.open, colors)
+                            .on_click(cx.listener(|ws, _, _, cx| ws.toggle_explore(cx))),
                     ),
             )
             .children(prompt)

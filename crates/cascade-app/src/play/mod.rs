@@ -6,6 +6,7 @@
 
 pub mod choices;
 pub mod clock;
+pub mod explore;
 pub mod forms;
 pub mod overlay;
 pub mod queue;
@@ -66,6 +67,27 @@ impl PlayState {
                 Err(error)
             }
         }
+    }
+
+    /// Seek to `position` on the current line, then apply `actions` (an
+    /// exploration witness): acting there forks the timeline unless the
+    /// line already continues with them. The last-action emphasis covers
+    /// every step they appended. All or nothing: on error the state is
+    /// unchanged (and the error is not kept, the caller reports it).
+    pub fn open_witness(&mut self, model: &Model, position: usize, actions: &[PlayAction]) -> Result<(), SimError> {
+        let mut session = self.session.clone();
+        if session.timeline().position != position {
+            session.seek(model, position)?;
+        }
+        let before = session.trace().steps.len();
+        for action in actions {
+            session.apply(model, action.clone())?;
+        }
+        let after = session.trace().steps.len();
+        self.session = session;
+        self.last = Some(before..after);
+        self.error = None;
+        Ok(())
     }
 
     pub fn seek(&mut self, model: &Model, position: usize) -> Result<(), SimError> {

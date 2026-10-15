@@ -65,7 +65,7 @@ impl Workspace {
         // session was built from (never over a diff's merged model).
         let overlay = match (&self.play.state, self.mode, &diff_display) {
             (Some(state), AppMode::Play, None) if state.generation() == loaded.generation => {
-                Some(state.overlay(&loaded.model))
+                Some(self.play.explore.preview_for(state).cloned().unwrap_or_else(|| state.overlay(&loaded.model)))
             }
             _ => None,
         };

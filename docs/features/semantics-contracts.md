@@ -912,6 +912,28 @@ As landed in `cascade_sim::explore` (details in
 - CLI: `--no-reduction` and `--save-witness <dir>` added; incomplete (3)
   takes precedence over 0/1.
 
+### Explore panel (wave 3, `feat/explore-panel`)
+
+As landed in the app (details in
+[exploration.md](exploration.md#the-apps-explore-panel)):
+
+- Simulator addition for hosts: `ExploreProgress` (states visited,
+  cancel) and `explore_from_watched(session, model, options, &progress)`;
+  a cancelled run returns `SimError::ExploreCancelled { states }`.
+  `explore`/`explore_from` are unchanged.
+- The panel explores from the play session's position only (no scenario
+  inputs), with the default state bound; `E` toggles it in Play mode.
+- Results carry their origin (model generation + applied actions): they
+  are current at the origin, "moved" (stale, still openable: opening seeks
+  back to the origin first) while the origin is on the current line, and
+  stale (read only) after an edit or once the line leaves the origin.
+- "Open as branch" seeks to the origin and applies the witness with
+  `PlaySession::apply` (the timeline forks as it does for any action after
+  a seek); `PlayState::open_witness` does it all or nothing.
+- Anomaly severities in the panel: step limit and ambiguous selectors are
+  errors; drops, missing targets and skipped inputs warnings; unused
+  decisions info.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /

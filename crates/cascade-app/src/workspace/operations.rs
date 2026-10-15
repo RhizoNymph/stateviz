@@ -333,6 +333,7 @@ impl Workspace {
             HostEffect::PlayStep => self.play_step(None, cx),
             HostEffect::PlayRun => self.play_run(cx),
             HostEffect::PlayAdvance => self.play_advance(true, cx),
+            HostEffect::ToggleExplore => self.toggle_explore(cx),
         }
     }
 

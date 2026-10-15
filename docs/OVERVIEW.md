@@ -81,6 +81,10 @@ Overview:
     update the ViewState; the CLI writes the Scene with to_svg/to_png.
     Diff mode loads the old text via cascade_interop::read_at_rev and merges
     it with core::diff::merge_for_display before building scenes.
+    Play mode drives a cascade_sim::PlaySession and passes its PlayOverlay
+    to the scene; the Explore panel runs cascade_sim::explore_from_watched
+    on a copy of the session on the background executor and applies a
+    chosen outcome's witness back to the session as a timeline branch.
     Element identity crosses every boundary as ElementKey (stable) rather
     than typed ids (valid for one Model only).
 
@@ -181,9 +185,11 @@ Features Index:
       option and expiring timers at any time: DFS over simulator states with
       a visited set, canonical queue keys and sleep-set partial-order
       reduction; distinct outcomes (instances, timers left, anomalies) with
-      the shortest witness found, which replays in a PlaySession.
-    entry_points: [cascade_sim::explore, cascade_sim::explore_from, cascade_sim::replay_witness, cascade explore]
-    depends_on: [simulator, timers_and_subscriptions]
+      the shortest witness found, which replays in a PlaySession. The CLI
+      (`cascade explore`) and the app's Explore panel (watched, cancellable
+      runs; outcomes opened as timeline branches) host it.
+    entry_points: [cascade_sim::explore, cascade_sim::explore_from, cascade_sim::explore_from_watched, cascade_sim::replay_witness, cascade explore, cascade-app Explore panel (E)]
+    depends_on: [simulator, timers_and_subscriptions, build_and_play]
     doc: docs/features/exploration.md
   view_scenes:
     description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles); arrow mode (`pills=0`: the structure view draws each transition as one labelled state → state arrow through an invisible layout junction, wires attaching to the arrow with a dot) and play overlays (instance markers, armed timers, active and pending items). Subscriptions, timers, choices and `sets` are drawn in every view: pills/arrows say what triggers them (`capture`, `on Event` + `where`, `◷ 30s`), choice guards are italic, `Notify` (event → subscribed transition) and `Delay` (transition → timer it arms) edges, subscription links across lanes and as build-canvas wires with a subscribe handle on every event tag, the five new trace step kinds, and the matrix counting subscriptions as links.
@@ -217,7 +223,9 @@ Features Index:
       (instance markers, armed timer countdowns), a clock (T advances to the next timer), a choice
       prompt before steps and external fires that need decisions, and per-consumer delivery from
       the queue. Choice labels paint in italics; subscription races open as the as-queued trace
-      with a note.
+      with a note. The Explore panel (E, Play mode) explores every ordering from the session's
+      position off the UI thread, lists outcomes, previews one on the canvas and opens it as a
+      timeline branch.
     entry_points: [cascade-app, cascade-app --new, cascade new, cascade open, cascade_app::workspace::Workspace, cascade_app::settings, cascade_app::build::pick]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
@@ -232,8 +240,9 @@ Features Index:
       conditions with live type feedback, `sets:` and emit `with:` rows;
       drag-to-connect (from event tags' subscribe handles too) offers
       subscriptions; play shows the clock, armed timers (also on the
-      canvas), a choice prompt (steps and external fires) and per-consumer
-      delivery.
+      canvas), a choice prompt (steps and external fires), per-consumer
+      delivery and the Explore panel (outcomes of every ordering, opened as
+      branches).
     entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes, cascade_app::build::inspector::check, cascade_app::build::subscribe, cascade_app::play::choices]
     depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
     doc: docs/features/build-and-play.md
