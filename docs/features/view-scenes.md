@@ -23,6 +23,8 @@ app only paints and hit-tests it; SVG and PNG export draw the same scene.
 - Arrow mode: the structure view with transitions drawn as labelled
   state → state arrows instead of pills (`ViewState::transition_pills`
   off), in view and edit mode.
+- Machine subscriptions, timers, choices and `sets` in every view (see
+  "Subscriptions, timers, choices and `sets`" below).
 
 ## Non-scope
 
@@ -116,11 +118,22 @@ anything.
    and targets `HitTarget::MachineStub`.
 4. Edges: trigger (solid neutral, `[guard]` of the target), emit (dashed
    gray, from the East port), subscribe (solid gray), fire (dashed in the
-   target machine's hue, `[when] [guard]`, into the West port).
+   target machine's hue, `[when] [guard]`, into the West port), notify
+   (`EdgeKind::Notify`, event → subscribed pill: solid in the subscriber's
+   hue, `[guard]`, into the West port, target the subscription trigger),
+   delay (`EdgeKind::Delay`, East port of a transition entering a state →
+   West port of the timer transition it arms: short dashes (2/3) in the
+   machine's hue, labelled `◷ 30s` plus `[guard]`, target the timer
+   trigger). Labels carrying a choice are italic. A `Delay` between two
+   transitions of a hidden machine stays inside its stub (no stub
+   self-link).
 5. Hide mode, layout, decoration. An edge the layout reports `reversed` is
    drawn red with `back_edge = true` only when it lies on a causal cycle
    (both ends in one strongly connected component), so stub links and
    reversals made for other reasons are never mistaken for cascade cycles.
+   Cycles through `Notify` and `Delay` edges count too (a retry timer that
+   re-arms itself is a loop); a hand-drawn self-loop on a cycle (a timer
+   transition whose target re-arms it) is always its cycle's back edge.
 
 ### Causal lanes (`views/causal/lanes.rs`)
 
@@ -165,7 +178,8 @@ report):
   both examples, in hide mode and with hidden machines). Back edges of
   genuine cascade cycles stay red and are the only edges running left.
 - No side corridors, no edge through a node, no label overlaps in either
-  example.
+  example. Timer cycles are back edges like cascade cycles (the saga
+  fixture's retry timer is a red self-loop and `leftward_edges` stays 0).
 - Emphasis never relayouts; an edit in one machine leaves the other lanes'
   nodes in place; toggling lanes off returns exactly the flat layout (the
   cache seeds a layout only from one made with the same options, so the
@@ -186,7 +200,9 @@ same point in the other.
   layers with a pill per transition between them (state → pill West,
   pill East → state; the first arrow has no head and carries `[guard]`, the
   second has the arrowhead). Pills are labelled `from → to` (full paths)
-  over the trigger.
+  over what triggers them (`capture`, `on PaymentCaptured` with a `where
+  orderId == event.orderId` line under it, `◷ 30m`); the second arrow
+  carries `sets paidBy` when the transition sets fields.
 - **Nesting (design choice):** the layout has one level of groups, so each
   expanded compound state gets a band of its own: a further group placed
   right after its machine's lane group, drawn as a nested `Lane` (inset,
@@ -202,7 +218,11 @@ same point in the other.
   states · m transitions") in a lane with `collapsed = true`.
 - **Cross-lane links (design choice):** direct pill-to-pill edges, one per
   pair of endpoints, dashed in the target machine's hue, labelled
-  "Event › Controller" (merged links list each once). Pills in different
+  "Event › Controller" (merged links list each once). Subscription links
+  (emitting pill → subscribing pill through a machine subscription) are
+  `EdgeKind::Notify` edges, solid in the subscriber's hue, labelled with
+  the event and targeting the subscription trigger; fire and notify links
+  between the same pills stay separate. Timers get no link. Pills in different
   groups connect South → North (downward) or North → South (upward); pills
   in the same group East → West. This keeps lanes free of event and
   controller nodes and lets the layout route links between lanes. Events
@@ -225,7 +245,8 @@ are its nodes.
   node (`Painter::junction`) with the pill's key, group and ports (the
   edit-mode South-out and North-out ports included). The two edges are
   the pill's: state → junction West, carrying the label `trigger` or
-  `trigger [guard]` (so the layout reserves its room and keeps it clear
+  `trigger [guard]` (more fully `on Event where … [guard] / sets a, b`,
+  `◷ 30s [guard]`; italic when the guard is a choice) (so the layout reserves its room and keeps it clear
   of other labels), and junction East → state with the arrowhead. Links
   between two junctions in the same band leave and enter South (a pill's
   East → West would run along the arrow itself). Everything downstream
@@ -273,13 +294,44 @@ rule-colored outline). Each wiring node goes into the gutter next to what
 it wires, in a row ordered by the pills it wires; pill ends face their
 gutter. Edges are the real emit, subscribe, fire and trigger edges; fire
 labels are short (`by orderId`, `new with orderId`, `[when]`) and said
-once. Every state, pill, controller and source gets a connect handle.
+once. Machine subscriptions are `EdgeKind::Notify` wires from the event
+tag to the subscribing pill (ports like a fire's: the gutter end North or
+South, the pill end facing the gutter; solid in the subscriber's hue,
+unlabelled, target the subscription trigger); placement weighs each
+subscribing machine like a handling controller (one stand-in wire to the
+nearest pill its subscription enters), so an event sits between its
+emitters and subscribers. Timers get no wire. Every state, pill,
+controller and source gets a connect handle; every event tag gets a
+subscribe handle (below).
 Details, including the placement rules, column memory, empty-machine hint
 and empty-definition note, are in build-and-play.md ("Build and play
 drawing") and readability.md ("Placement"). The layout cache is per view,
 so switching modes feeds one mode's layout to the other as the previous
 layout (lanes open up for the gutters, and states keep their place within
 their lane) and switching back hits the cache.
+
+#### Subscribe handles (the scene side of "subscribe this transition to that event")
+
+- **Hit target:** `HitTarget::SubscribeHandle { event: String }`, the
+  event's name (the app's drag source key is `ElementKey::Event { event }`).
+  A new variant rather than `ConnectHandle { element: Event }`: connect
+  handles keep their existing set (states, transitions, controllers,
+  sources), which tests pin down.
+- **Where:** in `SceneMode::Edit` (structure view, pills and arrow mode),
+  one `Overlay::Rect` per event tag, a circle of radius
+  `HANDLE_RADIUS` (4.5) centered on the tag's point (east edge, vertical
+  center), drawn like a connect handle (background fill, muted outline,
+  the tag's opacity). View mode has none.
+- **Hit testing:** `HitTarget::is_handle()` covers both kinds;
+  `Scene::hit_test` and `Scene::hit_test_arrows` return a subscribe handle
+  before nodes, exactly like connect handles.
+- **Drop targets:** a transition: its pill node
+  (`HitTarget::Element(ElementKey::Transition)`), or in arrow mode its arrow
+  (`hit_test_arrows` returns `HitTarget::ConnectHandle { element:
+  transition }`). The app turns the drop into `on: { event }` on that
+  transition (the scene only offers the affordance).
+- **Export:** unlike connect handles, subscribe handles are written to SVG
+  and PNG (a small circle on each tag's point in build-canvas exports).
 
 ### Play overlay (`views/overlays/`)
 
@@ -288,7 +340,12 @@ marker chips (on states in the structure view; on pills leaving the
 current state in the causal view, hollow on the pills entering a dead
 end), active items (selected width plus a translucent glow ring in their
 own color), pending items (dotted outline, queue-position chips with the
-head `1` filled). It never enters the layout input, so it never
+head `1` filled), armed timers (`PlayOverlay::timers`, `PlayTimer {
+instance, trigger, remaining }`: a hollow chip `◷ 25s`, or `◷ due` at
+zero, right after the instance's marker chip, outlined in its hue: every
+timer of the instance on its state in the structure view, only the pill's
+own timer on a timer pill in the causal view; an instance without a marker
+shows none). It never enters the layout input, so it never
 relayouts. See build-and-play.md for the rules.
 
 ### Trace view (`views/trace.rs`)
@@ -311,7 +368,11 @@ creating row. Rows run down in step order:
 | `Spawn` | "new s2" message to the created header |
 | `Dropped` | red-outlined "✕ trigger dropped in state" note |
 | `NoTarget` / `Ambiguous` | dashed neutral note on the controller |
-| `Notify` / `Wait` / `TimerExpired` / `Choice` / `SetFields` | nothing yet (an empty row; wave 2 draws them) |
+| `Notify` | delivery message from the emitting instance (via the step's cause, else from just left of the target) to the subscribing instance, event name, solid in the subscriber's hue; selects with the event and the subscription trigger |
+| `Wait` | full-width dashed divider across the block, no arrowhead, `◷ +30s · now 1m` |
+| `TimerExpired` | self-message loop right of the instance's lifeline, `◷ 30s` beside it, short dashes in its hue; selects with the timer trigger |
+| `Choice` | rounded note on the deciding lifeline: `◇ chosen` (italic, ` (default)` when defaulted) over a muted `of a \| b` |
+| `SetFields` | dashed note on the instance with its pale fill, `set f = v, g = w` |
 
 Final states sit at the bottom of each instance's lifeline. Lifelines are
 dashed `Overlay::Line`s under everything. Steps are `HitTarget::TraceStep`,
@@ -320,10 +381,13 @@ empty with the note "Pick a scenario to trace.".
 
 ### Matrix view (`views/matrix.rs`)
 
-Cells count derived links `T1 → event → handler → T2`
-(`links::causal_links`, identical to `transition_successors` and tested
-against it) from a transition of the row machine to one of the column
-machine. Rows and columns share one order from `seriate`: coupling is
+Cells count derived links from a transition of the row machine to one of
+the column machine: rule links `T1 → event → handler → T2`
+(`links::causal_links`) and subscription links `T1 → event → T2`
+(`links::subscription_links`); together they are exactly
+`transition_successors` (tested). A subscription is one event → machine
+link like a rule; timers are not links (they stay within a machine and
+are not cascades). Rows and columns share one order from `seriate`: coupling is
 symmetrised (`w[i][j] = c[i][j] + c[j][i]`, diagonal ignored); start from
 the most coupled machine, then repeatedly take, among machines coupled to
 those placed, the one most coupled to the last placed (ties: to all
@@ -413,6 +477,13 @@ revision or an invalid version exits with code 2.
 | Subscribe | Solid arrow | Gray |
 | Fire | Dashed arrow | Target machine's hue |
 | Trigger (source → transition) | Solid arrow | External neutral |
+| Notify (event → subscribed transition; emitter → subscriber across lanes) | Solid arrow | Subscribing machine's hue |
+| Delay (transition → timer it arms; causal view) | Short-dashed arrow (2/3), `◷ 30s` | Machine hue |
+| Trigger text on a pill / arrow | `capture` · `on Event` (+ `where …` line) · `◷ 30s` | On-hue text (pill), default (arrow) |
+| Choice guard or condition | `[?card declined]`, `[else]` | Italic (`FontStyle::Italic`), whole label |
+| `sets` | `sets paidBy` on the pill's way out (arrow mode: `/ sets paidBy`) | Default text |
+| Subscribe handle (edit mode) | Circle on an event tag's point | Background fill, muted outline; exported |
+| Armed timer (play) | Hollow chip `◷ 25s` after the instance marker | Hue outline |
 | Stub link | Dotted arrow | The original link's color |
 | Guard | `[guard]` label on the arrow into the transition | Default text color |
 | Cascade-cycle back edge | `back_edge = true` | `theme.finding` red |
@@ -443,7 +514,8 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/decorate.rs` | Emphasis, badges, diff, bounds | `Decor`, `FindingIndex`, `scene_bounds` (crate) |
 | `crates/cascade-scene/src/views/style.rs` | Node looks and link strokes per element kind | `Painter` (crate) |
 | `crates/cascade-scene/src/views/filters.rs` | Hidden machines, machine pair, hide mode | crate-private |
-| `crates/cascade-scene/src/views/links.rs` | Derived transition links, cycle edges | `causal_links`, `cycle_edges` (crate) |
+| `crates/cascade-scene/src/views/links.rs` | Derived transition links, cycle edges | `causal_links`, `subscription_links`, `cycle_edges` (crate) |
+| `crates/cascade-scene/src/views/labels.rs` | Words for triggers by kind, filters, guards (choice style), `sets`, clocks | `trigger_line`, `filter_line`, `guard_label`, `sets_label`, `clock`, `style_for` (crate) |
 | `crates/cascade-scene/src/views/causal/mod.rs` | Causal flow view | crate-private |
 | `crates/cascade-scene/src/views/causal/lanes.rs` | Causal lanes: lane rules, lane groups and drawing | `LaneRules`, `LaneOf`, `LaneGroups` (crate) |
 | `crates/cascade-scene/src/views/structure/mod.rs` | Structure view orchestration and lanes | `machine_lane` (crate) |
@@ -457,7 +529,7 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-scene/src/views/structure/selector.rs` | Fire label policy (short selectors, said once) | crate-private |
 | `crates/cascade-scene/src/views/structure/edit.rs` | Gutter lanes, empty hints | crate-private |
 | `crates/cascade-scene/src/views/overlays/*.rs` | Connect handles, markers, active/pending, chips | `PlayDecor`, `Placement`, `add_handles` (crate) |
-| `crates/cascade-scene/src/play.rs` | Build/play inputs (contract) | `SceneMode`, `PlayOverlay`, `PlayMarker` |
+| `crates/cascade-scene/src/play.rs` | Build/play inputs (contract) | `SceneMode`, `PlayOverlay`, `PlayMarker`, `PlayTimer` |
 | `crates/cascade-scene/src/views/trace.rs` | Trace view | crate-private |
 | `crates/cascade-scene/src/views/matrix.rs` | Matrix view and seriation | `seriate` (crate) |
 | `crates/cascade-scene/src/export/mod.rs` | Export entry points and errors | `to_svg`, `to_png`, `ExportError` |
@@ -469,6 +541,8 @@ revision or an invalid version exits with code 2.
 | `crates/cascade-cli/tests/render.rs` | CLI render tests | — |
 | `crates/cascade-cli/tests/render_lanes.rs` | `render --state 'cascade://causal?lanes=1'` | — |
 | `crates/cascade-scene/tests/arrow_mode.rs` | Arrow mode: links, drawing, wiring dots, handles, emphasis, toggling, badges, play, filters, readability against pills | — |
+| `crates/cascade-scene/tests/fixtures/saga.yaml`, `tests/semantics/mod.rs` | The checkout saga (subscriptions, timers, a retry timer, choices, `sets`) and a hand-made trace of it | — |
+| `crates/cascade-scene/tests/semantics_*.rs` | Structure, causal + matrix, edit (wires, subscribe handles), trace, play timers; `semantics_golden.rs` fingerprints the saga in every view (`tests/golden/semantics.txt`) | — |
 | `crates/cascade-cli/tests/render_pills.rs` | `render --state 'cascade://structure?pills=0'` (view and `--edit`) | — |
 
 ## Invariants and constraints
@@ -501,13 +575,23 @@ revision or an invalid version exits with code 2.
 - Play overlays never relayout, and `SceneMode::View` scenes are
   unchanged by build and play drawing (fingerprinted in
   `tests/view_mode_golden.rs`; re-blessed only for intended view-mode
-  changes, last for the self-link label placement).
-- `Scene::hit_test` checks connect handles before nodes; nothing else
-  in its order changed. `Scene::hit_test_arrows` (arrow mode's build
+  changes, last for `Label::style` and italic choice guards: with the
+  italics stripped, every example's SVG is byte-identical to before).
+- Labels are single runs: a label carrying a choice anywhere is italic as a
+  whole. Pills, lanes and node text are never italic (the trace's choice
+  marker excepted).
+- `Scene::hit_test` checks connect and subscribe handles
+  (`HitTarget::is_handle`) before nodes; nothing else in its order
+  changed. `Scene::hit_test_arrows` (arrow mode's build
   canvas) adds arrows as connect handles after handles and nodes.
 - Arrow mode leaves no node standing for a transition in the structure
   scene, and every drawn transition is exactly one `EdgeKind::Transition`
   edge targeting it (two halves only when hide mode cut one end).
-- `Scene` and its item types are unchanged; additions are
+- `Scene` additions for subscriptions and timers: `Label::style`
+  (`FontStyle`), `EdgeKind::{Notify, Delay}`, `HitTarget::SubscribeHandle`,
+  `HitTarget::is_handle`, `CLOCK_GLYPH` (`◷`, chosen over `⏱` because the
+  monospace faces the backends use carry it at one advance); play adds
+  `PlayOverlay::timers` / `PlayTimer`.
+- Otherwise `Scene` and its item types are unchanged; additions are
   `SceneBuilder::layouts_run`, `cascade_scene::emphasis`,
   `machine_colors`, and a reworked `ExportError` (no `NotImplemented`).

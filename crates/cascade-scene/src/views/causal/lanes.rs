@@ -22,7 +22,7 @@ use cascade_core::{CausalNode, ElementRef, EventId, MachineId, Model};
 use cascade_layout::{Insets, Point, Rect};
 
 use crate::emphasis::Interaction;
-use crate::scene::{FontWeight, HitTarget, Label, Lane, Scene, Stroke};
+use crate::scene::{FontStyle, FontWeight, HitTarget, Label, Lane, Scene, Stroke};
 use crate::views::SceneInput;
 use crate::views::draft::{DraftGraph, DraftGroup};
 use crate::views::structure::machine_lane;
@@ -152,6 +152,7 @@ fn unattached_lane(painter: &Painter<'_>, rect: Rect) -> Lane {
             font_size: theme.font_size,
             color: theme.text_muted,
             weight: FontWeight::Bold,
+            style: FontStyle::Normal,
         },
         opacity: 1.0,
         collapsed: false,
