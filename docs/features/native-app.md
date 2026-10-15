@@ -139,7 +139,9 @@ render ──▶ rebuild_scene (once per frame at most):
 - Labels are shaped with the monospace family and a forced per-glyph
   advance of `0.6 × font size`, so text occupies exactly the width
   `MonoMeasure` gave the builder. Screen font sizes are rounded to 0.25 px so
-  zooming reuses GPUI's line cache; labels under 3.5 px are skipped.
+  zooming reuses GPUI's line cache; labels under 3.5 px are skipped. A
+  label's `weight` and `style` carry over (`FontStyle::Italic`, used for
+  choice labels like `?approved`, paints with the family's italic face).
 - Hover thickens the outline (weight, never hue).
 - The viewport lives in `ViewState::viewport`. `None` means "fit": each
   frame fits the scene to the canvas. Pan/zoom store an explicit viewport;
