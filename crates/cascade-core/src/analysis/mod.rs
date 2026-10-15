@@ -1,6 +1,7 @@
 //! Static analysis: design bugs in a well-formed model.
 //!
-//! Seven checks from the spec plus one informational note. Each finding
+//! Seven checks from the spec plus two informational notes (state-dependent
+//! fires and uncovered guards). Each finding
 //! carries a typed [`FindingDetail`] naming the elements involved, so views
 //! can badge and focus them without parsing messages.
 //!
@@ -9,6 +10,7 @@
 //! its own submodule and returns its findings unsorted; `analyze` sorts
 //! them once. See `docs/features/static-analysis.md` for every heuristic.
 
+mod conditions;
 mod cycles;
 mod describe;
 mod events;
@@ -20,6 +22,7 @@ mod scc;
 mod state_dependent;
 #[cfg(test)]
 mod tests;
+mod uncovered_guard;
 
 use std::cmp::Reverse;
 use std::fmt;
@@ -77,10 +80,13 @@ pub enum Check {
     /// A fired trigger is accepted only from some states of the target; the
     /// fire is dropped in the others.
     StateDependentFire,
+    /// A state's transitions on a trigger are all guarded by expressions,
+    /// with no `else`, and some input makes every guard false.
+    UncoveredGuard,
 }
 
 impl Check {
-    pub const ALL: [Check; 8] = [
+    pub const ALL: [Check; 9] = [
         Check::InvalidFire,
         Check::Nondeterminism,
         Check::CascadeCycle,
@@ -89,6 +95,7 @@ impl Check {
         Check::UnreachableState,
         Check::RaceCandidate,
         Check::StateDependentFire,
+        Check::UncoveredGuard,
     ];
 
     /// Stable kebab-case code, used in CLI output and JSON.
@@ -102,6 +109,7 @@ impl Check {
             Check::UnreachableState => "unreachable-state",
             Check::RaceCandidate => "race-candidate",
             Check::StateDependentFire => "state-dependent-fire",
+            Check::UncoveredGuard => "uncovered-guard",
         }
     }
 
@@ -111,7 +119,7 @@ impl Check {
             Check::CascadeCycle | Check::UnhandledEvent | Check::OrphanController | Check::UnreachableState => {
                 Severity::Warning
             }
-            Check::RaceCandidate | Check::StateDependentFire => Severity::Info,
+            Check::RaceCandidate | Check::StateDependentFire | Check::UncoveredGuard => Severity::Info,
         }
     }
 }
@@ -129,6 +137,24 @@ impl fmt::Display for Check {
 pub struct CycleStep {
     pub transition: TransitionId,
     pub rule: Option<RuleId>,
+}
+
+/// One side of a race: a controller's fire, or a machine's subscription
+/// to an event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RaceParty {
+    Rule(RuleId),
+    /// A subscription trigger: delivering its event to the instance.
+    Subscription(TriggerId),
+}
+
+impl RaceParty {
+    pub const fn element(self) -> ElementRef {
+        match self {
+            RaceParty::Rule(rule) => ElementRef::Rule(rule),
+            RaceParty::Subscription(trigger) => ElementRef::Trigger(trigger),
+        }
+    }
 }
 
 /// The elements a finding is about. Which variant appears determines the
@@ -175,11 +201,32 @@ pub enum FindingDetail {
         first: RuleId,
         second: RuleId,
     },
+    /// A race in which at least one side is a subscription (two rules give
+    /// [`FindingDetail::RaceCandidate`]). Reported under
+    /// [`Check::RaceCandidate`]; `first < second`.
+    SubscriptionRace {
+        /// The event whose cascade reaches both sides.
+        origin: EventId,
+        /// The machine both sides reach.
+        machine: MachineId,
+        first: RaceParty,
+        second: RaceParty,
+    },
     StateDependentFire {
         rule: RuleId,
         trigger: TriggerId,
         /// States of the target machine where the fire would be dropped.
         dropped_in: Vec<StateId>,
+    },
+    UncoveredGuard {
+        state: StateId,
+        trigger: TriggerId,
+        /// Every transition leaving `state` on `trigger` (all expression
+        /// guarded).
+        transitions: Vec<TransitionId>,
+        /// Readable inputs for which no guard holds, e.g.
+        /// `event.method = wire`.
+        gaps: Vec<String>,
     },
 }
 
@@ -202,8 +249,9 @@ impl FindingDetail {
             FindingDetail::UnhandledEvent { .. } => Check::UnhandledEvent,
             FindingDetail::OrphanController { .. } => Check::OrphanController,
             FindingDetail::UnreachableState { .. } => Check::UnreachableState,
-            FindingDetail::RaceCandidate { .. } => Check::RaceCandidate,
+            FindingDetail::RaceCandidate { .. } | FindingDetail::SubscriptionRace { .. } => Check::RaceCandidate,
             FindingDetail::StateDependentFire { .. } => Check::StateDependentFire,
+            FindingDetail::UncoveredGuard { .. } => Check::UncoveredGuard,
         }
     }
 
@@ -214,9 +262,10 @@ impl FindingDetail {
             | FindingDetail::RaceCandidate { first: rule, .. }
             | FindingDetail::StateDependentFire { rule, .. } => ElementRef::Rule(*rule),
             FindingDetail::DeadExternalTrigger { source, .. } => ElementRef::External(*source),
-            FindingDetail::Nondeterminism { state, .. } | FindingDetail::UnreachableState { state } => {
-                ElementRef::State(*state)
-            }
+            FindingDetail::SubscriptionRace { first, .. } => first.element(),
+            FindingDetail::Nondeterminism { state, .. }
+            | FindingDetail::UnreachableState { state }
+            | FindingDetail::UncoveredGuard { state, .. } => ElementRef::State(*state),
             FindingDetail::CascadeCycle { first, .. } => ElementRef::Transition(first.transition),
             FindingDetail::UnhandledEvent { event } => ElementRef::Event(*event),
             FindingDetail::OrphanController { handler } => ElementRef::Handler(*handler),
@@ -232,7 +281,8 @@ impl FindingDetail {
             FindingDetail::DeadExternalTrigger { source, trigger } => {
                 vec![ElementRef::External(*source), ElementRef::Trigger(*trigger)]
             }
-            FindingDetail::Nondeterminism { state, transitions, .. } => std::iter::once(ElementRef::State(*state))
+            FindingDetail::Nondeterminism { state, transitions, .. }
+            | FindingDetail::UncoveredGuard { state, transitions, .. } => std::iter::once(ElementRef::State(*state))
                 .chain(transitions.iter().map(|&t| ElementRef::Transition(t)))
                 .collect(),
             FindingDetail::CascadeCycle { first, rest } => std::iter::once(first)
@@ -247,6 +297,7 @@ impl FindingDetail {
             FindingDetail::RaceCandidate { first, second, .. } => {
                 vec![ElementRef::Rule(*first), ElementRef::Rule(*second)]
             }
+            FindingDetail::SubscriptionRace { first, second, .. } => vec![first.element(), second.element()],
             FindingDetail::StateDependentFire { rule, dropped_in, .. } => std::iter::once(ElementRef::Rule(*rule))
                 .chain(dropped_in.iter().map(|&s| ElementRef::State(s)))
                 .collect(),
@@ -288,6 +339,7 @@ pub fn analyze(model: &Model, graph: &CausalGraph) -> Vec<Finding> {
     findings.extend(reachability::check(model));
     findings.extend(races::check(model, graph));
     findings.extend(state_dependent::check(model));
+    findings.extend(uncovered_guard::check(model));
     sort_findings(model, &mut findings);
     findings
 }
