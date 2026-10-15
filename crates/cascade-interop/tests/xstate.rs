@@ -291,7 +291,27 @@ fn guarded_alternatives_and_guard_forms() {
     assert_eq!(guard_of(&model, "transition:m:a->b@GO").as_deref(), Some("?isAdmin"));
     assert_eq!(guard_of(&model, "transition:m:a->c@GO").as_deref(), Some("?hasRole"));
     assert_eq!(guard_of(&model, "transition:m:a->d@GO").as_deref(), Some("?legacyGuard"));
-    assert_eq!(guard_of(&model, "transition:m:a->e@GO"), None);
+    assert_eq!(guard_of(&model, "transition:m:a->e@GO").as_deref(), Some("else"), "the unguarded fallback");
+}
+
+#[test]
+fn an_unguarded_alternative_first_stays_unguarded() {
+    let json = r#"{ "id": "m", "states": { "a": { "on": { "GO": [ { "target": "b" } ] } }, "b": {} } }"#;
+    assert_eq!(guard_of(&model(json), "transition:m:a->b@GO"), None);
+}
+
+#[test]
+fn the_fetch_example_imports_without_nondeterminism() {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/xstate/fetch.json"))
+        .expect("example");
+    let model = model(&text);
+    let graph = cascade_core::CausalGraph::build(&model);
+    let errors: Vec<_> = cascade_core::analyze(&model, &graph)
+        .into_iter()
+        .filter(|f| f.severity == cascade_core::Severity::Error)
+        .map(|f| f.message)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
 }
 
 #[test]

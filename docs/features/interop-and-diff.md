@@ -155,6 +155,7 @@ A machine is named by its `id`, else its key, else `Machine`.
 | root-level `on` | one transition whose `from` lists every top-level normal state |
 | transition to the machine itself | its initial state (warning) |
 | `guard`/`cond`: `"name"`, `{ type, params }`, `and`/`or`/`not` | a `?choice` guard: `?name`, `?type` (parameters dropped, so the label reads like the guard's name), combinators `?(a) && (!(b))`; text that is already a Cascade expression reading `event.x`/`self.x` (or `else`, `?label`) is kept as such |
+| an unguarded alternative after guarded ones (`[{ target, guard }, { target }]`) | `else`: XState takes the first alternative whose guard holds, so the unguarded one is their fallback |
 | `after: { 1000: … }` | a Cascade timer `after: 1s` (no source fires it) |
 | `after: { NAMED: … }`, `after: { 0: … }` | trigger `after_NAMED` / `after_0ms`, fired by `Clock` (the delay is only known at run time) |
 | `assign` in transition `actions` with `assignment: { f: "event.x" }` (or `"({ event }) => event.x"`, also under `params`) | `sets: { f: event.x }` |

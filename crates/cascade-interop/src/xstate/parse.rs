@@ -309,12 +309,22 @@ impl Parser<'_> {
                 Ok(())
             }
             Json::Array(items) => {
+                let mut guarded_before = false;
                 for (i, item) in items.iter().enumerate() {
                     let at = format!("{location}[{i}]");
                     if matches!(item, Json::Array(_) | Json::Null) {
                         return Err(invalid(&at, "expected a target string or a transition object"));
                     }
                     self.transition(source, trigger.clone(), item, &at)?;
+                    // XState takes the first alternative whose guard holds, so
+                    // an unguarded one after guarded ones is their fallback.
+                    if let Some(edge) = self.edges.last_mut() {
+                        if edge.guard.is_some() {
+                            guarded_before = true;
+                        } else if guarded_before {
+                            edge.guard = Some("else".to_owned());
+                        }
+                    }
                 }
                 Ok(())
             }
