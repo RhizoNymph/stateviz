@@ -270,9 +270,9 @@ impl Drafter<'_> {
             // its junction stands where the pill would be.
             let (look, label_in) = if self.pills {
                 let label = format!("{} → {}", model.state(tr.from).path, model.state(tr.to).path);
-                (painter.pill(label, trigger, style), bracketed(tr.guard.as_deref()))
+                (painter.pill(label, trigger, style), bracketed(tr.guard.as_ref().map(ToString::to_string).as_deref()))
             } else {
-                (painter.junction(), Some(arrow_label(&trigger, tr.guard.as_deref())))
+                (painter.junction(), Some(arrow_label(&trigger, tr.guard.as_ref().map(ToString::to_string).as_deref())))
             };
             let pill = draft.add_node(DraftNode {
                 key: key.to_string(),

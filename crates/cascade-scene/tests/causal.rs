@@ -159,25 +159,25 @@ machines:
   Order:
     states: [pending, paid]
     transitions:
-      - { from: pending, to: paid, on: pay, guard: "amount > 0", emits: [Paid] }
+      - { from: pending, to: paid, on: pay, guard: "event.amount > 0", emits: [Paid] }
   Ship:
     states: [idle, busy]
     transitions:
-      - { from: idle, to: busy, on: start, guard: "stock" }
+      - { from: idle, to: busy, on: start, guard: "?stock" }
 controllers:
   F:
     on:
-      Paid: [{ fire: Ship.start, when: "not gift" }]
+      Paid: [{ fire: Ship.start, when: "?not gift" }]
 external:
   Customer: [Order.pay]
 "#,
     );
     let scene = fx.scene(&ViewState::default());
     let trigger = edges_of(&scene, EdgeKind::Trigger)[0];
-    assert_eq!(trigger.label.as_ref().map(|l| l.text.as_str()), Some("[amount > 0]"));
+    assert_eq!(trigger.label.as_ref().map(|l| l.text.as_str()), Some("[event.amount > 0]"));
     assert_eq!(trigger.label.as_ref().map(|l| l.color), Some(fx.theme.text), "default text color");
     let fire = edges_of(&scene, EdgeKind::Fire)[0];
-    assert_eq!(fire.label.as_ref().map(|l| l.text.as_str()), Some("[not gift] [stock]"));
+    assert_eq!(fire.label.as_ref().map(|l| l.text.as_str()), Some("[?not gift] [?stock]"));
     assert!(edges_of(&scene, EdgeKind::Emit)[0].label.is_none());
 }
 

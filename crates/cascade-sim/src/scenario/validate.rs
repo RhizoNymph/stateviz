@@ -195,11 +195,11 @@ fn resolve_instance(model: &Model, machine: MachineId, decl: &InstanceDecl) -> R
     let m = model.machine(machine);
     if !m.fields.is_empty() {
         for (field, entry) in decl.fields.iter() {
-            if !m.fields.iter().any(|f| f == field) {
+            if !m.fields.iter().any(|f| f.name == field) {
                 let kind = ScenarioErrorKind::UnknownField {
                     machine: m.name.clone(),
                     field: field.to_owned(),
-                    declared: m.fields.clone(),
+                    declared: m.fields.iter().map(|f| f.name.clone()).collect(),
                 };
                 problems.push((kind, entry.key_span));
             }

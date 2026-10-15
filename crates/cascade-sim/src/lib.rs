@@ -16,9 +16,12 @@
 //!   interleave with a running cascade. A step's trigger is delivered to its
 //!   target at once; the events that transition emits join the queue.
 //! - **Delivering a trigger** takes the first enabled transition in
-//!   definition order ([`Model::enabled_transitions`]). Guards and `when:`
-//!   conditions are free text and are not evaluated. No enabled transition
-//!   means the trigger is dropped. Compound targets are entered by default
+//!   definition order ([`Model::enabled_transitions`]) whose guard does not
+//!   rule it out: an expression guard must evaluate true; `?choice` and
+//!   `else` guards take the default (they stay candidates). A rule whose
+//!   `when:` expression is false does not fire; a `?choice` condition holds.
+//!   No enabled transition means the trigger is dropped. Subscription and
+//!   timer triggers never fire yet. Compound targets are entered by default
 //!   entry; history targets restore the last active leaf under their parent
 //!   (deep) or its active child by default entry (shallow), and enter the
 //!   parent by default when it was never active.
@@ -26,8 +29,9 @@
 //!   overlaid with the payload that came with the trigger: the step's
 //!   `payload:` for a scenario step, the handled event's payload for a
 //!   controller fire.
-//! - **Selectors.** `field == event.x` compares the instance's field with the
-//!   payload's `x`, a literal compares with the literal; a missing side never
+//! - **Selectors.** Filters are expressions (`field == event.x` compares the
+//!   instance's field with the payload's `x`, a literal compares with the
+//!   literal, `event.x == lit` tests the event); a missing side never
 //!   matches. A one-instance selector must match exactly one instance
 //!   ([`TraceStepKind::NoTarget`] / [`TraceStepKind::Ambiguous`] otherwise),
 //!   `all` fans out in instance order, `new` spawns an instance named

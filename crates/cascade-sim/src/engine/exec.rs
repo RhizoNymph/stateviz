@@ -147,11 +147,11 @@ fn resolve_instance(
             let context = "instance fields".to_owned();
             return Err(problem(ScenarioErrorKind::InvalidName { context, name: field.clone() }));
         }
-        if !m.fields.is_empty() && !m.fields.contains(field) {
+        if !m.fields.is_empty() && !m.fields.iter().any(|f| f.name == *field) {
             return Err(problem(ScenarioErrorKind::UnknownField {
                 machine: m.name.clone(),
                 field: field.clone(),
-                declared: m.fields.clone(),
+                declared: m.fields.iter().map(|f| f.name.clone()).collect(),
             }));
         }
     }

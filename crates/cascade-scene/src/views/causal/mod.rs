@@ -306,7 +306,7 @@ fn link_style(
 ) -> (EdgeKind, Stroke, HitTarget, Vec<ElementRef>, Option<String>) {
     let model = input.model;
     let guard_of = |node: NodeIx| match input.graph.node(node) {
-        CausalNode::Transition(t) => model.transition(t).guard.clone(),
+        CausalNode::Transition(t) => model.transition(t).guard.as_ref().map(ToString::to_string),
         _ => None,
     };
     match kind {
@@ -324,12 +324,39 @@ fn link_style(
         CausalEdgeKind::Subscribe => {
             (EdgeKind::Subscribe, painter.subscribe_stroke(), HitTarget::None, Vec::new(), None)
         }
+        // Subscriptions and timers get their own look in a later change;
+        // until then they draw like subscribe and trigger links.
+        CausalEdgeKind::Notify { trigger } => {
+            let el = ElementRef::Trigger(trigger);
+            (
+                EdgeKind::Subscribe,
+                painter.subscribe_stroke(),
+                HitTarget::Element(model.key_of(el)),
+                vec![el],
+                bracketed(guard_of(to).as_deref()),
+            )
+        }
+        CausalEdgeKind::Delay { trigger } => {
+            let el = ElementRef::Trigger(trigger);
+            (
+                EdgeKind::Trigger,
+                painter.trigger_stroke(),
+                HitTarget::Element(model.key_of(el)),
+                vec![el],
+                Some(model.trigger(trigger).name.clone()),
+            )
+        }
         CausalEdgeKind::Fire { rule } => {
             let el = ElementRef::Rule(rule);
             let r = model.rule(rule);
             let target_machine = model.trigger(r.trigger).machine;
-            let parts: Vec<String> =
-                [bracketed(r.condition.as_deref()), bracketed(guard_of(to).as_deref())].into_iter().flatten().collect();
+            let parts: Vec<String> = [
+                bracketed(r.condition.as_ref().map(ToString::to_string).as_deref()),
+                bracketed(guard_of(to).as_deref()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
             (
                 EdgeKind::Fire,
                 painter.fire_stroke(painter.machine(target_machine)),

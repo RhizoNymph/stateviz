@@ -121,9 +121,9 @@ fn guards_follow_the_trigger_in_brackets() {
     let scene = arrow_scene(SHOP, SceneMode::View);
     let labels: Vec<&str> =
         transition_arrows(&scene).iter().filter_map(|e| e.label.as_ref()).map(|l| l.text.as_str()).collect();
-    assert!(labels.contains(&"capture [amount <= authorized_amount]"), "{labels:?}");
+    assert!(labels.contains(&"capture [?amount <= authorized_amount]"), "{labels:?}");
     assert!(labels.contains(&"capture [else]"), "{labels:?}");
-    assert!(labels.contains(&"reserve [stock < quantity]"), "{labels:?}");
+    assert!(labels.contains(&"reserve [?stock < quantity]"), "{labels:?}");
 }
 
 #[test]

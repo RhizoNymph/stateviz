@@ -286,16 +286,50 @@ steps:
     assert_eq!(trace.steps[11].cause, Some(StepIx(10)));
 }
 
+/// Guards are expressions now: the first candidate in definition order whose
+/// guard does not evaluate false is taken (this test used to assert that
+/// free-text guards were ignored).
 #[test]
-fn the_first_transition_in_definition_order_wins_over_guards() {
+fn the_first_enabled_transition_in_definition_order_wins() {
+    let model = model(
+        r#"
+machines:
+  Payment:
+    fields: { amount: number }
+    states: [new, approved, review]
+    transitions:
+      - { from: new, to: review,   on: check, guard: "self.amount > 1000" }
+      - { from: new, to: approved, on: check, guard: "self.amount <= 1000" }
+external:
+  Api: [Payment.check]
+"#,
+    );
+    let run_with = |amount: &str| {
+        let scenario = format!(
+            "scenario: g\ninstances:\n  p: {{ machine: Payment, fields: {{ amount: {amount} }} }}\nsteps:\n  - {{ source: Api, fire: Payment.check }}\n"
+        );
+        lines(&model, &run(&model, &scenario))[1].clone()
+    };
+    assert_eq!(run_with("5000"), "p new -> review");
+    assert_eq!(run_with("50"), "p new -> approved");
+    // A missing field makes both tests false: the trigger is dropped.
+    let trace =
+        run(&model, "scenario: g\ninstances:\n  p: Payment\nsteps:\n  - { source: Api, fire: Payment.check }\n");
+    assert!(matches!(trace.steps[1].kind, TraceStepKind::Dropped { .. }));
+}
+
+/// Choices and `else` do not rule a candidate out: without a decision the
+/// first candidate is taken, as before.
+#[test]
+fn choice_guards_take_the_first_candidate() {
     let model = model(
         r#"
 machines:
   Payment:
     states: [new, approved, review]
     transitions:
-      - { from: new, to: review,   on: check, guard: "amount > 1000" }
-      - { from: new, to: approved, on: check, guard: "amount <= 1000" }
+      - { from: new, to: review,   on: check, guard: "?flagged" }
+      - { from: new, to: approved, on: check, guard: else }
 external:
   Api: [Payment.check]
 "#,
@@ -303,6 +337,44 @@ external:
     let trace =
         run(&model, "scenario: g\ninstances:\n  p: Payment\nsteps:\n  - { source: Api, fire: Payment.check }\n");
     assert_eq!(lines(&model, &trace)[1], "p new -> review");
+}
+
+/// A rule whose `when:` expression is false does not fire; a `?choice`
+/// condition holds by default.
+#[test]
+fn rule_conditions_gate_fires() {
+    let model = model(
+        r#"
+machines:
+  Order:
+    states: [open, paid]
+    transitions:
+      - { from: open, to: paid, on: pay, emits: [Paid] }
+  Ledger:
+    states: [idle, big, small]
+    transitions:
+      - { from: idle, to: big, on: big }
+      - { from: idle, to: small, on: small }
+controllers:
+  Books:
+    on:
+      Paid:
+        - { fire: Ledger.big, when: "event.amount > 100" }
+        - { fire: Ledger.small, when: "?small payment" }
+external:
+  Api: [Order.pay]
+"#,
+    );
+    let scenario = |amount: &str| {
+        format!(
+            "scenario: c\ninstances:\n  o: Order\n  l: Ledger\nsteps:\n  - {{ source: Api, fire: Order.pay, payload: {{ amount: {amount} }} }}\n"
+        )
+    };
+    let big = lines(&model, &run(&model, &scenario("500")));
+    assert!(big.iter().any(|l| l == "l idle -> big"), "{big:#?}");
+    let small = lines(&model, &run(&model, &scenario("5")));
+    assert!(!small.iter().any(|l| l == "l idle -> big"), "{small:#?}");
+    assert!(small.iter().any(|l| l == "l idle -> small"), "{small:#?}");
 }
 
 #[test]

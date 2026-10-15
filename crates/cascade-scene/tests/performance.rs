@@ -88,7 +88,7 @@ fn long_trace(fx: &Fixture) -> Trace {
             cause,
             kind: TraceStepKind::Transition { instance, transition: t, from: tr.from, to: tr.to },
         });
-        if let Some(&event) = tr.emits.first() {
+        if let Some(event) = tr.emits.first().map(|e| e.event) {
             steps.push(TraceStep { cause: None, kind: TraceStepKind::Emit { instance, event } });
             if let Some(&handler) = model.event(event).handlers.first() {
                 let controller = ix(first_controller + model.handler(handler).controller.index());

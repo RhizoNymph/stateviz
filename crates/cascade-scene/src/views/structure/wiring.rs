@@ -222,6 +222,9 @@ impl Wiring<'_> {
                     let CausalNode::Transition(t) = self.graph.node(edge.from) else { continue };
                     (EdgeKind::Emit, painter.emit_stroke(), ElementRef::Transition(t), None, None)
                 }
+                // Machine subscriptions and timers are not wired on the
+                // build canvas yet.
+                CausalEdgeKind::Notify { .. } | CausalEdgeKind::Delay { .. } => continue,
                 CausalEdgeKind::Subscribe => {
                     let CausalNode::Handler(h) = self.graph.node(edge.to) else { continue };
                     (EdgeKind::Subscribe, painter.subscribe_stroke(), ElementRef::Handler(h), None, None)
@@ -229,7 +232,8 @@ impl Wiring<'_> {
                 CausalEdgeKind::Fire { rule } => {
                     let r = model.rule(rule);
                     let target = model.trigger(r.trigger).machine;
-                    let label = RuleLabel::new(&r.target, r.condition.as_deref());
+                    let condition = r.condition.as_ref().map(ToString::to_string);
+                    let label = RuleLabel::new(&r.target, condition.as_deref());
                     (
                         EdgeKind::Fire,
                         painter.fire_stroke(painter.machine(target)),
@@ -391,7 +395,10 @@ impl Wiring<'_> {
                     }
                 }
                 CausalEdgeKind::Subscribe => (Some(PORT_EAST), Some(PORT_WEST)),
-                CausalEdgeKind::Fire { .. } | CausalEdgeKind::Trigger { .. } => {
+                CausalEdgeKind::Fire { .. }
+                | CausalEdgeKind::Trigger { .. }
+                | CausalEdgeKind::Notify { .. }
+                | CausalEdgeKind::Delay { .. } => {
                     if above(wire.from, wire.to) {
                         (Some(PORT_SOUTH), pill(wire.to_kind, PORT_NORTH))
                     } else {

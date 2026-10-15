@@ -142,7 +142,7 @@ fn fire_labels_are_short_and_said_once() {
     assert_eq!(orders.len(), 4);
     assert_eq!(orders.iter().flatten().collect::<Vec<_>>(), ["by orderId"]);
     assert_eq!(labels("controller:Checkout"), [Some("new with orderId".to_owned())]);
-    assert_eq!(labels("controller:FraudCheck"), [Some("by orderId [risk score above threshold]".to_owned())]);
+    assert_eq!(labels("controller:FraudCheck"), [Some("by orderId [?risk score above threshold]".to_owned())]);
     // Billing fires `capture`, which two Payment transitions accept.
     let billing = labels("controller:Billing");
     assert_eq!(billing.len(), 2);
