@@ -1,0 +1,10 @@
+# The bank declines the card: the checkout fails and cancels the order.
+scenario: card declined
+instances:
+  o1: { machine: Order, fields: { orderId: "1", amount: "50" } }
+  p1: { machine: Payment, fields: { orderId: "1", amount: "50" } }
+  s1: { machine: Stock, fields: { orderId: "1" } }
+steps:
+  - { source: Customer, fire: Order.place, target: o1 }
+  - { choose: "card declined" }
+  - { source: Bank, fire: Payment.respond, target: p1 }
