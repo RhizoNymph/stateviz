@@ -388,7 +388,9 @@ impl Workspace {
         };
         let key = loaded.model.key_of(finding.detail.primary());
         commands::select(&mut self.view, key);
+        let replay_note = cascade_sim::race_replay_note(&finding.detail);
         if finding.check() == Check::RaceCandidate
+            && replay_note.is_none()
             && let Some(race) = locate::race_index(&loaded.findings, &finding)
         {
             let scenario = self.view.scenario.clone().or_else(|| self.scenarios.first().map(|s| s.id.clone()));
@@ -408,7 +410,16 @@ impl Workspace {
         self.changed(cx);
         self.ensure_scene();
         match locate::locate_finding(&self.scene, &loaded.model, &finding) {
-            Some(rect) => self.center_rect(rect),
+            Some(rect) => {
+                self.center_rect(rect);
+                // A subscription race cannot be replayed: say so instead of
+                // opening the trace view.
+                if finding.check() == Check::RaceCandidate
+                    && let Some(note) = replay_note
+                {
+                    self.set_status(format!("This race is not replayed in both orders: {note}"), false);
+                }
+            }
             None => self.set_status("That finding has nothing drawn in this view", false),
         }
         cx.notify();

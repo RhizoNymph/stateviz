@@ -749,7 +749,10 @@ On `feat/guard-analysis` (static-analysis.md has the details):
   stay `RaceCandidate` with `RuleId`s, so the simulator's race replay is
   unchanged; it returns `SimError::NotARace` for a `SubscriptionRace`
   (cascade-sim may add replay for it later). Code that indexes race findings
-  by `check() == RaceCandidate` sees both variants.
+  by `check() == RaceCandidate` sees both variants. At integration,
+  `cascade_sim::race_replay_note` names the unreplayable ones, and the CLI
+  (`simulate --race`, `render` with `race=`) and the app (trace view,
+  findings list) show the note and the as-queued run instead of an error.
 - **Constant tests**: `DiagnosticKind::ConstantTest { test, what:
   &'static str, suggestion: Option<String> }`, a load error for a test that
   reads no field (`x > 0` with a bare `x`, `1 == 1`, a literal `in`). Fixtures

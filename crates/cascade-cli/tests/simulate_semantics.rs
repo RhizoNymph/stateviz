@@ -232,3 +232,46 @@ fn interactive_step_to_an_unknown_consumer_is_an_error() {
     );
     assert!(stdout(&output).contains("Saga spawns Checkout checkout1"), "{}", stdout(&output));
 }
+
+#[test]
+fn a_subscription_race_is_shown_as_queued_with_a_note() {
+    let happy = saga_scenario("happy-path.yaml");
+    let output = cascade(&["simulate", path_str(&saga()), path_str(&happy), "--race", "0"], "");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert!(text.starts_with("Race candidate #0: PaymentCaptured leads Order"), "{text}");
+    assert!(text.contains("note: not replayed in both orders: it involves a subscription"), "{text}");
+    assert!(text.contains("Final states:"), "the as-queued trace follows: {text}");
+    assert!(!text.contains("(swapped)"), "{text}");
+
+    let output = cascade(&["simulate", path_str(&saga()), path_str(&happy), "--race", "0", "--format", "json"], "");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let json: Value = serde_json::from_str(&stdout(&output)).expect("json");
+    assert_eq!(json["replayed"], Value::Bool(false));
+    assert!(json["note"].as_str().is_some_and(|n| n.contains("subscription")), "{json}");
+    assert!(json["as_queued"].is_object(), "{json}");
+    assert!(json.get("swapped").is_none(), "{json}");
+}
+
+#[test]
+fn rendering_a_subscription_race_renders_the_scenario_as_queued() {
+    let out = temp_dir().join("saga-race.svg");
+    let (saga, happy) = (saga(), saga_scenario("happy-path.yaml"));
+    let args = [
+        "render",
+        path_str(&saga),
+        "--view",
+        "trace",
+        "--scenario",
+        path_str(&happy),
+        "--state",
+        "cascade://trace?race=0",
+        "--out",
+        path_str(&out),
+    ];
+    let output = cascade(&args, "");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stderr(&output).contains("race candidate #0 is not replayed in both orders"), "{}", stderr(&output));
+    let svg = fs::read_to_string(&out).expect("written");
+    assert!(svg.contains("<svg"));
+}

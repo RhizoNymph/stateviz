@@ -455,7 +455,15 @@ as `s`.
    `Fulfillment first` / `Billing first` (full rule labels when both rules
    belong to one controller).
 
-Other findings give `SimError::NotARace`.
+Other findings give `SimError::NotARace`, including
+`FindingDetail::SubscriptionRace` (a race with a subscription side, which
+is not replayed yet). `race_replay_note(detail)` says up front whether a
+finding can be replayed: `None` for a rule race, else a note ("it involves
+a subscription, and only races between two controller rules replay in both
+orders"). Callers that index race findings (`cascade simulate --race`,
+`cascade render` with `race=`, the app's trace view and findings list)
+check it and fall back to the scenario as queued with the note instead of
+failing.
 
 ## CLI
 
@@ -490,7 +498,9 @@ each step has `index`, `cause`, `depth`, `kind` (kebab-case), `text`, its
 lifeline indices, element keys (`transition:…`, `rule:…`) and `payload` when
 it has one. `--race <n>` runs static analysis and replays the n-th race
 candidate (from 0, in `cascade check` order), printing both orderings (JSON:
-`{ race, as_queued, swapped }`). Scenario problems print as
+`{ race, as_queued, swapped }`). A subscription race prints its header, a
+`note: not replayed in both orders: …` line and the as-queued trace (JSON:
+`{ race, replayed: false, note, as_queued }`), exit code 0. Scenario problems print as
 `path:line:col: error: …`; every failure exits with code 2.
 
 The new step kinds print as `c1 receives PaymentCaptured` (`Notify`),

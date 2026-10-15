@@ -70,6 +70,35 @@ pub fn run(
                     races.len()
                 );
             };
+            if let Some(note) = cascade_sim::race_replay_note(&finding.detail) {
+                // Not replayable (a subscription race): say why and show the
+                // scenario as queued instead.
+                let run = match cascade_sim::simulate_run(&model, &scenario) {
+                    Ok(run) => run,
+                    Err(SimError::Scenario(err)) => return Ok(report(scenario_path, &err)),
+                    Err(err) => return Err(err.into()),
+                };
+                match format {
+                    OutputFormat::Text => {
+                        println!("Race candidate #{index}: {}", finding.message);
+                        println!("note: not replayed in both orders: {note}; showing the scenario as queued");
+                        println!();
+                        print!("{}", trace_text(&model, &run));
+                    }
+                    OutputFormat::Json => {
+                        let subjects: Vec<String> =
+                            finding.detail.subjects().into_iter().map(|e| model.key_of(e).to_string()).collect();
+                        let out = json!({
+                            "race": { "index": index, "message": finding.message, "subjects": subjects },
+                            "replayed": false,
+                            "note": note,
+                            "as_queued": trace_json(&model, &run),
+                        });
+                        println!("{out}");
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
             let runs = match cascade_sim::race_runs(&model, &scenario, &finding.detail) {
                 Ok(runs) => runs,
                 Err(SimError::Scenario(err)) => return Ok(report(scenario_path, &err)),

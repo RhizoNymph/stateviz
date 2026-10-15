@@ -177,7 +177,9 @@ render ──▶ rebuild_scene (once per frame at most):
   and centres the element, falling back to the finding's other subjects and
   then related elements (a state's transitions, a rule's handler) when the
   primary is not drawn. A race candidate instead opens the trace view with
-  `race` set, when a scenario exists.
+  `race` set, when a scenario exists; a race the simulator cannot replay (a
+  subscription race, `cascade_sim::race_replay_note`) is located like any
+  finding, with the note in the status bar.
 - Search runs `cascade_core::search::search` on every edit, shows up to 12
   hits, and sets `ViewState::search` for highlighting. Enter (or a click)
   selects the highlighted hit, centres it (switching to the causal view if
@@ -192,7 +194,8 @@ render ──▶ rebuild_scene (once per frame at most):
   scenario when none is selected.
 - `TraceRequest { scenario, race, generation }` runs on the background
   executor: parse, then `simulate` or `race_orderings` (for `race`, the
-  n-th race-candidate finding). Results are used only when their request
+  n-th race-candidate finding; one that cannot be replayed runs as queued
+  and the panel's race line says why). Results are used only when their request
   (including the generation) matches the current one, because traces hold
   ids of one model. Errors show in the trace panel.
 

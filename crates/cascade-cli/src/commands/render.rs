@@ -132,6 +132,10 @@ fn traces(
                 .nth(usize::try_from(index).unwrap_or(usize::MAX))
                 .map(|f| &f.detail)
                 .with_context(|| format!("no race candidate #{index}"))?;
+            if let Some(note) = cascade_sim::race_replay_note(detail) {
+                eprintln!("note: race candidate #{index} is not replayed in both orders: {note}; rendering the scenario as queued");
+                return Ok(vec![cascade_sim::simulate(model, &scenario)?]);
+            }
             let both = cascade_sim::race_orderings(model, &scenario, detail)?;
             Ok(vec![both.as_queued, both.swapped])
         }

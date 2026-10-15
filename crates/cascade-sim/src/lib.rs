@@ -143,6 +143,20 @@ pub fn race_orderings(model: &Model, scenario: &Scenario, race: &FindingDetail) 
         .map(|runs| RaceTraces { as_queued: runs.as_queued.trace, swapped: runs.swapped.trace })
 }
 
+/// Why [`race_orderings`] cannot replay `race`, or `None` when it can (a
+/// [`FindingDetail::RaceCandidate`] between two controller rules). A race
+/// with a subscription side ([`FindingDetail::SubscriptionRace`]) is not
+/// replayed yet; callers show the note and fall back to the plain run.
+pub fn race_replay_note(race: &FindingDetail) -> Option<&'static str> {
+    match race {
+        FindingDetail::RaceCandidate { .. } => None,
+        FindingDetail::SubscriptionRace { .. } => {
+            Some("it involves a subscription, and only races between two controller rules replay in both orders")
+        }
+        _ => Some("it is not a race candidate"),
+    }
+}
+
 /// Like [`race_orderings`], keeping the payloads.
 pub fn race_runs(model: &Model, scenario: &Scenario, race: &FindingDetail) -> Result<RaceRuns, SimError> {
     race::race_runs(model, scenario, race)
