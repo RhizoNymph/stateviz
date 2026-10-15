@@ -1,0 +1,10 @@
+# One shop order from checkout to delivery. The carrier's delivery report
+# arrives while tracking is still polling (`timing: immediate`).
+scenario: shop order
+instances:
+  o1: { machine: Order, fields: { orderId: "1" } }
+steps:
+  - { source: Customer, fire: Order.checkout, target: o1 }
+  - { source: PaymentGateway, fire: Payment.approved, target: payment1 }
+  - { source: Carrier, fire: Shipment.handed_over, target: shipment1 }
+  - { source: Carrier, fire: Shipment.delivered, target: shipment1, timing: immediate }

@@ -44,7 +44,7 @@ pub(crate) struct Consumer {
     pub target: ConsumerRef,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ConsumerRef {
     /// A subscribing instance (for an event) or the target (fire, timer).
     Instance(InstanceIx),
@@ -180,6 +180,17 @@ impl Core {
             .map(|n| format!("{prefix}{n}"))
             .find(|name| !self.is_taken(name))
             .unwrap_or_else(|| format!("{prefix}{}", self.instances.len() + 1))
+    }
+
+    /// The kinds of the steps recorded from step `from` on.
+    pub fn kinds_since(&self, from: StepRef) -> impl Iterator<Item = &super::record::RawKind> + '_ {
+        self.recorder.kinds_since(from)
+    }
+
+    /// Forget the recorded steps (exploration keeps no trace; see
+    /// `Recorder::forget`).
+    pub fn forget_trace(&mut self) {
+        self.recorder.forget();
     }
 
     pub fn finish(&self, scenario: &str) -> Finished {
@@ -369,7 +380,7 @@ impl Core {
     /// subscribing machine in model order, its live instances in creation
     /// order; then the controllers whose handlers receive it, in definition
     /// order.
-    pub(super) fn event_consumers(&self, model: &Model, event: EventId) -> Vec<Consumer> {
+    pub(crate) fn event_consumers(&self, model: &Model, event: EventId) -> Vec<Consumer> {
         let mut machines: Vec<MachineId> =
             model.event(event).subscribers.iter().map(|&t| model.trigger(t).machine).collect();
         machines.sort_unstable();
