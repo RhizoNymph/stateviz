@@ -58,7 +58,8 @@ impl fmt::Display for Duration {
         if self.millis == 0 {
             return f.write_str("0s");
         }
-        let (unit, size) = UNITS.iter().copied().find(|&(_, size)| self.millis % size == 0).unwrap_or(("ms", 1));
+        let (unit, size) =
+            UNITS.iter().copied().find(|&(_, size)| self.millis.is_multiple_of(size)).unwrap_or(("ms", 1));
         write!(f, "{}{unit}", self.millis / size)
     }
 }

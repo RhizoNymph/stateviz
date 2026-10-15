@@ -149,15 +149,22 @@ enum Decision {
     Unknown,
 }
 
-/// The single field an atom reads, `Ok(None)` for a constant atom, `Err`
-/// for an atom comparing two fields.
-fn field_of<'a>(test: &'a Expr) -> Result<Option<&'a Operand>, ()> {
+/// The fields a test reads.
+enum Reads<'a> {
+    /// Only literals: a constant.
+    Nothing,
+    One(&'a Operand),
+    /// Two different fields: treated as unknown.
+    Two,
+}
+
+fn field_of(test: &Expr) -> Reads<'_> {
     let fields: Vec<&Operand> = test.operands().into_iter().filter(|o| !o.is_literal()).collect();
     match fields.as_slice() {
-        [] => Ok(None),
-        [one] => Ok(Some(*one)),
-        [a, b] if a == b => Ok(Some(*a)),
-        _ => Err(()),
+        [] => Reads::Nothing,
+        [one] => Reads::One(one),
+        [a, b] if a == b => Reads::One(a),
+        _ => Reads::Two,
     }
 }
 
@@ -188,14 +195,14 @@ fn decide(conjunction: &Conjunction<'_>, types: &Types) -> Decision {
     let mut uncertain = false;
     for atom in conjunction {
         match field_of(atom.test) {
-            Err(()) => uncertain = true,
-            Ok(None) => {
+            Reads::Two => uncertain = true,
+            Reads::Nothing => {
                 let scope = OneField { field: &Operand::Lit(Literal::new("")), value: None };
                 if eval(atom.test, &scope, types) != atom.positive {
                     return Decision::Unsat;
                 }
             }
-            Ok(Some(field)) => by_field.entry(field).or_default().push(atom),
+            Reads::One(field) => by_field.entry(field).or_default().push(atom),
         }
     }
 
