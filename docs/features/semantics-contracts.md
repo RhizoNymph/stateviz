@@ -869,6 +869,71 @@ As landed in `cascade-app` (details in build-and-play.md):
   number`, `reason: enum [underpaid, declined, timeout]`, …); the SCXML
   round trip keeps them.
 
+### Exploration (wave 3, `feat/explore`)
+
+As landed in `cascade_sim::explore` (details in
+[exploration.md](exploration.md)); deviations from §6:
+
+- `ExploreOptions` gains `reduction: bool` (default true; false explores
+  exact queue orders without sleep sets, for tests and debugging) and
+  `DEFAULT_MAX_STATES`. `OrderingModel` derives `Default` (`PerConsumer`)
+  and has `name()`.
+- `Exploration` gains `notes: Vec<String>` (ignored `step`/`run`
+  directives, ignored `choose` under `choices`, ignored `end: pause`, and
+  "no ordering settles" when a complete search finds no outcome).
+- `Outcome` gains `timers: Vec<OutcomeTimer { instance, trigger, remaining
+  }>` (timers left armed are part of the outcome, as §6 says) and
+  `sort_text()`; outcomes are sorted by (witness length, `sort_text`).
+- `Anomaly` gains `InputFailed { input, error }` (an input that cannot
+  apply in some ordering, e.g. a fire at an instance not spawned yet, is
+  skipped there) and `UnusedChoice { option }` (a decision still pending at
+  the end). `Dropped` covers timers delivered after their state was left.
+- `explore`'s witnesses start from `PlaySession::new` (the declared
+  instances are their first actions); `replay_witness(start, model,
+  witness)` applies one. `SimError::WitnessLost { at }` exists for an
+  internal failure to rebuild a witness (never expected; tested).
+- Inputs: an `immediate` fire/wait can happen at any point after the
+  previous input (interleaved with the cascade), an `after-quiescence` one
+  only when the queue is empty; `choose`/`create`/`remove` are chained to
+  the input before them. With `choices`, `choose` directives are ignored
+  (every option is explored); `explore_from` honours the session's pending
+  decisions.
+- With `timers_anytime` a terminal state has no timer armed (the timer
+  must run out); without it timers left armed are part of the outcome.
+- The search key adds the next input and the anomalies met so far (so an
+  anomaly is never lost by merging paths); with reduction the queue is
+  keyed by its canonical linearization under the ordering model's
+  per-channel order (unordered: as a multiset). `paths` counts paths in the
+  explored graph without DFS back edges.
+- Internals: `Recorder::forget` lets the search clone cores without their
+  trace; `ConsumerRef` derives `Ord`/`Hash`; `drive::step_target` and
+  `Core::event_consumers` are crate-visible. Public simulator behaviour is
+  unchanged.
+- CLI: `--no-reduction` and `--save-witness <dir>` added; incomplete (3)
+  takes precedence over 0/1.
+
+### Explore panel (wave 3, `feat/explore-panel`)
+
+As landed in the app (details in
+[exploration.md](exploration.md#the-apps-explore-panel)):
+
+- Simulator addition for hosts: `ExploreProgress` (states visited,
+  cancel) and `explore_from_watched(session, model, options, &progress)`;
+  a cancelled run returns `SimError::ExploreCancelled { states }`.
+  `explore`/`explore_from` are unchanged.
+- The panel explores from the play session's position only (no scenario
+  inputs), with the default state bound; `E` toggles it in Play mode.
+- Results carry their origin (model generation + applied actions): they
+  are current at the origin, "moved" (stale, still openable: opening seeks
+  back to the origin first) while the origin is on the current line, and
+  stale (read only) after an edit or once the line leaves the origin.
+- "Open as branch" seeks to the origin and applies the witness with
+  `PlaySession::apply` (the timeline forks as it does for any action after
+  a seek); `PlayState::open_witness` does it all or nothing.
+- Anomaly severities in the panel: step limit and ambiguous selectors are
+  errors; drops, missing targets and skipped inputs warnings; unused
+  decisions info.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /

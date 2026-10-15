@@ -300,6 +300,7 @@ a text field has focus; chords are bound in `Workspace`.
 | `Space` | Play mode: deliver the queue's head (asking first for the decisions it needs); with a choice prompt open, take its first option (the default) |
 | `R` | Play mode: run until the queue is quiet (choices take their defaults) |
 | `T` | Play mode: advance the clock to the next armed timer |
+| `E` | Play mode: open or close the Explore panel |
 
 Undo and redo are chords, so they also work (on the definition) while a
 text field has focus; the text fields have no undo of their own.
@@ -308,7 +309,7 @@ In a text field: Enter submits, Esc returns to the canvas, ↑/↓ move through
 search results, plus the usual editing keys. In the play panel's "advance
 by" field, Enter advances the clock by the typed duration (blank: to the
 next timer). `T` was free; it is a plain key, so typing a `t` in a field
-never advances the clock.
+never advances the clock. `E` (explore) was free too and is likewise a plain key.
 
 | Pointer | Action |
 | --- | --- |
@@ -353,11 +354,11 @@ never advances the clock.
 | `crates/cascade-app/src/workspace/scene.rs` | Scene rebuild, viewport helpers, trace and diff orchestration | `Workspace::changed`, `rebuild_scene`, `switch_view`, `trace_request`, `diff_request` |
 | `crates/cascade-app/src/workspace/operations.rs` | Files, commands, selection, findings, pins, source, links, search, diff | `Workspace::run_command`, `open_finding`, `pin`, `unpin`, `open_source`, `pins_supported` |
 | `crates/cascade-app/src/workspace/canvas_events.rs` | Canvas element and pointer handlers | `Workspace::render_canvas_area` |
-| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle, the structure view's pills toggle), build bar (with the connect offers menu), inspector, play panel (clock, choice prompt, per-consumer queue buttons), sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace`, `hint` |
+| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle, the structure view's pills toggle), build bar (with the connect offers menu), inspector, play panel (clock, choice prompt, per-consumer queue buttons), explore panel (orderings, outcomes, open as branch), sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace`, `hint` |
 | `crates/cascade-app/src/mode.rs` | View/Build/Play modes (pure) | `AppMode`, `view_for` |
 | `crates/cascade-app/src/build/*` | Build mode logic: ops, connect, inspector, pipeline, undo, disk (pure) | see build-and-play.md |
-| `crates/cascade-app/src/play/*` | Play mode logic: session state, overlay, timeline, forms (pure) | see build-and-play.md |
-| `crates/cascade-app/src/workspace/building.rs`, `playing.rs` | Build and play glue | `BuildUi`, `PlayUi` |
+| `crates/cascade-app/src/play/*` | Play mode logic: session state, overlay, timeline, forms, explore panel state (pure) | see build-and-play.md |
+| `crates/cascade-app/src/workspace/building.rs`, `playing.rs`, `exploring.rs` | Build, play and explore glue | `BuildUi`, `PlayUi`, `ExploreTasks` |
 
 ## Invariants and constraints
 

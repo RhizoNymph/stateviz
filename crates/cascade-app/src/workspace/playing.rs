@@ -9,11 +9,13 @@ use gpui::{AppContext as _, Context, Entity, Subscription};
 
 use super::Workspace;
 use super::building::capitalize;
+use super::exploring::ExploreTasks;
 use crate::document::scenarios;
 use crate::input::{InputEvent, TextInput};
 use crate::play::PlayState;
 use crate::play::choices::{self, ChoicePrompt, PromptStep, SessionOracle, StepRequest};
 use crate::play::clock::advance_action;
+use crate::play::explore::ExploreUi;
 use crate::play::forms::{parse_assignments, scenario_path, scenario_text, write_scenario};
 
 /// Play mode's state and form fields.
@@ -33,6 +35,9 @@ pub struct PlayUi {
     pub prompt: Option<ChoicePrompt<PlayAction>>,
     /// A form input that did not parse.
     pub form_error: Option<String>,
+    /// The Explore panel.
+    pub explore: ExploreUi,
+    pub(super) explore_tasks: ExploreTasks,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -56,6 +61,8 @@ impl PlayUi {
             advance_by,
             prompt: None,
             form_error: None,
+            explore: ExploreUi::default(),
+            explore_tasks: ExploreTasks::default(),
             _subscriptions: vec![advance_events],
         }
     }
@@ -110,7 +117,7 @@ impl Workspace {
         true
     }
 
-    fn in_play(&mut self, what: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn in_play(&mut self, what: &str, cx: &mut Context<Self>) -> bool {
         if self.mode == crate::mode::AppMode::Play {
             return true;
         }

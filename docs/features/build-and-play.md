@@ -491,6 +491,10 @@ note.
 - **After an edit or reload,** `PlayState::rebase` replays the timeline on
   the new model; where it stopped is shown in the panel and the status bar.
   An empty timeline just starts over.
+- **Explore** (`E`, or the queue's Explore button): a second panel next
+  to the play panel that explores every ordering of what is queued from the
+  session's position (`cascade_sim::explore_from_watched`) and opens any
+  outcome as a branch. See [exploration.md](exploration.md#the-apps-explore-panel).
 
 ### App files
 
@@ -516,11 +520,16 @@ note.
 | `crates/cascade-app/src/play/forms.rs` | Assignments, palette grouping, scenario saving | `parse_assignments`, `group_fires`, `scenario_path`, `scenario_text`, `write_scenario` |
 | `crates/cascade-app/src/play/clock.rs` | Armed timer rows, the Advance box (pure) | `TimerRow`, `timer_rows`, `advance_action`, `advance_label` |
 | `crates/cascade-app/src/play/queue.rs` | Queue rows and per-consumer buttons (pure) | `QueueRow`, `ConsumerItem`, `queue_rows` |
+| `crates/cascade-app/src/play/explore/mod.rs` | Explore panel state: controls, run lifecycle, origin and freshness, background jobs (pure) | `ExploreUi`, `ExploreControls`, `ExploreRun`, `ExploreJob`, `ExploreResult`, `Origin`, `Freshness`, `Finished`, `Preview` |
+| `crates/cascade-app/src/play/explore/rows.rs` | Outcome rows, anomaly severities, the summary line (pure) | `OutcomeRow`, `AnomalyLine`, `outcome_rows`, `anomaly_severity`, `summary_text` |
+| `crates/cascade-app/src/play/explore/branch.rs` | Previewing an outcome and opening it as a branch (pure) | `preview`, `open`, `OpenError` |
 | `crates/cascade-app/src/play/choices.rs` | The choice prompt state machine (pure, over a `ChoiceOracle`) | `StepRequest`, `ChoicePrompt`, `PromptStep`, `ChoiceOracle`, `SessionOracle`, `begin`, `pick`, `first_undecided` |
 | `crates/cascade-app/src/workspace/building.rs` | Build glue: commit, undo/redo, toolbar, connect and its offers menu, inspector inputs with live feedback and trigger drafts, new file | `BuildUi`, `ConnectMenu`, `InspectorUi`, `Workspace::commit`, `undo_redo`, `connect_keys`, `pick_connect_offer`, `sync_inspector`, `commit_field` |
 | `crates/cascade-app/src/workspace/playing.rs` | Play glue: actions, the choice prompt, per-consumer steps, the clock, seek, branches, scenarios | `PlayUi`, `Workspace::play`, `request_step`, `pick_choice`, `cancel_choice`, `play_advance`, `seek`, `save_scenario`, `load_play_scenario` |
 | `crates/cascade-app/src/panels/build.rs` | Build bar and inspector panel | `render_build_bar`, `render_inspector` |
+| `crates/cascade-app/src/workspace/exploring.rs` | Explore glue: background run with a repaint ticker, cancel, select/preview, open as branch | `ExploreTasks`, `Workspace::toggle_explore`, `run_explore`, `cancel_explore`, `select_outcome`, `open_outcome` |
 | `crates/cascade-app/src/panels/play.rs` | Play panel | `render_play_panel` |
+| `crates/cascade-app/src/panels/explore.rs` | Explore panel | `render_explore_panel` |
 
 ### App invariants
 
@@ -532,9 +541,11 @@ note.
   built from.
 - Pure logic (ops, connect mapping and offers, inspector and its feedback,
   pipeline, history, own-write detection, overlay, timeline, forms, clock,
-  queue rows, choice prompt) has no GPUI dependency and is unit tested;
+  queue rows, choice prompt, explore panel state) has no GPUI dependency and is unit tested;
   `workspace/*` and `panels/*` only wire it to the UI.
 - Live feedback never writes: it applies the planned edit to a copy.
+- Exploration never runs on the UI thread, and opening an outcome is all
+  or nothing (the witness is applied to a copy of the play state).
 - A choice prompt records nothing until every decision is made: answers
   are tried on a copy of the session, and the real session gets the
   `Choose` actions and the step together (or nothing, on Cancel).

@@ -61,11 +61,19 @@
 //! session started with [`PlaySession::from_scenario`] has exactly the batch
 //! trace.
 //!
+//! # Exploration
+//!
+//! [`explore()`] and [`explore_from()`] run every delivery ordering a scenario
+//! or a play position allows (optionally every choice and timer expiry) and
+//! return the distinct outcomes, each with a witness that replays in a
+//! [`PlaySession`] (see the [`explore`](mod@explore) module).
+//!
 //! See `docs/features/simulator.md` for the scenario format and details.
 
 mod describe;
 mod engine;
 mod error;
+pub mod explore;
 mod race;
 mod scenario;
 pub mod session;
@@ -78,6 +86,10 @@ use cascade_core::{FindingDetail, Model};
 pub use describe::{causal_depths, lifeline_label, payload_text, selector_text, step_text};
 pub use engine::STEP_LIMIT;
 pub use error::{ScenarioDiagnostic, ScenarioError, ScenarioErrorKind, SimError};
+pub use explore::{
+    Anomaly, Exploration, ExploreOptions, ExploreProgress, OrderingModel, Outcome, OutcomeTimer, differing_instances,
+    explore, explore_from, explore_from_watched, instance_text, replay_witness, timer_text,
+};
 pub use scenario::{
     Directive, DiscoverError, InstanceDecl, Payload, ResolvedScenario, Scenario, ScenarioEnd, ScenarioEntry,
     ScenarioFileError, Step, StepTiming, ValueEntry, ValueMap, discover_scenarios, load_scenario_file, parse_scenario,

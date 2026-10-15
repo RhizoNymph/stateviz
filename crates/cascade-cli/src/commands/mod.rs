@@ -3,6 +3,7 @@
 
 pub mod check;
 pub mod diff;
+pub mod explore;
 pub mod export;
 pub mod import;
 pub mod new;

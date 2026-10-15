@@ -29,7 +29,8 @@ the interactive play session built on the same engine.
 
 ## Non-scope
 
-- Exploring every ordering and choice (`explore`, wave 3).
+- Exploring every ordering and choice: see [exploration.md](exploration.md)
+  (it drives the same core through `exec`).
 - Drawing the sequence diagram (view-scenes.md) or the app's trace panel
   (native-app.md).
 - Finding race candidates (static-analysis.md); the simulator only replays
@@ -541,7 +542,7 @@ play goes on.
 | `crates/cascade-sim/src/engine/drive.rs` | A resolved scenario → play actions, errors given the entry's span; the spans of `choose` directives | crate-private `drive`, `Player`, `DriveReport` |
 | `crates/cascade-sim/src/engine/instance.rs` | Instance state, taking transitions (states left and entered), history, removed flag | crate-private `Instance`, `InstanceIx`, `Change` |
 | `crates/cascade-sim/src/engine/select.rs` | Selector predicates and spawn assignments | crate-private |
-| `crates/cascade-sim/src/engine/record.rs` | Raw steps → `Trace` with ordered lifelines (and each instance's lifeline) | crate-private `Recorder`, `Finished` |
+| `crates/cascade-sim/src/engine/record.rs` | Raw steps → `Trace` with ordered lifelines (and each instance's lifeline); `forget` drops recorded steps but keeps the count (exploration only, so cloning a core is cheap) | crate-private `Recorder`, `Finished` |
 | `crates/cascade-sim/src/engine/schedule.rs` | FIFO with one swap (pull ahead / hold / release) | crate-private `next_swapped` |
 | `crates/cascade-sim/src/session/mod.rs` | The play session: apply, seek, branches, replay, from a scenario | `PlaySession`, `PlayAction`, `ActionOutcome`, `Timeline`, `Branch`, `PendingId`, `PendingItem`, `PendingKind`, `InstanceState`, `AvailableFire`, `ChoicePoint`, `ArmedTimer`, `StateKey`, `scenario_to_yaml` |
 | `crates/cascade-sim/src/session/clock.rs` | Clock, timers, decisions, choice-point preview and the state key | `PlaySession::{now, timers, pending_decisions, choice_points, choice_points_of, state_key}` |

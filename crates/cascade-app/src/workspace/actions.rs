@@ -74,6 +74,7 @@ command_actions! {
     PlayStep => Command::PlayStep,
     PlayRun => Command::PlayRun,
     PlayAdvance => Command::PlayAdvance,
+    ToggleExplore => Command::ToggleExplore,
 }
 
 /// Install the workspace key map.

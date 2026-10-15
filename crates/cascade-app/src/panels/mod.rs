@@ -3,6 +3,7 @@
 //! methods.
 
 mod build;
+mod explore;
 mod overlays;
 mod play;
 mod sidebar;

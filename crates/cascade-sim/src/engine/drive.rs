@@ -118,7 +118,7 @@ pub(crate) fn trigger_ref(model: &Model, trigger: TriggerId) -> TriggerRef {
 }
 
 /// The instance a step fires at, as it stands when the step runs.
-fn step_target(model: &Model, core: &Core, step: &ResolvedStep) -> Result<InstanceIx, SimError> {
+pub(crate) fn step_target(model: &Model, core: &Core, step: &ResolvedStep) -> Result<InstanceIx, SimError> {
     let fired_machine = model.trigger(step.trigger).machine;
     match &step.target {
         StepTarget::Named(name) => {
