@@ -721,7 +721,11 @@ As landed in cascade-sim; the details the sections above leave open:
   that name of every event emitted by a transition accepting the trigger.
   `AddInstance` and `Fire` actions are checked the same way.
 - **`choice_points`** runs the step on a copy of the session; it returns
-  the same errors the step would (e.g. `QueueEmpty`).
+  the same errors the step would (e.g. `QueueEmpty`). Added at
+  integration: `choice_points_of(model, &action)` previews any action the
+  same way (the app asks it before an external `Fire`, whose `?choice`
+  guards would otherwise take their defaults); `choice_points` is it with a
+  `Step`.
 - **`state_key`** adds timer queue items, armed timers (instance, trigger,
   arming state, `deadline - now`) and pending decisions; the absolute clock
   is excluded.
@@ -809,7 +813,9 @@ As landed in `cascade-app` (details in build-and-play.md):
   app works out which are undecided from `pending_decisions()` (first
   matching decision, oldest first, one per point). If `choice_points`
   returns only undecided points instead, the prompt still works. Run until
-  quiet never prompts (defaults).
+  quiet never prompts (defaults). At integration the prompt moved to
+  `choice_points_of` and covers external fires too (generic over
+  `choices::Request`: `StepRequest` or a `PlayAction`).
 - **Per-consumer delivery** buttons appear for `PendingKind::Event` items
   with more than one `consumers_left`; the head is sent as `choice: None`.
 - **Drag-to-connect** onto a transition from an event (or from another

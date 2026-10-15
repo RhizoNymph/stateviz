@@ -455,17 +455,22 @@ note.
   buttons. **Pending decisions** (`pending_decisions()`) are listed under
   the queue.
 - **Choice prompt** (`play::choices`): every step (Space, an item click, a
-  consumer button) first asks `choice_points(model, choice, consumer)`. A
-  point is decided when a pending decision is one of its options (each
-  decision used once, oldest first, as the simulator does). The first
-  undecided point opens a prompt in the queue section ("o1 chooses (1 of
-  2)", its options, the first marked default, **Cancel**). Each answer is
-  pushed as a decision on a *copy* of the session and `choice_points` is
-  asked again, since an answer can change the later points. When none is
-  left the real session gets one `Choose { option }` per answer, then the
-  `Step`; Cancel records nothing. With a prompt open, Space takes the first
-  option. Any other play action, seek, branch switch, new session or model
-  change drops the prompt.
+  consumer button) and every external fire from the trigger palette first
+  asks `choice_points_of(model, &action)` (a step's request is a
+  `StepRequest`; a fire is the `PlayAction::Fire` itself, so the bank's
+  `?approved` / `?card declined` in the checkout saga is asked when the
+  bank fires, not taken by default). A point is decided when a pending
+  decision is one of its options (each decision used once, oldest first,
+  as the simulator does). The first undecided point opens a prompt in the
+  queue section ("o1 chooses (1 of 2)", its options, the first marked
+  default, **Cancel**). Each answer is pushed as a decision on a *copy* of
+  the session and the points are asked again, since an answer can change
+  the later points. When none is left the real session gets one `Choose {
+  option }` per answer, then the action; Cancel records nothing. A preview
+  fails like the action would (an empty queue says "nothing is queued to
+  deliver"), and the error shows in the status bar. With a prompt open,
+  Space takes the first option. Any other play action, seek, branch
+  switch, new session or model change drops the prompt.
 - **Last action:** its trace steps as `cascade_sim::step_text` lines.
 - **Timeline:** a start chip plus one chip per action
   (`play::timeline::chips`: `wait 30s`, `wait for next timer`, `choose

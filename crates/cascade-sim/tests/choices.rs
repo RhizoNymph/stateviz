@@ -310,3 +310,36 @@ fn a_session_started_from_a_scenario_with_unused_choices_keeps_them() {
     };
     assert_eq!(s.pending_decisions(), ["x"]);
 }
+
+#[test]
+fn choice_points_of_an_external_fire_preview_its_guards() {
+    let model = model(
+        r#"
+machines:
+  Payment:
+    initial: authorizing
+    states: [authorizing, captured, declined]
+    transitions:
+      - { from: authorizing, to: captured, on: respond, guard: "?approved" }
+      - { from: authorizing, to: declined, on: respond, guard: "?card declined" }
+external:
+  Bank: [Payment.respond]
+"#,
+    );
+    let mut s = session(&model, &[add("p", "Payment", &[])]);
+    let respond = fire("Bank", "Payment.respond", "p");
+    let before = (s.trace().clone(), s.timeline().clone(), s.state_key());
+    assert_eq!(
+        s.choice_points_of(&model, &respond),
+        Ok(vec![ChoicePoint { at: "p".into(), options: strs(&["approved", "card declined"]) }])
+    );
+    assert_eq!((s.trace().clone(), s.timeline().clone(), s.state_key()), before, "a preview changes nothing");
+    // A pending decision still shows the point (the caller matches it).
+    apply(&mut s, &model, choose("card declined"));
+    assert_eq!(s.choice_points_of(&model, &respond).map(|p| p.len()), Ok(1));
+    // Fails like the fire would.
+    assert!(s.choice_points_of(&model, &fire("Bank", "Payment.respond", "nobody")).is_err());
+    // A step is the same as `choice_points`.
+    let step = PlayAction::Step { choice: None, consumer: None };
+    assert_eq!(s.choice_points_of(&model, &step), s.choice_points(&model, None, None));
+}

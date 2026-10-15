@@ -352,7 +352,9 @@ scenario ──validate──▶ drive ──PlayActions──▶ the same exec 
   deadline order, ties in arming order), `pending_decisions()`,
   `choice_points(model, choice, consumer)` (the choice points that step
   would hit with the current decisions, computed on a copy; it fails like
-  the step would), `state_key()`, `available_fires(model)` (every external
+  the step would), `choice_points_of(model, &action)` (the same for any
+  action, e.g. an external `Fire` into `?choice` guards; `choice_points`
+  is `choice_points_of` with a `Step`), `state_key()`, `available_fires(model)` (every external
   source × each trigger it lists × each live instance of the trigger's
   machine, with `accepted` from `Model::enabled_transitions` on the current
   leaf), `timeline()`.
@@ -532,7 +534,7 @@ play goes on.
 | `crates/cascade-sim/src/engine/record.rs` | Raw steps → `Trace` with ordered lifelines (and each instance's lifeline) | crate-private `Recorder`, `Finished` |
 | `crates/cascade-sim/src/engine/schedule.rs` | FIFO with one swap (pull ahead / hold / release) | crate-private `next_swapped` |
 | `crates/cascade-sim/src/session/mod.rs` | The play session: apply, seek, branches, replay, from a scenario | `PlaySession`, `PlayAction`, `ActionOutcome`, `Timeline`, `Branch`, `PendingId`, `PendingItem`, `PendingKind`, `InstanceState`, `AvailableFire`, `ChoicePoint`, `ArmedTimer`, `StateKey`, `scenario_to_yaml` |
-| `crates/cascade-sim/src/session/clock.rs` | Clock, timers, decisions, choice-point preview and the state key | `PlaySession::{now, timers, pending_decisions, choice_points, state_key}` |
+| `crates/cascade-sim/src/session/clock.rs` | Clock, timers, decisions, choice-point preview and the state key | `PlaySession::{now, timers, pending_decisions, choice_points, choice_points_of, state_key}` |
 | `crates/cascade-sim/src/session/view.rs` | Instances, pending items, available fires | `PlaySession::{instances, pending, is_pending, available_fires}` |
 | `crates/cascade-sim/src/session/save.rs` | Timeline → scenario | `PlaySession::to_scenario` |
 | `crates/cascade-sim/src/race.rs` | Contested pair detection, swapped replay, labels | crate-private |

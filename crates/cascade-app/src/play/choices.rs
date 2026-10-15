@@ -1,22 +1,32 @@
-//! The choice prompt: before a queue item is delivered, ask for every
-//! decision the delivery needs that no pending decision already covers,
-//! then push one `Choose` per answer and the step.
+//! The choice prompt: before a queue item is delivered (or an external
+//! trigger fired), ask for every decision it needs that no pending decision
+//! already covers, then push one `Choose` per answer and the action.
 //!
 //! ```text
-//! begin(request) ──▶ Go([Step])                       no undecided choice point
+//! begin(request) ──▶ Go([action])                     no undecided choice point
 //!                └─▶ Ask(prompt for point 1)
 //! pick(prompt, option) ──▶ Ask(prompt for the next undecided point)
-//!                      └─▶ Go([Choose a, Choose b, …, Step])
+//!                      └─▶ Go([Choose a, Choose b, …, action])
 //! ```
 //!
 //! Pure. The choice points come from a [`ChoiceOracle`]: the session's
-//! `choice_points` with the answers so far pushed as pending decisions (on
-//! a copy of the session, so nothing is recorded until the user is done).
-//! A point is decided when a pending decision is one of its options; each
-//! decision is used once, oldest first, as the simulator takes them.
+//! `choice_points_of` with the answers so far pushed as pending decisions
+//! (on a copy of the session, so nothing is recorded until the user is
+//! done). A point is decided when a pending decision is one of its
+//! options; each decision is used once, oldest first, as the simulator
+//! takes them. A request is anything that becomes one [`PlayAction`]
+//! ([`Request`]): a queue delivery ([`StepRequest`]) or the action itself
+//! (an external `Fire`).
+
+use std::fmt::Debug;
 
 use cascade_core::Model;
 use cascade_sim::{ChoicePoint, PlayAction, PlaySession};
+
+/// What a prompt asks about: something that becomes one play action.
+pub trait Request: Clone + Debug + PartialEq {
+    fn action(&self) -> PlayAction;
+}
 
 /// A queue delivery: `Step { choice, consumer }`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -33,12 +43,25 @@ impl StepRequest {
     }
 }
 
+impl Request for StepRequest {
+    fn action(&self) -> PlayAction {
+        StepRequest::action(self)
+    }
+}
+
+/// Any action, as is (the app asks about external fires this way).
+impl Request for PlayAction {
+    fn action(&self) -> PlayAction {
+        self.clone()
+    }
+}
+
 /// Choice points and pending decisions as they would be after pushing
 /// `answers`.
-pub trait ChoiceOracle {
-    /// `(choice points the step hits, pending decisions)` with `answers`
-    /// pushed as decisions after the current ones.
-    fn after(&self, answers: &[String], request: &StepRequest) -> Result<(Vec<ChoicePoint>, Vec<String>), String>;
+pub trait ChoiceOracle<R = StepRequest> {
+    /// `(choice points the request hits, pending decisions)` with
+    /// `answers` pushed as decisions after the current ones.
+    fn after(&self, answers: &[String], request: &R) -> Result<(Vec<ChoicePoint>, Vec<String>), String>;
 }
 
 /// The live oracle: the session itself, or a copy with the answers pushed.
@@ -47,11 +70,12 @@ pub struct SessionOracle<'a> {
     pub model: &'a Model,
 }
 
-impl ChoiceOracle for SessionOracle<'_> {
-    fn after(&self, answers: &[String], request: &StepRequest) -> Result<(Vec<ChoicePoint>, Vec<String>), String> {
+impl<R: Request> ChoiceOracle<R> for SessionOracle<'_> {
+    fn after(&self, answers: &[String], request: &R) -> Result<(Vec<ChoicePoint>, Vec<String>), String> {
+        let action = request.action();
         let points = |session: &PlaySession| {
             session
-                .choice_points(self.model, request.choice, request.consumer.as_deref())
+                .choice_points_of(self.model, &action)
                 .map(|points| (points, session.pending_decisions().to_vec()))
                 .map_err(|e| e.to_string())
         };
@@ -66,21 +90,21 @@ impl ChoiceOracle for SessionOracle<'_> {
     }
 }
 
-/// The prompt shown while a step waits for a decision.
+/// The prompt shown while a request waits for a decision.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ChoicePrompt {
-    pub request: StepRequest,
+pub struct ChoicePrompt<R = StepRequest> {
+    pub request: R,
     /// Answers given so far, in order.
     pub answers: Vec<String>,
     /// The point to decide now.
     pub point: ChoicePoint,
-    /// Its position among the step's choice points (0-based), and how many
-    /// there are, for "choice 2 of 3".
+    /// Its position among the request's choice points (0-based), and how
+    /// many there are, for "choice 2 of 3".
     pub index: usize,
     pub total: usize,
 }
 
-impl ChoicePrompt {
+impl<R> ChoicePrompt<R> {
     /// "o1 chooses (2 of 3)".
     pub fn title(&self) -> String {
         if self.total > 1 {
@@ -93,11 +117,11 @@ impl ChoicePrompt {
 
 /// What to do next.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PromptStep {
+pub enum PromptStep<R = StepRequest> {
     /// Ask the user.
-    Ask(ChoicePrompt),
+    Ask(ChoicePrompt<R>),
     /// Perform these actions in order: one `Choose` per answer, then the
-    /// step.
+    /// request's action.
     Go(Vec<PlayAction>),
 }
 
@@ -116,7 +140,11 @@ pub fn first_undecided(points: &[ChoicePoint], pending: &[String]) -> Option<(us
     None
 }
 
-fn next(oracle: &dyn ChoiceOracle, request: StepRequest, answers: Vec<String>) -> Result<PromptStep, String> {
+fn next<R: Request>(
+    oracle: &dyn ChoiceOracle<R>,
+    request: R,
+    answers: Vec<String>,
+) -> Result<PromptStep<R>, String> {
     let (points, pending) = oracle.after(&answers, &request)?;
     match first_undecided(&points, &pending) {
         Some((index, point)) => {
@@ -134,13 +162,17 @@ fn next(oracle: &dyn ChoiceOracle, request: StepRequest, answers: Vec<String>) -
     }
 }
 
-/// Start delivering `request`.
-pub fn begin(oracle: &dyn ChoiceOracle, request: StepRequest) -> Result<PromptStep, String> {
+/// Start `request`.
+pub fn begin<R: Request>(oracle: &dyn ChoiceOracle<R>, request: R) -> Result<PromptStep<R>, String> {
     next(oracle, request, Vec::new())
 }
 
 /// Answer the open prompt with `option` (one of its options).
-pub fn pick(oracle: &dyn ChoiceOracle, prompt: ChoicePrompt, option: &str) -> Result<PromptStep, String> {
+pub fn pick<R: Request>(
+    oracle: &dyn ChoiceOracle<R>,
+    prompt: ChoicePrompt<R>,
+    option: &str,
+) -> Result<PromptStep<R>, String> {
     if !prompt.point.options.iter().any(|o| o == option) {
         return Err(format!("`{option}` is not one of {}'s options", prompt.point.at));
     }
@@ -324,8 +356,167 @@ mod tests {
             )
             .expect("adds");
         let oracle = SessionOracle { session: &session, model: &model };
-        // Nothing to decide in a model without choices.
-        assert_eq!(oracle.after(&[], &head()), Ok((Vec::new(), Vec::new())));
-        assert_eq!(begin(&oracle, head()), Ok(PromptStep::Go(vec![step(&head())])));
+        // Nothing queued: the preview fails like the step would, so the
+        // prompt reports the step's own error.
+        let empty = "nothing is queued to deliver".to_owned();
+        assert_eq!(oracle.after(&[], &head()), Err(empty.clone()));
+        assert_eq!(begin(&oracle, head()), Err(empty));
+    }
+    // --- Against the real simulator ------------------------------------------------
+
+    const SAGA: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/checkout-saga/cascade.yaml"));
+
+    fn add(name: &str, machine: &str, fields: &[(&str, &str)]) -> PlayAction {
+        PlayAction::AddInstance {
+            name: Some(name.into()),
+            machine: machine.into(),
+            fields: fields.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+            state: None,
+        }
+    }
+
+    fn fire(source: &str, trigger: &str, target: &str) -> PlayAction {
+        PlayAction::Fire {
+            source: source.into(),
+            trigger: {
+                let (machine, trigger) = trigger.split_once('.').expect("Machine.trigger");
+                cascade_core::definition::TriggerRef { machine: machine.into(), trigger: trigger.into() }
+            },
+            target: target.into(),
+            payload: BTreeMap::new(),
+        }
+    }
+
+    fn state_of(model: &Model, session: &PlaySession, instance: &str) -> String {
+        let found = session.instances().into_iter().find(|i| i.name == instance).expect("the instance");
+        model.key_of(cascade_core::ElementRef::State(found.state)).to_string()
+    }
+
+    /// Run `actions` on the session, as the workspace does after `Go`.
+    fn perform(model: &Model, session: &mut PlaySession, actions: Vec<PlayAction>) {
+        for action in actions {
+            session.apply(model, action).unwrap_or_else(|err| panic!("{err}"));
+        }
+    }
+
+    /// Ask, answer and perform `request` against the live session.
+    fn go<R: Request>(model: &Model, session: &mut PlaySession, request: R, answer: Option<&str>) -> Vec<PlayAction> {
+        let oracle = SessionOracle { session, model };
+        let actions = match (begin(&oracle, request), answer) {
+            (Ok(PromptStep::Go(actions)), None) => actions,
+            (Ok(PromptStep::Ask(prompt)), Some(option)) => match pick(&oracle, prompt, option) {
+                Ok(PromptStep::Go(actions)) => actions,
+                other => panic!("expected to go after one answer, got {other:?}"),
+            },
+            (other, _) => panic!("unexpected {other:?} for answer {answer:?}"),
+        };
+        perform(model, session, actions.clone());
+        actions
+    }
+
+    fn saga() -> (Model, PlaySession) {
+        let model = cascade_core::load_str(SAGA).expect("the saga loads");
+        let mut session = PlaySession::new(&model);
+        let order = [("orderId", "1"), ("amount", "50")];
+        let actions =
+            vec![add("o1", "Order", &order), add("p1", "Payment", &order), add("s1", "Stock", &[("orderId", "1")])];
+        perform(&model, &mut session, actions);
+        (model, session)
+    }
+
+    #[test]
+    fn the_saga_asks_the_bank_before_its_answer_is_fired() {
+        let (model, mut session) = saga();
+        // Placing the order needs no decision.
+        let place = fire("Customer", "Order.place", "o1");
+        assert_eq!(go(&model, &mut session, place.clone(), None), [place]);
+        perform(&model, &mut session, vec![PlayAction::RunUntilQuiet]);
+        assert_eq!(state_of(&model, &session, "p1"), "state:Payment:authorizing");
+
+        // The bank's answer is a `?choice`: the prompt asks p1 first.
+        let respond = fire("Bank", "Payment.respond", "p1");
+        let oracle = SessionOracle { session: &session, model: &model };
+        let prompt = match begin(&oracle, respond.clone()) {
+            Ok(PromptStep::Ask(prompt)) => prompt,
+            other => panic!("expected a prompt, got {other:?}"),
+        };
+        assert_eq!(prompt.title(), "p1 chooses");
+        assert_eq!(prompt.point.options, ["approved", "card declined"]);
+        assert_eq!(prompt.request, respond);
+        assert!(session.timeline().actions.iter().all(|a| !matches!(a, PlayAction::Choose { .. })), "nothing recorded");
+
+        let actions = go(&model, &mut session, respond.clone(), Some("card declined"));
+        assert_eq!(actions, [choose("card declined"), respond]);
+        perform(&model, &mut session, vec![PlayAction::RunUntilQuiet]);
+        assert_eq!(state_of(&model, &session, "p1"), "state:Payment:declined");
+        assert_eq!(state_of(&model, &session, "o1"), "state:Order:cancelled");
+        assert!(session.pending_decisions().is_empty(), "the decision was taken");
+    }
+
+    #[test]
+    fn the_saga_happy_path_through_the_prompt() {
+        let (model, mut session) = saga();
+        go(&model, &mut session, fire("Customer", "Order.place", "o1"), None);
+        perform(&model, &mut session, vec![PlayAction::RunUntilQuiet]);
+        go(&model, &mut session, fire("Bank", "Payment.respond", "p1"), Some("approved"));
+        // Deliver the rest one step at a time, each through the prompt.
+        while !session.pending().is_empty() {
+            go(&model, &mut session, head(), None);
+        }
+        assert_eq!(state_of(&model, &session, "o1"), "state:Order:confirmed");
+        assert_eq!(state_of(&model, &session, "s1"), "state:Stock:reserved");
+    }
+
+    #[test]
+    fn a_step_into_choice_guards_is_asked_then_chosen_then_stepped() {
+        let model = cascade_core::load_str(
+            r#"
+machines:
+  Order:
+    initial: open
+    states: [open, paid]
+    transitions:
+      - { from: open, to: paid, on: pay, emits: [Paid] }
+  Payment:
+    initial: authorizing
+    states: [authorizing, captured, declined]
+    transitions:
+      - { from: authorizing, to: captured, on: respond, guard: "?approved" }
+      - { from: authorizing, to: declined, on: respond, guard: "?card declined" }
+controllers:
+  Bank:
+    on:
+      Paid: { fire: Payment.respond, target: Payment }
+external:
+  Api: [Order.pay]
+"#,
+        )
+        .expect("loads");
+        let mut session = PlaySession::new(&model);
+        perform(&model, &mut session, vec![add("o", "Order", &[]), add("p", "Payment", &[])]);
+        go(&model, &mut session, fire("Api", "Order.pay", "o"), None);
+        // Paid reaches Bank, which queues the fire: no decision yet.
+        assert_eq!(go(&model, &mut session, head(), None), [step(&head())]);
+        // Delivering the fire hits p's choice.
+        let oracle = SessionOracle { session: &session, model: &model };
+        let prompt = ask(begin(&oracle, head()));
+        assert_eq!((prompt.point.at.as_str(), prompt.point.options.as_slice()), ("p", &strs(&["approved", "card declined"])[..]));
+        assert_eq!(go(&model, &mut session, head(), Some("approved")), [choose("approved"), step(&head())]);
+        assert_eq!(state_of(&model, &session, "p"), "state:Payment:captured");
+    }
+
+    #[test]
+    fn a_pending_decision_already_covers_the_point() {
+        let (model, mut session) = saga();
+        go(&model, &mut session, fire("Customer", "Order.place", "o1"), None);
+        perform(&model, &mut session, vec![PlayAction::RunUntilQuiet, choose("card declined")]);
+        // The decision pushed earlier answers it: no prompt.
+        let respond = fire("Bank", "Payment.respond", "p1");
+        assert_eq!(go(&model, &mut session, respond.clone(), None), [respond]);
+        assert_eq!(state_of(&model, &session, "p1"), "state:Payment:declined");
+    }
+
+    fn strs(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_owned()).collect()
     }
 }

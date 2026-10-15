@@ -29,8 +29,8 @@ pub struct PlayUi {
     pub scenario_name: Entity<TextInput>,
     /// The clock's "advance by" box (empty: to the next timer).
     pub advance_by: Entity<TextInput>,
-    /// A step waiting for the user's decisions.
-    pub prompt: Option<ChoicePrompt>,
+    /// A step or an external fire waiting for the user's decisions.
+    pub prompt: Option<ChoicePrompt<PlayAction>>,
     /// A form input that did not parse.
     pub form_error: Option<String>,
     _subscriptions: Vec<Subscription>,
@@ -137,13 +137,19 @@ impl Workspace {
     /// Deliver a queue item (to one consumer or all), through the choice
     /// prompt.
     pub(crate) fn request_step(&mut self, request: StepRequest, cx: &mut Context<Self>) {
+        self.request_action(request.action(), cx);
+    }
+
+    /// Perform `action` (a step or an external fire), asking first for the
+    /// decisions it needs.
+    fn request_action(&mut self, action: PlayAction, cx: &mut Context<Self>) {
         self.play.prompt = None;
         self.ensure_play();
         let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_ref()) else {
             return;
         };
         let oracle = SessionOracle { session: state.session(), model: &loaded.model };
-        let next = choices::begin(&oracle, request);
+        let next = choices::begin(&oracle, action);
         self.after_prompt_step(next, cx);
     }
 
@@ -167,7 +173,7 @@ impl Workspace {
         cx.notify();
     }
 
-    fn after_prompt_step(&mut self, next: Result<PromptStep, String>, cx: &mut Context<Self>) {
+    fn after_prompt_step(&mut self, next: Result<PromptStep<PlayAction>, String>, cx: &mut Context<Self>) {
         match next {
             Ok(PromptStep::Ask(prompt)) => {
                 self.set_status(format!("{}: pick an option in the queue panel", prompt.title()), false);
@@ -252,7 +258,8 @@ impl Workspace {
     }
 
     /// A palette button: fire `trigger` from `source` at `target`, with the
-    /// payload field's assignments.
+    /// payload field's assignments, asking first for the decisions its
+    /// `?choice` guards need.
     pub(crate) fn fire(&mut self, source: String, trigger: TriggerRef, target: String, cx: &mut Context<Self>) {
         let payload: BTreeMap<String, String> = match parse_assignments(self.play.payload.read(cx).text()) {
             Ok(payload) => payload,
@@ -263,7 +270,7 @@ impl Workspace {
             }
         };
         self.play.form_error = None;
-        self.play(PlayAction::Fire { source, trigger, target, payload }, cx);
+        self.request_action(PlayAction::Fire { source, trigger, target, payload }, cx);
     }
 
     pub(crate) fn seek(&mut self, position: usize, cx: &mut Context<Self>) {

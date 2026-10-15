@@ -44,10 +44,17 @@ impl PlaySession {
         choice: Option<u32>,
         consumer: Option<&str>,
     ) -> Result<Vec<ChoicePoint>, SimError> {
+        self.choice_points_of(model, &PlayAction::Step { choice, consumer: consumer.map(str::to_owned) })
+    }
+
+    /// The choice points any `action` would hit (an external `Fire` into
+    /// `?choice` guards, a `Step`, …) with the current pending decisions,
+    /// in the order it would hit them, without changing anything. Fails
+    /// like the action would.
+    pub fn choice_points_of(&self, model: &Model, action: &PlayAction) -> Result<Vec<ChoicePoint>, SimError> {
         let mut core = self.core.clone();
         let before = core.step_count();
-        let action = PlayAction::Step { choice, consumer: consumer.map(str::to_owned) };
-        exec(&mut core, model, &action, &mut Schedule::Fifo)?;
+        exec(&mut core, model, action, &mut Schedule::Fifo)?;
         Ok(core.choices_since(model, before).into_iter().map(|(at, options)| ChoicePoint { at, options }).collect())
     }
 
