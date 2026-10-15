@@ -12,6 +12,9 @@
 //!   with everything); enum literals must be members; ordering needs numbers
 //!   (or `any`); `in` lists follow the equality rules.
 //! - An assignment's value must fit the assigned field's type.
+//! - A test must read a field: comparing two literals (`x > 0`, where the
+//!   bare `x` is a literal) or testing a literal with `in` is constant, which
+//!   is always a mistake (`ConstantTest`, suggesting `self.x` / `event.x`).
 
 use crate::error::DiagnosticKind;
 use crate::expr::{Assignment, CmpOp, Expr, FieldDecl, FieldType, Literal, Operand, literal_fits};
@@ -67,6 +70,10 @@ impl<'a> Site<'a> {
     }
 
     fn walk(&self, expr: &Expr, text: &str, out: &mut Vec<DiagnosticKind>) {
+        if let Some(constant) = self.constant_test(expr) {
+            out.push(constant);
+            return;
+        }
         match expr {
             Expr::Cmp { left, op, right } => {
                 let (Some(l), Some(r)) = (self.side(left, text, out), self.side(right, text, out)) else {
@@ -85,6 +92,22 @@ impl<'a> Site<'a> {
             Expr::Not(inner) => self.walk(inner, text, out),
             Expr::And(items) | Expr::Or(items) => items.iter().for_each(|e| self.walk(e, text, out)),
         }
+    }
+
+    /// A test (`Cmp` or `In`) that reads no field, with a suggestion when
+    /// one of its literals is a bare word that looks like a field name.
+    fn constant_test(&self, expr: &Expr) -> Option<DiagnosticKind> {
+        let (what, literals): (&'static str, Vec<&Literal>) = match expr {
+            Expr::Cmp { left: Operand::Lit(l), right: Operand::Lit(r), .. } => ("compares two literals", vec![l, r]),
+            Expr::In { operand: Operand::Lit(lit), .. } => ("tests a literal", vec![lit]),
+            Expr::Cmp { .. } | Expr::In { .. } | Expr::Not(_) | Expr::And(_) | Expr::Or(_) => return None,
+        };
+        let word = literals.into_iter().find(|lit| lit.as_number().is_none() && lit.as_bool().is_none() && !lit.quoted);
+        let suggestion = word.map(|lit| match self.self_scope {
+            SelfScope::Instance(_) => format!("`self.{}` or `event.{}`", lit.text, lit.text),
+            SelfScope::None(_) => format!("`event.{}`", lit.text),
+        });
+        Some(DiagnosticKind::ConstantTest { test: expr.to_string(), what, suggestion })
     }
 
     /// The operand's side, reporting undeclared fields and `self` where not

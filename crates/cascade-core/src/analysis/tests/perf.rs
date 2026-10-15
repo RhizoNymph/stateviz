@@ -52,7 +52,7 @@ fn generated_model() -> String {
         transition(&mut text, "busy.x", "busy.y", "");
         transition(&mut text, "busy", "s0", "");
         transition(&mut text, "s3", "s1", "");
-        transition(&mut text, "s2", "s4", ", guard: \"n > 0\"");
+        transition(&mut text, "s2", "s4", ", guard: \"self.id > 0\"");
         transition(&mut text, "s2", "s5", ", guard: else");
         transition(&mut text, "s5", "s5", ", bounded: true");
     }

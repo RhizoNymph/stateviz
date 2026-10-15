@@ -10,7 +10,10 @@
 //!   ancestors of reachable states are reachable, this covers transitions
 //!   declared on compound states, which apply to their descendants.
 //! - A trigger is triggerable when an external source can fire it, or a rule
-//!   fires it whose event is emitted by a live transition.
+//!   fires it whose event is emitted by a live transition, or it subscribes
+//!   to an event emitted by a live transition, or it is a timer (a timer
+//!   fires whenever its source state is active, so a reachable source is
+//!   enough).
 //! - A transition is live when it is enabled and its trigger triggerable; a
 //!   live transition enters its target and emits its events.
 //!
@@ -23,7 +26,7 @@ use std::collections::VecDeque;
 use super::describe;
 use super::{Finding, FindingDetail};
 use crate::ids::{EventId, StateId, TransitionId, TriggerId};
-use crate::model::{Model, StateKind};
+use crate::model::{Model, StateKind, TriggerKind};
 
 pub(super) fn check(model: &Model) -> Vec<Finding> {
     let reach = Reachability::compute(model);
@@ -112,7 +115,7 @@ impl<'m> Solver<'m> {
     fn run(&mut self) {
         let model = self.model;
         for (id, trigger) in model.triggers() {
-            if !trigger.sources.is_empty() {
+            if !trigger.sources.is_empty() || matches!(trigger.kind, TriggerKind::Timer(_)) {
                 self.arm(id);
             }
         }
@@ -198,6 +201,9 @@ impl<'m> Solver<'m> {
             for &r in &model.handler(h).rules {
                 self.arm(model.rule(r).trigger);
             }
+        }
+        for &trigger in &model.event(event).subscribers {
+            self.arm(trigger);
         }
     }
 }

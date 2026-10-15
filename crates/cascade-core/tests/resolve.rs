@@ -132,8 +132,8 @@ machines:
       - { from: running, to: failed, on: crash }
       - { from: running.computing, to: done, on: finish }
       - { from: failed, to: hist, on: resume }
-      - { from: fetching, to: fetching, on: retry, guard: "attempts < 3" }
-      - { from: fetching, to: fetching, on: retry, guard: "attempts >= 3" }
+      - { from: fetching, to: fetching, on: retry, guard: "event.attempts < 3" }
+      - { from: fetching, to: fetching, on: retry, guard: "event.attempts >= 3" }
 "#;
 
 #[test]
