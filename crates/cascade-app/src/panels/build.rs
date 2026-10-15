@@ -3,23 +3,16 @@
 
 use gpui::{Context, div, prelude::*, px};
 
-use super::{button, caption, error_line, section, separator};
+use super::{button, caption, error_line, hint, section, separator};
 use crate::build::connect;
 use crate::build::inspector::{FieldInput, FieldValue, InspectorAction};
 use crate::build::undo::Direction;
-use crate::commands::{Command, key_hint};
+use crate::commands::Command;
 use crate::mode::AppMode;
 use crate::theme::chrome;
 use crate::workspace::Workspace;
 
 const INSPECTOR_WIDTH: f32 = 320.0;
-
-fn hint(label: &str, command: Command) -> String {
-    match key_hint(command) {
-        Some(key) => format!("{label}  {}", key.to_uppercase()),
-        None => label.to_owned(),
-    }
-}
 
 impl Workspace {
     /// The second toolbar row, in Build mode only.
@@ -88,13 +81,38 @@ impl Workspace {
                     .on_click(cx.listener(|ws, _, window, cx| ws.new_file(window, cx))),
             )
             .child(div().flex_1())
-            .child(caption("Drag from a handle to connect · shift-click two elements, then Connect", colors));
+            .child(caption(
+                "Drag from a handle to connect (an event onto a transition subscribes it) · shift-click two elements, then Connect",
+                colors,
+            ));
+        let menu = self.build.connect_menu.as_ref().map(|menu| {
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(6.))
+                .px(px(10.))
+                .py(px(5.))
+                .border_b_1()
+                .border_color(colors.border)
+                .bg(colors.raised)
+                .child(caption("Connect:", colors))
+                .children(menu.offers.iter().enumerate().map(|(index, planned)| {
+                    button(("connect-offer", index), planned.label.clone(), index == 0, colors)
+                        .on_click(cx.listener(move |ws, _, _, cx| ws.pick_connect_offer(index, cx)))
+                }))
+                .child(
+                    button("connect-cancel", "Cancel", false, colors)
+                        .on_click(cx.listener(|ws, _, _, cx| ws.cancel_connect_menu(cx))),
+                )
+        });
         let status = match (read_only, &self.build.error) {
             (Some(message), _) => Some(message),
             (None, Some(error)) => Some(error.clone()),
             (None, None) => None,
         };
-        Some(div().flex().flex_col().child(bar).when_some(status, |el, message| {
+        Some(div().flex().flex_col().child(bar).children(menu).when_some(status, |el, message| {
             el.child(
                 div()
                     .px(px(12.))
@@ -177,7 +195,7 @@ impl Workspace {
                             .flex_row()
                             .items_center()
                             .gap(px(8.))
-                            .child(div().flex_none().w(px(84.)).text_color(colors.muted).child(id.label()))
+                            .child(div().flex_none().w(px(84.)).text_color(colors.muted).child(field.label.clone()))
                             .child(control),
                     )
                     .when_some(error, |el, e| el.child(div().pl(px(92.)).child(error_line(e, colors)))),

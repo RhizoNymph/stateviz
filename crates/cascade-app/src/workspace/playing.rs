@@ -5,13 +5,15 @@ use std::collections::BTreeMap;
 
 use cascade_core::definition::TriggerRef;
 use cascade_sim::{PlayAction, load_scenario_file};
-use gpui::{AppContext as _, Context, Entity};
+use gpui::{AppContext as _, Context, Entity, Subscription};
 
 use super::Workspace;
 use super::building::capitalize;
 use crate::document::scenarios;
-use crate::input::TextInput;
+use crate::input::{InputEvent, TextInput};
 use crate::play::PlayState;
+use crate::play::choices::{self, ChoicePrompt, PromptStep, SessionOracle, StepRequest};
+use crate::play::clock::advance_action;
 use crate::play::forms::{parse_assignments, scenario_path, scenario_text, write_scenario};
 
 /// Play mode's state and form fields.
@@ -25,12 +27,24 @@ pub struct PlayUi {
     pub start: Entity<TextInput>,
     pub payload: Entity<TextInput>,
     pub scenario_name: Entity<TextInput>,
+    /// The clock's "advance by" box (empty: to the next timer).
+    pub advance_by: Entity<TextInput>,
+    /// A step waiting for the user's decisions.
+    pub prompt: Option<ChoicePrompt>,
     /// A form input that did not parse.
     pub form_error: Option<String>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl PlayUi {
     pub fn new(cx: &mut Context<Workspace>) -> Self {
+        let advance_by = cx.new(|cx| TextInput::new("by: 30s (blank: next timer)", 170.0, cx));
+        // Enter advances; typing updates the button's label.
+        let advance_events = cx.subscribe(&advance_by, |ws: &mut Workspace, _, event: &InputEvent, cx| match event {
+            InputEvent::Submit => ws.play_advance(false, cx),
+            InputEvent::Changed => cx.notify(),
+            InputEvent::Cancel | InputEvent::Up | InputEvent::Down => {}
+        });
         Self {
             state: None,
             machine: None,
@@ -39,7 +53,10 @@ impl PlayUi {
             start: cx.new(|cx| TextInput::new("start state (optional)", 150.0, cx)),
             payload: cx.new(|cx| TextInput::new("payload: amount=42", 200.0, cx)),
             scenario_name: cx.new(|cx| TextInput::new("scenario name", 170.0, cx)),
+            advance_by,
+            prompt: None,
             form_error: None,
+            _subscriptions: vec![advance_events],
         }
     }
 }
@@ -62,42 +79,137 @@ impl Workspace {
 
     /// The model was replaced (reload or edit): replay the session on it.
     pub(crate) fn on_model_replaced(&mut self) {
+        self.play.prompt = None;
         if self.play.state.is_some() {
             self.ensure_play();
         }
     }
 
-    /// Perform a play action.
+    /// Perform a play action. Any open choice prompt is dropped: it was
+    /// asked about the session as it was.
     pub(crate) fn play(&mut self, action: PlayAction, cx: &mut Context<Self>) {
-        self.ensure_play();
-        let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_mut()) else {
-            self.set_status("Nothing to play: no model is loaded", true);
-            cx.notify();
-            return;
-        };
-        if let Err(error) = state.act(&loaded.model, action) {
-            tracing::warn!(%error, "play action failed");
-            self.set_status(capitalize(&error.to_string()), true);
-        }
+        self.play.prompt = None;
+        self.perform(vec![action]);
         self.changed(cx);
     }
 
+    /// Perform `actions` in order, stopping at the first failure.
+    fn perform(&mut self, actions: Vec<PlayAction>) -> bool {
+        self.ensure_play();
+        let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_mut()) else {
+            self.set_status("Nothing to play: no model is loaded", true);
+            return false;
+        };
+        for action in actions {
+            if let Err(error) = state.act(&loaded.model, action) {
+                tracing::warn!(%error, "play action failed");
+                self.set_status(capitalize(&error.to_string()), true);
+                return false;
+            }
+        }
+        true
+    }
+
+    fn in_play(&mut self, what: &str, cx: &mut Context<Self>) -> bool {
+        if self.mode == crate::mode::AppMode::Play {
+            return true;
+        }
+        self.set_status(format!("Switch to Play mode (Ctrl-3) to {what}"), false);
+        cx.notify();
+        false
+    }
+
+    /// Space, or clicking a queue item: deliver it, asking first for the
+    /// decisions it needs. With a prompt open, Space takes its first
+    /// option (the default).
     pub(crate) fn play_step(&mut self, choice: Option<u32>, cx: &mut Context<Self>) {
-        if self.mode != crate::mode::AppMode::Play {
-            self.set_status("Switch to Play mode (Ctrl-3) to step the queue", false);
-            cx.notify();
+        if !self.in_play("step the queue", cx) {
             return;
         }
-        self.play(PlayAction::Step { choice, consumer: None }, cx);
+        if choice.is_none()
+            && let Some(first) = self.play.prompt.as_ref().and_then(|p| p.point.options.first().cloned())
+        {
+            return self.pick_choice(first, cx);
+        }
+        self.request_step(StepRequest { choice, consumer: None }, cx);
+    }
+
+    /// Deliver a queue item (to one consumer or all), through the choice
+    /// prompt.
+    pub(crate) fn request_step(&mut self, request: StepRequest, cx: &mut Context<Self>) {
+        self.play.prompt = None;
+        self.ensure_play();
+        let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_ref()) else {
+            return;
+        };
+        let oracle = SessionOracle { session: state.session(), model: &loaded.model };
+        let next = choices::begin(&oracle, request);
+        self.after_prompt_step(next, cx);
+    }
+
+    /// Answer the open prompt.
+    pub(crate) fn pick_choice(&mut self, option: String, cx: &mut Context<Self>) {
+        let Some(prompt) = self.play.prompt.take() else {
+            return;
+        };
+        let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_ref()) else {
+            return;
+        };
+        let oracle = SessionOracle { session: state.session(), model: &loaded.model };
+        let next = choices::pick(&oracle, prompt, &option);
+        self.after_prompt_step(next, cx);
+    }
+
+    pub(crate) fn cancel_choice(&mut self, cx: &mut Context<Self>) {
+        if self.play.prompt.take().is_some() {
+            self.set_status("Step cancelled: nothing was delivered", false);
+        }
+        cx.notify();
+    }
+
+    fn after_prompt_step(&mut self, next: Result<PromptStep, String>, cx: &mut Context<Self>) {
+        match next {
+            Ok(PromptStep::Ask(prompt)) => {
+                self.set_status(format!("{}: pick an option in the queue panel", prompt.title()), false);
+                self.play.prompt = Some(prompt);
+                cx.notify();
+            }
+            Ok(PromptStep::Go(actions)) => {
+                self.perform(actions);
+                self.changed(cx);
+            }
+            Err(message) => {
+                tracing::warn!(error = %message, "cannot prepare the step");
+                self.set_status(capitalize(&message), true);
+                cx.notify();
+            }
+        }
     }
 
     pub(crate) fn play_run(&mut self, cx: &mut Context<Self>) {
-        if self.mode != crate::mode::AppMode::Play {
-            self.set_status("Switch to Play mode (Ctrl-3) to run the queue", false);
-            cx.notify();
+        if !self.in_play("run the queue", cx) {
             return;
         }
         self.play(PlayAction::RunUntilQuiet, cx);
+    }
+
+    /// Advance the clock by the typed duration, or to the next timer when
+    /// the box is empty (`T` always goes to the next timer).
+    pub(crate) fn play_advance(&mut self, next_timer: bool, cx: &mut Context<Self>) {
+        if !self.in_play("advance the clock", cx) {
+            return;
+        }
+        let text = if next_timer { String::new() } else { self.play.advance_by.read(cx).text().to_owned() };
+        match advance_action(&text) {
+            Ok(action) => {
+                self.play.form_error = None;
+                self.play(action, cx);
+            }
+            Err(message) => {
+                self.play.form_error = Some(message);
+                cx.notify();
+            }
+        }
     }
 
     pub(crate) fn pick_play_machine(&mut self, machine: String, cx: &mut Context<Self>) {
@@ -155,6 +267,7 @@ impl Workspace {
     }
 
     pub(crate) fn seek(&mut self, position: usize, cx: &mut Context<Self>) {
+        self.play.prompt = None;
         let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_mut()) else {
             return;
         };
@@ -165,6 +278,7 @@ impl Workspace {
     }
 
     pub(crate) fn switch_branch(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.play.prompt = None;
         let (Some(loaded), Some(state)) = (self.doc.loaded().cloned(), self.play.state.as_mut()) else {
             return;
         };
@@ -176,6 +290,7 @@ impl Workspace {
 
     /// Throw the session away and start empty.
     pub(crate) fn restart_play(&mut self, cx: &mut Context<Self>) {
+        self.play.prompt = None;
         self.play.state = None;
         self.ensure_play();
         self.set_status("New play session", false);
@@ -184,6 +299,7 @@ impl Workspace {
 
     /// Start play from a scenario file.
     pub(crate) fn load_play_scenario(&mut self, id: String, cx: &mut Context<Self>) {
+        self.play.prompt = None;
         let Some(loaded) = self.doc.loaded().cloned() else {
             return;
         };

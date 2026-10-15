@@ -53,9 +53,12 @@ Overview:
       structure view's pills toggle (P, remembered in a settings file), live
       reload, click-to-source, diff mode, pin dragging; a
       workbench with Build mode (edit ops with undo saved to the file in
-      place, drag-to-connect, inspector, new files) and Play mode
-      (interactive session with instances, trigger palette, queue, timeline,
-      scenarios).
+      place, drag-to-connect including subscribe offers, inspector with typed
+      fields, trigger kinds, guards/conditions with live parse and type
+      feedback, sets and emit with rows, new files) and Play mode
+      (interactive session with instances, trigger palette, clock with armed
+      timers and Advance, choice prompt, per-consumer queue delivery,
+      timeline, scenarios).
 
   data_flow: >
     Text → cascade_core::parse_definition → Definition → resolve → Model.
@@ -162,7 +165,9 @@ Features Index:
       live reload that keeps the last good model on screen. View/Build/Play modes: Build edits the definition
       (toolbar, drag-to-connect from handles or, with pills off, from
       anywhere within 8 px of a transition arrow, inspector, undo/redo,
-      own-write-aware saves, `--new`); Play drives an interactive simulator session with an overlay.
+      own-write-aware saves, `--new`); Play drives an interactive simulator session with an overlay,
+      a clock (T advances to the next timer), a choice prompt before steps that need decisions, and
+      per-consumer delivery from the queue.
     entry_points: [cascade-app, cascade-app --new, cascade new, cascade open, cascade_app::workspace::Workspace, cascade_app::settings, cascade_app::build::pick]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
@@ -172,8 +177,12 @@ Features Index:
       rename propagation and cascading removal, saved to the YAML file in
       place keeping comments) and play them (interactive simulator
       session with instances, trigger palette, queue stepping, branchable
-      timeline, record as scenario).
-    entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes]
+      timeline, record as scenario). The app's inspector edits typed fields,
+      trigger kinds (command, subscription with `where`, timer), guards and
+      conditions with live type feedback, `sets:` and emit `with:` rows;
+      drag-to-connect offers subscriptions; play shows the clock, armed
+      timers, a choice prompt and per-consumer delivery.
+    entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes, cascade_app::build::inspector::check, cascade_app::build::subscribe, cascade_app::play::choices]
     depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
     doc: docs/features/build-and-play.md
   readability:

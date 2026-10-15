@@ -10,4 +10,5 @@ pub mod inspector;
 pub mod ops;
 pub mod pick;
 pub mod pipeline;
+pub mod subscribe;
 pub mod undo;

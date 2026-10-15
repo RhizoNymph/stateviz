@@ -1,10 +1,14 @@
 //! Play mode's pure logic: the session state the panels show, the overlay
-//! drawn over the canvas, the timeline strip and the input forms.
+//! drawn over the canvas, the timeline strip, the input forms, the clock,
+//! the queue rows and the choice prompt.
 //!
 //! GPUI glue lives in `workspace::playing` and `panels::play`.
 
+pub mod choices;
+pub mod clock;
 pub mod forms;
 pub mod overlay;
+pub mod queue;
 pub mod timeline;
 
 use std::ops::Range;

@@ -1,11 +1,15 @@
 //! Play mode's panel on the right: session, instances, trigger palette,
-//! queue, last action, timeline and saving as a scenario.
+//! clock, queue (with the choice prompt and per-consumer delivery), last
+//! action, timeline and saving as a scenario.
 
 use cascade_core::ElementRef;
 use gpui::{Context, div, prelude::*, px};
 
-use super::{button, caption, error_line, muted_button, section};
+use super::{button, caption, error_line, hint, muted_button, section};
+use crate::commands::Command;
+use crate::play::clock::{advance_label, timer_rows};
 use crate::play::forms::group_fires;
+use crate::play::queue::queue_rows;
 use crate::play::timeline::{acting_forks, branch_label, chips};
 use crate::theme::chrome;
 use crate::workspace::Workspace;
@@ -123,28 +127,112 @@ impl Workspace {
             colors,
         ));
 
-        // --- Queue ----------------------------------------------------------------------
-        let pending = if stale { Vec::new() } else { session.pending() };
-        let queue_rows = pending.iter().enumerate().map(|(index, item)| {
-            let choice = u32::try_from(index).unwrap_or(u32::MAX);
+        // --- Clock ------------------------------------------------------------------------
+        let now = session.now();
+        let timers = if stale { Vec::new() } else { timer_rows(model, now, &session.timers()) };
+        let timer_list = timers.iter().map(|t| {
             div()
-                .id(("pending", index))
                 .flex()
                 .flex_row()
                 .gap(px(6.))
-                .px(px(4.))
-                .py(px(2.))
-                .rounded(px(3.))
-                .cursor_pointer()
-                .hover(move |s| s.bg(colors.hover))
-                .on_click(cx.listener(move |ws, _, _, cx| ws.play_step(Some(choice), cx)))
-                .child(div().flex_none().w(px(28.)).text_color(colors.muted).child(if index == 0 {
-                    "head".to_owned()
-                } else {
-                    format!("{}", index + 1)
-                }))
-                .child(div().flex_1().child(item.label.clone()))
+                .child(div().flex_none().w(px(56.)).child(t.instance.clone()))
+                .child(div().flex_1().text_color(colors.muted).child(t.trigger.clone()))
+                .child(div().flex_none().child(t.due_text()))
         });
+        let advance_text = self.play.advance_by.read(cx).text().to_owned();
+        let clock = section(format!("CLOCK  now {now}"), colors)
+            .children(timer_list)
+            .when(timers.is_empty(), |el| el.child(caption("No timers armed.", colors)))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .gap(px(6.))
+                    .child(
+                        button("advance-next", hint("Next timer", Command::PlayAdvance), false, colors)
+                            .when(timers.is_empty(), |b| b.text_color(colors.muted))
+                            .on_click(cx.listener(|ws, _, _, cx| ws.play_advance(true, cx))),
+                    )
+                    .child(self.play.advance_by.clone())
+                    .child(
+                        button("advance-by", advance_label(&advance_text), false, colors)
+                            .on_click(cx.listener(|ws, _, _, cx| ws.play_advance(false, cx))),
+                    ),
+            );
+
+        // --- Queue ----------------------------------------------------------------------
+        let pending = if stale { Vec::new() } else { session.pending() };
+        let rows = queue_rows(&pending);
+        let queue_rows_el = rows.iter().enumerate().map(|(index, row)| {
+            let request = row.request.clone();
+            let consumers = row.consumers.iter().enumerate().map(|(n, item)| {
+                let request = item.request.clone();
+                button(("consumer", index * 1_000 + n), item.label.clone(), false, colors)
+                    .on_click(cx.listener(move |ws, _, _, cx| ws.request_step(request.clone(), cx)))
+            });
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .child(
+                    div()
+                        .id(("pending", index))
+                        .flex()
+                        .flex_row()
+                        .gap(px(6.))
+                        .px(px(4.))
+                        .py(px(2.))
+                        .rounded(px(3.))
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(colors.hover))
+                        .on_click(cx.listener(move |ws, _, _, cx| ws.request_step(request.clone(), cx)))
+                        .child(div().flex_none().w(px(28.)).text_color(colors.muted).child(row.position.clone()))
+                        .child(div().flex_1().child(row.label.clone())),
+                )
+                .when_some(row.waiting.clone(), |el, waiting| {
+                    el.child(
+                        div()
+                            .pl(px(38.))
+                            .flex()
+                            .flex_row()
+                            .flex_wrap()
+                            .items_center()
+                            .gap(px(4.))
+                            .child(caption(waiting, colors))
+                            .children(consumers),
+                    )
+                })
+        });
+        let prompt = self.play.prompt.as_ref().map(|prompt| {
+            let options = prompt.point.options.iter().enumerate().map(|(n, option)| {
+                let value = option.clone();
+                let label = if n == 0 { format!("{option}  (default)") } else { option.clone() };
+                button(("choose", n), label, false, colors)
+                    .on_click(cx.listener(move |ws, _, _, cx| ws.pick_choice(value.clone(), cx)))
+            });
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
+                .p(px(6.))
+                .rounded(px(4.))
+                .border_1()
+                .border_color(colors.text)
+                .bg(colors.raised)
+                .child(div().child(prompt.title()))
+                .child(
+                    div().flex().flex_row().flex_wrap().gap(px(4.)).children(options).child(
+                        button("choose-cancel", "Cancel", false, colors)
+                            .on_click(cx.listener(|ws, _, _, cx| ws.cancel_choice(cx))),
+                    ),
+                )
+                .when(!prompt.answers.is_empty(), |el| {
+                    el.child(caption(format!("so far: {}", prompt.answers.join(", ")), colors))
+                })
+                .child(caption("Space takes the default.", colors))
+        });
+        let decisions = if stale { Vec::new() } else { session.pending_decisions().to_vec() };
         let queue = section(format!("QUEUE  ({})", pending.len()), colors)
             .child(
                 div()
@@ -160,9 +248,15 @@ impl Workspace {
                             .on_click(cx.listener(|ws, _, _, cx| ws.play_run(cx))),
                     ),
             )
-            .children(queue_rows)
+            .children(prompt)
+            .children(queue_rows_el)
             .when(pending.is_empty(), |el| el.child(caption("The queue is empty.", colors)))
-            .when(!pending.is_empty(), |el| el.child(caption("Click an item to deliver it out of order.", colors)));
+            .when(!pending.is_empty(), |el| {
+                el.child(caption("Click an item to deliver it out of order; → delivers to one consumer.", colors))
+            })
+            .when(!decisions.is_empty(), |el| {
+                el.child(caption(format!("Pending decisions: {}", decisions.join(", ")), colors))
+            });
 
         // --- Last action ------------------------------------------------------------------
         let steps = if stale { Vec::new() } else { state.last_steps(model) };
@@ -212,6 +306,7 @@ impl Workspace {
             .child(session_section)
             .child(instances_section)
             .child(palette)
+            .child(clock)
             .child(queue)
             .child(last)
             .child(timeline_section)
