@@ -33,6 +33,9 @@ Overview:
       swapped. One
       steppable engine serves batch runs and the interactive PlaySession
       (rewind, branches, replay after edits, save as a scenario).
+      Exploration enumerates every delivery ordering (and optionally every
+      choice and timer expiry) into distinct outcomes with replayable
+      witnesses.
     cascade-scene: >
       Model + view state → Scene, a backend-neutral display list with hit
       targets, for all four views. Owns the visual encoding (Okabe-Ito hues,
@@ -47,7 +50,8 @@ Overview:
       git revision for diff mode.
     cascade-cli: >
       The `cascade` binary: check (CI exit codes), render, export, import,
-      diff, simulate, open, new (blank definition opened in Build mode).
+      diff, simulate, explore (every ordering of a scenario as outcomes),
+      open, new (blank definition opened in Build mode).
     cascade-app: >
       The `cascade-app` GPUI binary: paints scenes, pan/zoom, selection, cone
       tracing, search, legend/entity filter, findings panel, trace and matrix
@@ -153,6 +157,17 @@ Features Index:
     entry_points: [cascade_sim::PlaySession::now, cascade_sim::PlaySession::timers, cascade_sim::PlayAction::Advance, "cascade_sim::PlayAction::Step { consumer }", cascade simulate --interactive (wait, timers, now)]
     depends_on: [simulator, definition_format, expressions]
     doc: docs/features/timers-and-subscriptions.md
+  exploration:
+    description: >
+      Every delivery ordering a scenario (or a play position) allows, under a
+      per-consumer or unordered model, optionally branching on every choice
+      option and expiring timers at any time: DFS over simulator states with
+      a visited set, canonical queue keys and sleep-set partial-order
+      reduction; distinct outcomes (instances, timers left, anomalies) with
+      the shortest witness found, which replays in a PlaySession.
+    entry_points: [cascade_sim::explore, cascade_sim::explore_from, cascade_sim::replay_witness, cascade explore]
+    depends_on: [simulator, timers_and_subscriptions]
+    doc: docs/features/exploration.md
   view_scenes:
     description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles); arrow mode (`pills=0`: the structure view draws each transition as one labelled state → state arrow through an invisible layout junction, wires attaching to the arrow with a dot) and play overlays (instance markers, active and pending items).
     entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::ViewState::transition_pills, cascade_scene::Scene::hit_test_arrows, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
