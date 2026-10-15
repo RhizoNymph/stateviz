@@ -63,7 +63,7 @@
 //!
 //! # Exploration
 //!
-//! [`explore`] and [`explore_from`] run every delivery ordering a scenario
+//! [`explore()`] and [`explore_from()`] run every delivery ordering a scenario
 //! or a play position allows (optionally every choice and timer expiry) and
 //! return the distinct outcomes, each with a witness that replays in a
 //! [`PlaySession`] (see the [`explore`](mod@explore) module).
