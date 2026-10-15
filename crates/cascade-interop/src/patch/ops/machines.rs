@@ -1,9 +1,9 @@
 //! Machine ops and the system name.
 
-use cascade_core::definition::{FieldDef, MachineDef, TargetSpec, fields_are_typed};
+use cascade_core::definition::{FieldDef, MachineDef, TargetSpec};
 use cascade_core::parse::grammar::{parse_target, parse_trigger_ref};
 
-use super::{Child, add_child, check_new_name, controllers, definition, insert_at, nav, step};
+use super::{Child, add_child, check_new_name, controllers, definition, insert_at, keyed, nav, step};
 use crate::patch::block;
 use crate::patch::collection::{
     Value, child_col, remove_child, replace_scalar, replace_value, set_key, set_names, set_scalar_key,
@@ -172,22 +172,20 @@ pub(super) fn set_scalar(text: &str, machine: &str, key: &str, value: Option<Str
     })
 }
 
+/// Replace the declared fields: entry by entry when the key exists (see
+/// [`keyed::set_field_decls`]), else a new flow value.
 pub(super) fn set_fields(text: &str, machine: &str, fields: &[FieldDef]) -> Result<String> {
-    let typed = fields_are_typed(fields);
-    let names: Vec<String> = fields.iter().map(|f| f.name.value.clone()).collect();
-    let list = crate::yaml::fields_text(fields);
-    step(text, |doc, _| {
-        let (_, entry) = nav::machine(doc, machine)?;
-        let body = &entry.value;
-        match (body.as_map().and_then(|m| m.get("fields")), fields.is_empty()) {
-            (Some(_), true) | (None, true) => set_key(doc, body, "fields", None, nav::MACHINE_ORDER),
-            (Some((_, existing)), false) if !typed && existing.value.as_map().is_none() => {
-                set_names(doc, existing, &names)
-            }
-            (Some((_, existing)), false) => replace_value(doc, existing, Value::Inline(list.clone())),
-            (None, false) => set_key(doc, body, "fields", Some(Value::Inline(list.clone())), nav::MACHINE_ORDER),
-        }
-    })
+    let doc = Doc::parse(text)?;
+    let (_, entry) = nav::machine(&doc, machine)?;
+    let exists = entry.value.as_map().and_then(|m| m.get("fields")).is_some();
+    if fields.is_empty() || !exists {
+        let list = (!fields.is_empty()).then(|| Value::Inline(crate::yaml::fields_text(fields)));
+        return step(text, |doc, _| {
+            let (_, entry) = nav::machine(doc, machine)?;
+            set_key(doc, &entry.value, "fields", list.clone(), nav::MACHINE_ORDER)
+        });
+    }
+    keyed::set_field_decls(text, &|doc| nav::require(&nav::machine(doc, machine)?.1.value, "fields"), fields)
 }
 
 /// Sets the system name; a new `system:` line opens the file (after its
