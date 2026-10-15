@@ -4,13 +4,16 @@
 mod cycles;
 mod events;
 mod examples;
+mod guards;
 mod invalid_fire;
 mod nondeterminism;
 mod ordering;
 mod perf;
 mod races;
 mod reachability;
+mod semantics;
 mod state_dependent;
+mod uncovered;
 
 use crate::analysis::{Check, Finding, FindingDetail, Severity, analyze};
 use crate::causal::CausalGraph;
@@ -84,8 +87,9 @@ fn detail_check_matches_variant() {
             FindingDetail::UnhandledEvent { .. } => Check::UnhandledEvent,
             FindingDetail::OrphanController { .. } => Check::OrphanController,
             FindingDetail::UnreachableState { .. } => Check::UnreachableState,
-            FindingDetail::RaceCandidate { .. } => Check::RaceCandidate,
+            FindingDetail::RaceCandidate { .. } | FindingDetail::SubscriptionRace { .. } => Check::RaceCandidate,
             FindingDetail::StateDependentFire { .. } => Check::StateDependentFire,
+            FindingDetail::UncoveredGuard { .. } => Check::UncoveredGuard,
         };
         assert_eq!(f.check(), expected);
         assert_eq!(f.severity, expected.default_severity());

@@ -73,6 +73,7 @@ command_actions! {
     NewFile => Command::NewFile,
     PlayStep => Command::PlayStep,
     PlayRun => Command::PlayRun,
+    PlayAdvance => Command::PlayAdvance,
 }
 
 /// Install the workspace key map.

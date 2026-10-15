@@ -138,14 +138,14 @@ fn an_update_can_add_fields_and_sources_to_a_flow_row() {
     let text = shop();
     let t = guarded(
         emitting(transition(&["created", "authorized"], "authorizing", "authorize"), &["PaymentAuthorized"]),
-        "x > 1",
+        "event.x > 1",
     );
     check(
         &text,
         &EditOp::UpdateTransition { machine: "Payment".into(), index: 0, transition: t.clone() },
         "@@ 83\n\
          -      - { from: created, to: authorizing, on: authorize }\n\
-         +      - { from: [created, authorized], to: authorizing, on: authorize, guard: \"x > 1\", emits: [PaymentAuthorized] }",
+         +      - { from: [created, authorized], to: authorizing, on: authorize, guard: \"event.x > 1\", emits: [PaymentAuthorized] }",
         |d| machine_mut(d, "Payment").transitions[0] = t,
     );
 }

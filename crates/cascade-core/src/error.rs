@@ -150,6 +150,11 @@ pub enum DiagnosticKind {
     NotAMember { value: String, ty: String },
     #[error("`{text}`: `self` is not available in {context}")]
     SelfNotAllowed { text: String, context: String },
+    /// A test that reads no field (`x > 0`: both sides are literals, or an
+    /// `in` tests a literal), so it is always true or always false. Bare
+    /// words are literals outside a filter's left-hand side.
+    #[error("`{test}` {what}, so it never depends on the data{}", suggestion.as_ref().map(|s| format!("; did you mean {s}?")).unwrap_or_default())]
+    ConstantTest { test: String, what: &'static str, suggestion: Option<String> },
     #[error(
         "trigger `{trigger}` of machine `{machine}` is used as a {first} and as a {second}{}",
         if *second == "command" { " (only command triggers can be fired by rules and external sources)" } else { "" }

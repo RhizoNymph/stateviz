@@ -1,0 +1,11 @@
+# The bank approves, stock is reserved, the checkout completes and confirms
+# the order.
+scenario: happy path
+instances:
+  o1: { machine: Order, fields: { orderId: "1", amount: "50" } }
+  p1: { machine: Payment, fields: { orderId: "1", amount: "50" } }
+  s1: { machine: Stock, fields: { orderId: "1" } }
+steps:
+  - { source: Customer, fire: Order.place, target: o1 }
+  - { choose: approved }
+  - { source: Bank, fire: Payment.respond, target: p1 }

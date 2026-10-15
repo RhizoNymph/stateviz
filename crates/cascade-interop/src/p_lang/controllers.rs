@@ -11,6 +11,9 @@
 use cascade_core::definition::TargetMode;
 use cascade_core::{ControllerId, Model, RuleId};
 
+use cascade_core::expr::{Condition, Operand};
+
+use super::fields::{self, PKind};
 use super::names::{Names, REGISTRY_TYPE, RUNNING_STATE, WIRE_EVENT, WIRING_STATE};
 use super::writer::Writer;
 
@@ -83,8 +86,21 @@ fn write_rule(w: &mut Writer, model: &Model, names: &Names, r: RuleId) {
         )),
     }
     let send = format!("send registry[\"{}\"], {};", names.machine(trigger.machine), names.trigger(rule.trigger));
-    if rule.condition.is_some() {
-        w.open("if ($) {");
+    if let Some(condition) = &rule.condition {
+        let payload = names.payload_kinds(model.handler(rule.handler).event);
+        let scope = |o: &Operand| -> Option<(String, &PKind)> {
+            match o {
+                Operand::Event(f) => {
+                    payload.iter().find(|p| p.cascade == *f).map(|p| (format!("payload.{}", p.ident), &p.kind))
+                }
+                Operand::SelfField(_) | Operand::Lit(_) => None,
+            }
+        };
+        let test = match condition {
+            Condition::Expr(expr) => fields::condition(expr, &scope),
+            Condition::Choice(_) => None,
+        };
+        w.open(&format!("if ({}) {{", test.as_deref().unwrap_or("$")));
         w.line(&send);
         w.close();
     } else {

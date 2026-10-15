@@ -6,8 +6,10 @@
 //! - `type tRegistry = map[string, machine];` and `event eWire: tRegistry;`
 //!   wire every instance to every other before anything runs.
 //! - Each Cascade event is a P event; a declared payload becomes a named
-//!   tuple type `t<Event>` whose fields are typed `any`. Each trigger is an
-//!   event `e<Machine>_<trigger>` without payload.
+//!   tuple type `t<Event>`, its fields typed as declared (see [`fields`]:
+//!   `number` is `float`, enums are P enums, untyped fields `any`). Each
+//!   trigger is an event `e<Machine>_<trigger>` without payload.
+//! - Declared instance fields are machine variables of those types.
 //! - Each Cascade machine is a P machine (see [`machines`]): nested states
 //!   are flattened to their atomic and final states named by path
 //!   (`running.fetching` → `running_fetching`), transitions declared on a
@@ -23,17 +25,29 @@
 //!
 //! - One instance per machine: target selectors are comments; fan-out and
 //!   spawn are TODOs.
-//! - Guards and `when` conditions are not translated: they become
-//!   nondeterministic choices (`$`) with their canonical text as a comment.
+//! - Guards and `when` conditions over typed fields become P conditions
+//!   (guards over the instance's variables, conditions over the handled
+//!   event's payload); everything else (`?choices`, `event.x` in a guard —
+//!   triggers carry no payload — `any` fields, subscription filters) is a
+//!   nondeterministic choice (`$`) with its canonical text as a comment.
+//! - `sets` assign the machine variables (an `event.x` source is a TODO).
+//! - Subscriptions: an emitted event is also sent, as the subscription
+//!   trigger, to every subscribing machine.
+//! - Timers: entering a state that arms one sends the timer trigger to
+//!   itself nondeterministically (`if ($) { send this, … }`), so it may
+//!   fire later or never. A timer whose state was left is ignored unless
+//!   the new state takes the same trigger, as in Cascade. Cancellation and
+//!   ordering by deadline need a timer machine (TODO).
 //! - History states are approximated by their parent's default entry.
 //! - States `ignore` the triggers they do not accept, matching Cascade's
 //!   "the fire is dropped"; remove those lines to have P report them.
-//! - Payload field types are `any` and payload values `default(...)`.
+//! - Payload values are `default(...)`.
 //! - No specifications (monitors) are generated; add them for the
 //!   properties to check.
 
 mod controllers;
 mod driver;
+mod fields;
 mod machines;
 mod names;
 mod writer;
@@ -76,7 +90,8 @@ fn write_header(w: &mut Writer, model: &Model) {
         "- Every Cascade machine and controller is a P machine; the test driver creates one",
         "  instance of each and sends all of them the registry of instances (eWire).",
         "- Triggers are events e<Machine>_<trigger>; Cascade events keep their names, with a",
-        "  named-tuple payload type t<Event> (fields typed `any`) when a payload is declared.",
+        "  named-tuple payload type t<Event> when a payload is declared. Field types: number is",
+        "  float, enums are P enums, untyped fields any; instance fields are machine variables.",
         "- Nested states are flattened to atomic and final states named by path; transitions",
         "  on a compound state apply to its descendants (innermost wins).",
         "- Emitted events are sent to every subscribed controller; controllers send the",
@@ -84,7 +99,9 @@ fn write_header(w: &mut Writer, model: &Model) {
         "",
         "Limits (fill these in):",
         "- One instance per machine: target selectors are comments, fan-out and spawn TODOs.",
-        "- Guards and conditions are not translated: they are nondeterministic choices ($).",
+        "- Guards and conditions over typed fields are P conditions; the rest (choices, trigger",
+        "  payloads, any fields, subscription filters) are nondeterministic choices ($).",
+        "- Timers are nondeterministic self-sends on entry (TODO: a timer machine).",
         "- History states enter their parent's default state.",
         "- States ignore triggers they do not accept, as Cascade drops them; remove the",
         "  ignore lines to have P report dropped triggers.",
@@ -102,6 +119,15 @@ fn write_declarations(w: &mut Writer, model: &Model, names: &Names) {
     w.line(&format!("type {REGISTRY_TYPE} = map[string, machine];"));
     w.line(&format!("event {WIRE_EVENT}: {REGISTRY_TYPE};"));
 
+    let enums = names.enums();
+    if !enums.is_empty() {
+        w.blank();
+        w.comment("Enum field types.");
+        for (name, members) in enums {
+            w.line(&format!("enum {name} {{ {} }}", members.join(", ")));
+        }
+    }
+
     if model.event_count() > 0 {
         w.blank();
         w.comment("Cascade events, sent by transitions to the controllers subscribed to them.");
@@ -109,7 +135,8 @@ fn write_declarations(w: &mut Writer, model: &Model, names: &Names) {
             let event = names.event(eid);
             match names.payload_type(eid) {
                 Some(ty) => {
-                    let fields: Vec<String> = names.payload_fields(eid).iter().map(|f| format!("{f}: any")).collect();
+                    let fields: Vec<String> =
+                        names.payload_kinds(eid).iter().map(|f| format!("{}: {}", f.ident, f.kind.p_type())).collect();
                     w.line(&format!("type {ty} = ({});", fields.join(", ")));
                     w.line(&format!("event {event}: {ty};"));
                 }

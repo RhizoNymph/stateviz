@@ -4,8 +4,10 @@
 <!-- triggers are events named Machine.trigger. Emitted events are <send>s. Each controller -->
 <!-- is a region marked cascade:controller: one transition per subscribed event, one <send> -->
 <!-- per rule (inside <if> when the rule has a condition). Guards and conditions are -->
-<!-- Cascade's own syntax (expressions, ?choices, else), not ECMAScript. External sources, declared events, colors, -->
-<!-- domains, fields, selectors and bounded flags live in the cascade: namespace. -->
+<!-- Cascade's own syntax (expressions, ?choices, else), not ECMAScript. Timers are delayed -->
+<!-- <send>s armed on entry and cancelled on exit; subscriptions are transitions on the -->
+<!-- event itself; sets are <assign>s and emit payloads <param>s. External sources, declared -->
+<!-- events, colors, domains, fields, selectors and bounded flags live in the cascade: namespace. -->
 <scxml xmlns="http://www.w3.org/2005/07/scxml" xmlns:cascade="urn:x-cascade:scxml" version="1.0">
   <cascade:source name="Customer" fires="Order.submit"/>
   <cascade:source name="PaymentGateway" fires="Order.capture_ok"/>

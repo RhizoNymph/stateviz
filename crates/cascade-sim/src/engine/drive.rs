@@ -6,8 +6,10 @@
 //!   something is queued, so no empty runs are recorded); an `immediate` one
 //!   does not. A fire with no `target:` fires at the fired machine's only
 //!   live instance at that moment.
-//! - Directives map one to one: `step` / `{ step: n }` → `Step`, `run` →
-//!   `RunUntilQuiet`, `create` → `AddInstance`, `remove` → `RemoveInstance`.
+//! - Directives map one to one: `step` / `{ step: n, consumer: c }` →
+//!   `Step`, `run` → `RunUntilQuiet`, `create` → `AddInstance`, `remove` →
+//!   `RemoveInstance`, `choose` → `Choose`, `wait` → `Advance` (which, like
+//!   a fire, runs until quiet first unless `timing: immediate`).
 //! - With `end: drain` (the default) the queue runs until quiet at the end.
 //!
 //! Problems found while running are reported at the entry's span.
@@ -34,7 +36,20 @@ pub(crate) trait Player {
     fn act(&mut self, model: &Model, action: PlayAction) -> Result<(), SimError>;
 }
 
-pub(crate) fn drive(model: &Model, scenario: &ResolvedScenario, player: &mut impl Player) -> Result<(), SimError> {
+/// What the driver learnt while running.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DriveReport {
+    /// The span of each `choose` directive, in the order they ran (the
+    /// decision's push order when the player started with none).
+    pub choose_spans: Vec<SourceSpan>,
+}
+
+pub(crate) fn drive(
+    model: &Model,
+    scenario: &ResolvedScenario,
+    player: &mut impl Player,
+) -> Result<DriveReport, SimError> {
+    let mut report = DriveReport::default();
     for instance in &scenario.instances {
         player.act(model, add_action(model, instance))?;
     }
@@ -53,8 +68,19 @@ pub(crate) fn drive(model: &Model, scenario: &ResolvedScenario, player: &mut imp
                 };
                 at(step.span, player.act(model, action))?;
             }
-            ResolvedEntry::Deliver { choice, span } => {
-                at(*span, player.act(model, PlayAction::Step { choice: *choice, consumer: None }))?;
+            ResolvedEntry::Deliver { choice, consumer, span } => {
+                let action = PlayAction::Step { choice: *choice, consumer: consumer.clone() };
+                at(*span, player.act(model, action))?;
+            }
+            ResolvedEntry::Wait { by, timing, span } => {
+                if *timing == StepTiming::AfterQuiescence && !player.is_quiet() {
+                    player.act(model, PlayAction::RunUntilQuiet)?;
+                }
+                at(*span, player.act(model, PlayAction::Advance { by: *by }))?;
+            }
+            ResolvedEntry::Choose { option, span } => {
+                report.choose_spans.push(*span);
+                at(*span, player.act(model, PlayAction::Choose { option: option.clone() }))?;
             }
             ResolvedEntry::Run { span } => at(*span, player.act(model, PlayAction::RunUntilQuiet))?,
             ResolvedEntry::Create { instance, span } => at(*span, player.act(model, add_action(model, instance)))?,
@@ -66,7 +92,7 @@ pub(crate) fn drive(model: &Model, scenario: &ResolvedScenario, player: &mut imp
     if scenario.end == ScenarioEnd::Drain && !player.is_quiet() {
         player.act(model, PlayAction::RunUntilQuiet)?;
     }
-    Ok(())
+    Ok(report)
 }
 
 /// Give an action's problem the span of the entry it came from.

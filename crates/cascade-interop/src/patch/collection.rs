@@ -3,10 +3,11 @@
 //! flow collection to block form.
 
 use super::block;
-use super::doc::{Doc, Entry, Kind, Node, Span};
+use super::doc::{Doc, Entry, Kind, Node, ScalarStyle, Span};
 use super::error::{Result, Unsupported};
 use super::render::{Block, Style, flow_list, free_text, plain_or_quoted, restyle};
 use super::splice::Splice;
+use crate::yaml::quote::{Ctx, scalar};
 
 /// A value to write under a key.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,10 +186,24 @@ pub(crate) fn set_text_key(
     order: &[&str],
 ) -> Result<Vec<Splice>> {
     let map = map_node.as_map().ok_or(Unsupported::Shape)?;
+    let quote = Style::detect(doc).quote_text;
     match (map.get(key), value) {
         (None, Some(value)) => {
-            let quote = Style::detect(doc).quote_text;
             set_key(doc, map_node, key, Some(Value::Inline(free_text(value, map.flow, quote))), order)
+        }
+        // In a file that writes its free text plain, a value that was quoted
+        // only because it had to be (`"?choice"`) goes back to plain when
+        // it can (`else`).
+        (Some((_, entry)), Some(value))
+            if !quote
+                && entry.value.as_scalar().is_some_and(|s| {
+                    s.style == ScalarStyle::DoubleQuoted && {
+                        let ctx = if s.in_flow { Ctx::Flow } else { Ctx::Block };
+                        scalar(&s.value, ctx).starts_with('"')
+                    }
+                }) =>
+        {
+            Ok(vec![Splice::replace(entry.value.start, entry.value.end, plain_or_quoted(value, map.flow))])
         }
         (_, value) => set_scalar_key(doc, map_node, key, value, order),
     }

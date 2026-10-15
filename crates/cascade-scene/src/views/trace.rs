@@ -16,6 +16,11 @@
 //! | `Spawn` | creation message; the new lifeline starts at that row |
 //! | `Dropped` | red-outlined ✕ note on the instance |
 //! | `NoTarget`, `Ambiguous` | dashed note on the controller |
+//! | `Notify` | delivery message emitter → subscribing instance, event name, solid in the subscriber's hue |
+//! | `Wait` | full-width dashed divider across the block, `◷ +30s · now 1m` |
+//! | `TimerExpired` | clock self-message on the instance, `◷ 30s`, short dashes in its hue |
+//! | `Choice` | decision note on the deciding lifeline, `◇ chosen` (italic, `(default)` when defaulted) over `of a \| b` |
+//! | `SetFields` | note on the instance, `set f = v, …` |
 //!
 //! Selection, cones and search emphasise the steps whose elements they
 //! cover; hide mode dims here, since removing steps would break the time
@@ -30,14 +35,15 @@ use cascade_sim::{Lifeline, LifelineIx, Trace, TraceStepKind};
 use crate::color::machine_styles;
 use crate::emphasis::{Anchor, Interaction};
 use crate::scene::{
-    Arrow, Border, Dash, EdgeKind, Emphasis, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneEdge, SceneNode,
-    Shape, Stroke,
+    Arrow, Border, CLOCK_GLYPH, Dash, EdgeKind, Emphasis, FontStyle, FontWeight, HitTarget, Label, Layer, Overlay,
+    Scene, SceneEdge, SceneNode, Shape, Stroke,
 };
 use crate::view_state::ViewKind;
 use crate::views::SceneInput;
 use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{EdgeInfo, Meta};
-use crate::views::style::{NodeLook, Painter, STUB_RADIUS, StateMark};
+use crate::views::labels;
+use crate::views::style::{Line, NodeLook, Painter, STUB_RADIUS, StateMark};
 
 /// Narrowest lifeline column.
 const COLUMN_MIN: f32 = 110.0;
@@ -52,6 +58,12 @@ const TITLE_GAP: f32 = 10.0;
 /// Length of a message from outside the diagram (a delivery whose emitter
 /// is unknown).
 const FOUND_MESSAGE: f32 = 48.0;
+/// How far a self-message's loop reaches right of its lifeline.
+const SELF_LOOP: f32 = 30.0;
+/// Gap between a self-message's loop and its label.
+const SELF_LABEL_GAP: f32 = 4.0;
+/// The decision marker's glyph.
+const DECISION: char = '◇';
 
 pub(super) fn build(input: &SceneInput<'_>, interaction: &Interaction) -> Scene {
     let mut scene = Scene::empty(ViewKind::Trace, input.theme.background);
@@ -109,6 +121,7 @@ impl Items {
                     font_size: l.font_size,
                     color: l.color,
                     weight: l.weight,
+                    style: l.style,
                 })
                 .collect(),
             badge: None,
@@ -204,10 +217,25 @@ impl Block<'_> {
             font_size: theme.small_font_size,
             color: theme.text,
             weight: FontWeight::Normal,
+            style: FontStyle::Normal,
         }
     }
 
-    /// What one step draws: a box on a lifeline, or a message.
+    /// A self-message's label: right of its loop, centered on the row.
+    fn self_label(&self, text: String, x: f32, y: f32) -> Label {
+        let theme = self.painter.theme;
+        let h = self.painter.line_height(theme.small_font_size);
+        Label {
+            origin: Point::new(x + SELF_LOOP + SELF_LABEL_GAP, y - h / 2.0),
+            text,
+            font_size: theme.small_font_size,
+            color: theme.text,
+            weight: FontWeight::Normal,
+            style: FontStyle::Normal,
+        }
+    }
+
+    /// What one step draws: a box on a lifeline, a message, or a divider.
     fn step_shape(&self, step: &cascade_sim::TraceStep) -> StepShape {
         let model = self.input.model;
         let painter = self.painter;
@@ -313,12 +341,98 @@ impl Block<'_> {
                     meta: Meta::new(vec![ElementRef::Rule(*rule)], self.causal(ElementRef::Handler(r.handler))),
                 }
             }
-            // Not drawn yet: subscriptions, the clock, choices and `sets`.
-            TraceStepKind::Notify { .. }
-            | TraceStepKind::Wait { .. }
-            | TraceStepKind::TimerExpired { .. }
-            | TraceStepKind::Choice { .. }
-            | TraceStepKind::SetFields { .. } => StepShape::Skip,
+            TraceStepKind::Notify { instance, event } => {
+                let machine = self.machine_of(*instance);
+                let subscription = machine.and_then(|m| model.subscription_trigger(m, *event));
+                let stroke = match machine {
+                    Some(m) => painter.notify_stroke(painter.machine(m)),
+                    None => painter.subscribe_stroke(),
+                };
+                let elements =
+                    std::iter::once(ElementRef::Event(*event)).chain(subscription.map(ElementRef::Trigger)).collect();
+                StepShape::Message {
+                    from: emitter(self.trace, step.cause).map_or(End::Found(*instance), End::Lifeline),
+                    to: End::Lifeline(*instance),
+                    text: model.event(*event).name.clone(),
+                    stroke,
+                    meta: Meta::new(elements, self.causal(ElementRef::Event(*event))),
+                }
+            }
+            TraceStepKind::Wait { by, now } => {
+                StepShape::Divider { text: format!("{CLOCK_GLYPH} +{by} · now {now}"), meta: Meta::free() }
+            }
+            TraceStepKind::TimerExpired { instance, trigger } => {
+                let t = model.trigger(*trigger);
+                let text = match labels::timer_delay(model, *trigger) {
+                    Some(delay) => labels::clock(delay),
+                    None => format!("{CLOCK_GLYPH} {}", t.name),
+                };
+                let anchor = Anchor::Nodes(
+                    t.accepted_by
+                        .iter()
+                        .filter_map(|&tr| self.input.graph.ix_of_element(ElementRef::Transition(tr)))
+                        .collect(),
+                );
+                StepShape::Message {
+                    from: End::Lifeline(*instance),
+                    to: End::Lifeline(*instance),
+                    text,
+                    stroke: painter.delay_stroke(painter.machine(t.machine)),
+                    meta: Meta::new(vec![ElementRef::Trigger(*trigger)], anchor),
+                }
+            }
+            TraceStepKind::Choice { at, options, chosen, defaulted } => {
+                let mut head = format!("{DECISION} {chosen}");
+                if *defaulted {
+                    head.push_str(" (default)");
+                }
+                let mut first = painter.small(head, theme.text);
+                first.style = FontStyle::Italic;
+                let lines = vec![first, painter.small(format!("of {}", options.join(" | ")), theme.text_muted)];
+                StepShape::Box {
+                    lifeline: *at,
+                    look: self.note_lines(
+                        lines,
+                        Stroke::solid(theme.neutral, theme.stroke_width),
+                        Some(theme.background),
+                    ),
+                    meta: Meta::free(),
+                }
+            }
+            TraceStepKind::SetFields { instance, fields } => {
+                let assignments: Vec<String> = fields.iter().map(|(k, v)| format!("{k} = {v}")).collect();
+                let text = format!("set {}", assignments.join(", "));
+                let machine = self.machine_of(*instance);
+                let stroke = Stroke::dashed(theme.neutral, theme.stroke_width);
+                let fill = machine.map_or(Some(theme.background), |m| Some(painter.machine(m).pale));
+                StepShape::Box {
+                    lifeline: *instance,
+                    look: self.note_lines(vec![painter.small(text, theme.text)], stroke, fill),
+                    meta: Meta::new(machine.map(ElementRef::Machine).into_iter().collect(), Anchor::Free),
+                }
+            }
+        }
+    }
+
+    /// The machine of an instance lifeline.
+    fn machine_of(&self, ix: LifelineIx) -> Option<cascade_core::MachineId> {
+        match self.trace.lifelines.get(ix.index()) {
+            Some(Lifeline::Instance { machine, .. }) => Some(*machine),
+            _ => None,
+        }
+    }
+
+    /// A rounded note holding `lines`.
+    fn note_lines(&self, lines: Vec<Line>, stroke: Stroke, fill: Option<crate::color::Rgba>) -> NodeLook {
+        let (size, labels) = self.painter.boxed_lines(lines);
+        NodeLook {
+            shape: Shape::RoundedRect { radius: STUB_RADIUS },
+            size,
+            fill,
+            stroke,
+            border: Border::Single,
+            labels,
+            circles: Vec::new(),
         }
     }
 
@@ -340,12 +454,19 @@ impl Block<'_> {
                 }
                 StepShape::Message { from, to, text, .. } => {
                     let (a, b) = (from.lifeline().index(), to.lifeline().index());
+                    let text_w = self.painter.text_width(text, small);
                     if a != b && a < n && b < n {
-                        let need = self.painter.text_width(text, small) + 2.0 * crate::views::style::PAD_X;
+                        let need = text_w + 2.0 * crate::views::style::PAD_X;
                         spans.push((a.min(b), a.max(b), need));
+                    } else if a == b
+                        && let Some(w) = widths.get_mut(a)
+                    {
+                        // A self-message: its loop and label sit right of the
+                        // lifeline, inside the column's right half.
+                        *w = w.max(2.0 * (SELF_LOOP + SELF_LABEL_GAP + text_w) + COLUMN_PAD);
                     }
                 }
-                StepShape::Skip => {}
+                StepShape::Divider { .. } => {}
             }
         }
         let mut centers: Vec<f32> = Vec::with_capacity(n);
@@ -379,6 +500,7 @@ impl Block<'_> {
                 font_size: theme.font_size,
                 color: theme.text,
                 weight: FontWeight::Bold,
+                style: FontStyle::Normal,
             },
             opacity: 1.0,
             layer: Layer::Over,
@@ -429,10 +551,22 @@ impl Block<'_> {
                             if head.center().x >= from_x { head.left() } else { head.right() }
                         }
                     };
-                    let label = self.label(text, from_x, to_x, y);
+                    let label = if (from_x - to_x).abs() < 0.5 {
+                        self.self_label(text, from_x, y)
+                    } else {
+                        self.label(text, from_x, to_x, y)
+                    };
                     out.message(line(from_x, to_x, y), stroke, Some(label), target, meta);
                 }
-                StepShape::Skip => {}
+                StepShape::Divider { text, meta } => {
+                    let label = self.label(text, left, right, y);
+                    let stroke =
+                        Stroke { color: theme.text_muted, width: 1.0, dash: Dash::Dashed { on: 6.0, off: 3.0 } };
+                    out.message(vec![Point::new(left, y), Point::new(right, y)], stroke, Some(label), target, meta);
+                    if let Some(edge) = out.scene.edges.last_mut() {
+                        edge.arrow = Arrow::None;
+                    }
+                }
             }
         }
 
@@ -471,10 +605,10 @@ impl Block<'_> {
 enum StepShape {
     /// A box centered on a lifeline.
     Box { lifeline: LifelineIx, look: NodeLook, meta: Meta },
-    /// A horizontal message.
+    /// A horizontal message (a small loop when both ends are one lifeline).
     Message { from: End, to: End, text: String, stroke: Stroke, meta: Meta },
-    /// Nothing drawn; the row stays (step kinds the view does not draw yet).
-    Skip,
+    /// A dashed line across the whole block (the clock moved).
+    Divider { text: String, meta: Meta },
 }
 
 /// One end of a message.
@@ -500,8 +634,8 @@ fn line(from_x: f32, to_x: f32, y: f32) -> Vec<Point> {
     if (from_x - to_x).abs() < 0.5 {
         vec![
             Point::new(from_x, y - 6.0),
-            Point::new(from_x + 30.0, y - 6.0),
-            Point::new(from_x + 30.0, y + 6.0),
+            Point::new(from_x + SELF_LOOP, y - 6.0),
+            Point::new(from_x + SELF_LOOP, y + 6.0),
             Point::new(from_x, y + 6.0),
         ]
     } else {

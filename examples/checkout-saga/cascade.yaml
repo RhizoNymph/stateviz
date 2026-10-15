@@ -1,0 +1,94 @@
+# A checkout saga. Checkout is a plain machine: it subscribes to the payment
+# and stock events of its order, records what it learns with `sets`, reports
+# back with emits that `Order` subscribes to, and gives up after 30 minutes.
+# The bank's answer is a choice the data doesn't carry (`?approved`).
+# Fields are typed, so `event.amount >= self.amount` compares numbers.
+system: Checkout saga
+
+machines:
+  Order:
+    color: blue
+    fields: { orderId: string, amount: number }
+    initial: draft
+    states: [draft, placed, confirmed, cancelled]
+    transitions:
+      - { from: draft, to: placed, on: place, emits: [OrderPlaced] }
+      - from: placed
+        to: confirmed
+        on: { event: CheckoutCompleted, where: "orderId == event.orderId" }
+      - from: placed
+        to: cancelled
+        on: { event: CheckoutFailed, where: "orderId == event.orderId" }
+
+  Payment:
+    color: green
+    fields: { orderId: string, amount: number }
+    initial: idle
+    states: [idle, authorizing, captured, declined]
+    transitions:
+      - { from: idle, to: authorizing, on: authorize }
+      - { from: authorizing, to: captured, on: respond, guard: "?approved", emits: [PaymentCaptured] }
+      - { from: authorizing, to: declined, on: respond, guard: "?card declined", emits: [PaymentDeclined] }
+
+  Stock:
+    color: yellow
+    fields: { orderId: string }
+    initial: idle
+    states: [idle, reserved]
+    transitions:
+      - { from: idle, to: reserved, on: reserve, emits: [StockReserved] }
+
+  Checkout:
+    color: purple
+    fields:
+      orderId: string
+      amount: number
+      paid: number
+      reason: enum [underpaid, declined, timeout]
+    initial: opening
+    states: [opening, waiting, paid, done, failed, expired]
+    transitions:
+      - { from: opening, to: waiting, on: open }
+      - from: waiting
+        to: paid
+        on: { event: PaymentCaptured, where: "orderId == event.orderId" }
+        guard: "event.amount >= self.amount"
+        sets: { paid: event.amount }
+      - from: waiting
+        to: failed
+        on: { event: PaymentCaptured, where: "orderId == event.orderId" }
+        guard: else
+        sets: { reason: underpaid }
+        emits:
+          - { event: CheckoutFailed, with: { reason: underpaid } }
+      - from: waiting
+        to: failed
+        on: { event: PaymentDeclined, where: "orderId == event.orderId" }
+        sets: { reason: declined }
+        emits:
+          - { event: CheckoutFailed, with: { reason: declined } }
+      - from: paid
+        to: done
+        on: { event: StockReserved, where: "orderId == event.orderId" }
+        emits: [CheckoutCompleted]
+      - from: [waiting, paid]
+        to: expired
+        after: 30m
+        emits:
+          - { event: CheckoutFailed, with: { reason: timeout } }
+
+controllers:
+  Saga:
+    on:
+      OrderPlaced:
+        - fire: Checkout.open
+          target: new Checkout with orderId = event.orderId, amount = event.amount
+        - fire: Payment.authorize
+          target: Payment where orderId == event.orderId
+      PaymentCaptured:
+        - fire: Stock.reserve
+          target: Stock where orderId == event.orderId
+
+external:
+  Customer: [Order.place]
+  Bank: [Payment.respond]

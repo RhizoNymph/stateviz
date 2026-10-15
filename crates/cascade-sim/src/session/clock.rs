@@ -1,51 +1,68 @@
 //! The clock, armed timers, pending decisions, choice points and the
 //! session's state key.
-//!
-//! Timers, choices and the clock do not run yet: the clock stays at zero,
-//! nothing is armed, no decision is pending and no step hits a choice
-//! point.
 
 use std::fmt::Write as _;
 
 use cascade_core::Model;
 use cascade_core::expr::Duration;
 
-use super::{ArmedTimer, ChoicePoint, PlaySession, StateKey};
+use super::{ArmedTimer, ChoicePoint, PlayAction, PlaySession, StateKey};
 use crate::engine::core::QueueItem;
+use crate::engine::exec::{Schedule, exec};
 use crate::error::SimError;
 
 impl PlaySession {
     /// The current clock time (zero at the start).
     pub fn now(&self) -> Duration {
-        Duration::ZERO
+        self.core.now()
     }
 
     /// Armed timers in deadline order (ties: arming order).
     pub fn timers(&self) -> Vec<ArmedTimer> {
-        Vec::new()
+        self.core
+            .armed()
+            .iter()
+            .map(|a| ArmedTimer {
+                instance: self.core.instance(a.instance).name.clone(),
+                trigger: a.trigger,
+                deadline: a.deadline,
+            })
+            .collect()
     }
 
     /// Decisions pushed by `Choose` and not yet taken, oldest first.
     pub fn pending_decisions(&self) -> &[String] {
-        &[]
+        self.core.decisions()
     }
 
     /// The choice points `Step { choice, consumer }` would hit with the
-    /// current pending decisions, without changing anything.
+    /// current pending decisions, in the order it would hit them, without
+    /// changing anything. Fails like the step would.
     pub fn choice_points(
         &self,
         model: &Model,
         choice: Option<u32>,
         consumer: Option<&str>,
     ) -> Result<Vec<ChoicePoint>, SimError> {
-        let _ = (model, choice, consumer);
-        Ok(Vec::new())
+        self.choice_points_of(model, &PlayAction::Step { choice, consumer: consumer.map(str::to_owned) })
+    }
+
+    /// The choice points any `action` would hit (an external `Fire` into
+    /// `?choice` guards, a `Step`, …) with the current pending decisions,
+    /// in the order it would hit them, without changing anything. Fails
+    /// like the action would.
+    pub fn choice_points_of(&self, model: &Model, action: &PlayAction) -> Result<Vec<ChoicePoint>, SimError> {
+        let mut core = self.core.clone();
+        let before = core.step_count();
+        exec(&mut core, model, action, &mut Schedule::Fifo)?;
+        Ok(core.choices_since(model, before).into_iter().map(|(at, options)| ChoicePoint { at, options }).collect())
     }
 
     /// See [`StateKey`].
     pub fn state_key(&self) -> StateKey {
+        let core = &self.core;
         let mut key = String::new();
-        for instance in self.core.instances() {
+        for instance in core.instances() {
             if instance.removed {
                 let _ = write!(key, "removed {};", instance.name);
                 continue;
@@ -60,14 +77,33 @@ impl PlaySession {
                 instance.history_entries()
             );
         }
-        for queued in self.core.queue() {
+        for queued in core.queue() {
             let _ = match &queued.item {
                 QueueItem::Event { event, payload, .. } => write!(key, "event {event:?} {payload:?}"),
                 QueueItem::Fire { rule, target, payload, .. } => {
-                    write!(key, "fire {rule:?} {} {payload:?}", self.core.instance(*target).name)
+                    write!(key, "fire {rule:?} {} {payload:?}", core.instance(*target).name)
+                }
+                QueueItem::Timer { trigger, target, .. } => {
+                    write!(key, "timer {trigger:?} {}", core.instance(*target).name)
                 }
             };
-            let _ = write!(key, " {:?};", queued.consumers_left);
+            let names: Vec<&str> = queued.consumers_left.iter().map(|c| c.name.as_str()).collect();
+            let _ = write!(key, " {names:?};");
+        }
+        // Timers relative to now, so two sessions that differ only in how
+        // much time has passed share a key.
+        for armed in core.armed() {
+            let _ = write!(
+                key,
+                "armed {} {:?} {:?} +{};",
+                core.instance(armed.instance).name,
+                armed.trigger,
+                armed.state,
+                armed.deadline.saturating_sub(core.now()).millis()
+            );
+        }
+        for decision in core.decisions() {
+            let _ = write!(key, "decision {decision:?};");
         }
         StateKey(key)
     }

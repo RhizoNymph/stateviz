@@ -42,6 +42,7 @@ pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option
     match target {
         HitTarget::None | HitTarget::MatrixCell { .. } => None,
         HitTarget::ConnectHandle { element } => Some(element.clone()),
+        HitTarget::SubscribeHandle { event } => Some(ElementKey::Event { event: event.clone() }),
         HitTarget::Element(key) => Some(key.clone()),
         HitTarget::MachineStub { machine, .. } => Some(ElementKey::Machine { machine: machine.clone() }),
         HitTarget::TraceStep { ordering, step } => {
@@ -57,11 +58,13 @@ pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option
     }
 }
 
-/// The element a connect drag can drop on at this target: a drawn element
-/// or another element's connect handle.
-pub fn drop_key(target: &HitTarget) -> Option<&ElementKey> {
+/// The element a connect drag can drop on at this target: a drawn element,
+/// another element's connect handle, or an event tag's subscribe handle
+/// (which covers the tag, so a drop on the tag lands on the event).
+pub fn drop_key(target: &HitTarget) -> Option<ElementKey> {
     match target {
-        HitTarget::Element(key) | HitTarget::ConnectHandle { element: key } => Some(key),
+        HitTarget::Element(key) | HitTarget::ConnectHandle { element: key } => Some(key.clone()),
+        HitTarget::SubscribeHandle { event } => Some(ElementKey::Event { event: event.clone() }),
         HitTarget::None
         | HitTarget::MachineStub { .. }
         | HitTarget::MatrixCell { .. }
@@ -76,12 +79,12 @@ pub fn drop_targets(scene: &Scene, accept: impl Fn(&ElementKey) -> bool) -> Vec<
     let mut out: Vec<(ElementKey, Rect)> = Vec::new();
     let nodes = scene.nodes.iter().filter_map(|n| drop_key(&n.target).map(|k| (k, n.rect)));
     let edges = scene.edges.iter().filter_map(|e| match &e.target {
-        HitTarget::Element(k) => bounds_of(&e.points).map(|r| (k, r)),
+        HitTarget::Element(k) => bounds_of(&e.points).map(|r| (k.clone(), r)),
         _ => None,
     });
     for (key, rect) in nodes.chain(edges) {
-        if accept(key) && !out.iter().any(|(k, _)| k == key) {
-            out.push((key.clone(), rect));
+        if accept(&key) && !out.iter().any(|(k, _)| *k == key) {
+            out.push((key, rect));
         }
     }
     out
@@ -375,7 +378,12 @@ mod tests {
         );
         let rules = drop_targets(&scene, |k| *k == rule);
         assert_eq!(rules, [(rule, Rect::new(0.0, 20.0, 5.0, 10.0))]);
-        assert_eq!(drop_key(&HitTarget::ConnectHandle { element: draft.clone() }), Some(&draft));
+        assert_eq!(drop_key(&HitTarget::ConnectHandle { element: draft.clone() }), Some(draft.clone()));
         assert_eq!(drop_key(&HitTarget::None), None);
+        assert_eq!(
+            drop_key(&HitTarget::SubscribeHandle { event: "OrderPaid".into() }),
+            Some(key("event:OrderPaid")),
+            "a drop on an event tag's subscribe handle lands on the event"
+        );
     }
 }

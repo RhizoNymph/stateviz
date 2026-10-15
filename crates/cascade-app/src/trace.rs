@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use cascade_core::{FindingDetail, Model};
-use cascade_sim::{ScenarioError, SimError, Trace, parse_scenario, race_orderings, simulate};
+use cascade_sim::{ScenarioError, SimError, Trace, parse_scenario, race_orderings, race_replay_note, simulate};
 
 /// What the trace view asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,12 +90,14 @@ pub enum TraceError {
 }
 
 /// Read and parse the scenario at `path`, then simulate it, or replay the
-/// race `race` (a race-candidate finding detail) in both orders.
+/// race `race` (a race-candidate finding detail) in both orders. A race the
+/// simulator cannot replay (`cascade_sim::race_replay_note`: a subscription
+/// race) runs the scenario as queued; the trace overlay shows the note.
 pub fn run(model: &Model, id: &str, path: &Path, race: Option<&FindingDetail>) -> Result<Vec<Trace>, TraceError> {
     let text = std::fs::read_to_string(path)
         .map_err(|source| TraceError::Read { path: path.display().to_string(), source })?;
     let scenario = parse_scenario(&text).map_err(|source| TraceError::Scenario { scenario: id.to_owned(), source })?;
-    match race {
+    match race.filter(|detail| race_replay_note(detail).is_none()) {
         None => simulate(model, &scenario)
             .map(|t| vec![t])
             .map_err(|source| TraceError::Sim { scenario: id.to_owned(), source }),
@@ -147,5 +149,19 @@ mod tests {
         }
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+    #[test]
+    fn a_subscription_race_runs_the_scenario_as_queued() {
+        let model =
+            cascade_core::load_str(include_str!("../../../examples/checkout-saga/cascade.yaml")).expect("loads");
+        let graph = cascade_core::CausalGraph::build(&model);
+        let findings = cascade_core::analyze(&model, &graph);
+        let race = crate::locate::race_finding(&findings, 0).expect("the saga has a race candidate");
+        assert!(matches!(race.detail, FindingDetail::SubscriptionRace { .. }));
+        let path =
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/checkout-saga/scenarios/happy-path.yaml"));
+        let traces = run(&model, "happy-path", path, Some(&race.detail)).expect("runs as queued");
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces, run(&model, "happy-path", path, None).expect("runs"));
     }
 }

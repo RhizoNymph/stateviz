@@ -10,7 +10,7 @@ use cascade_core::MachineId;
 use cascade_layout::{Point, Size};
 
 use crate::color::{MachineStyle, Rgba, Theme, style_of};
-use crate::scene::{Border, Dash, FontWeight, Shape, Stroke};
+use crate::scene::{Border, Dash, FontStyle, FontWeight, Shape, Stroke};
 use crate::text::TextMeasure;
 
 /// Horizontal text padding inside a node.
@@ -34,6 +34,7 @@ pub(crate) struct RelLabel {
     pub font_size: f32,
     pub color: Rgba,
     pub weight: FontWeight,
+    pub style: FontStyle,
 }
 
 /// A circle drawn with a node (the ring around a history marker), relative
@@ -63,6 +64,7 @@ pub(crate) struct Line {
     pub font_size: f32,
     pub color: Rgba,
     pub weight: FontWeight,
+    pub style: FontStyle,
 }
 
 /// How a state is marked.
@@ -95,11 +97,23 @@ impl Painter<'_> {
     }
 
     pub fn line(&self, text: impl Into<String>, color: Rgba) -> Line {
-        Line { text: text.into(), font_size: self.theme.font_size, color, weight: FontWeight::Normal }
+        Line {
+            text: text.into(),
+            font_size: self.theme.font_size,
+            color,
+            weight: FontWeight::Normal,
+            style: FontStyle::Normal,
+        }
     }
 
     pub fn small(&self, text: impl Into<String>, color: Rgba) -> Line {
-        Line { text: text.into(), font_size: self.theme.small_font_size, color, weight: FontWeight::Normal }
+        Line {
+            text: text.into(),
+            font_size: self.theme.small_font_size,
+            color,
+            weight: FontWeight::Normal,
+            style: FontStyle::Normal,
+        }
     }
 
     /// Width and height of a block of lines.
@@ -125,11 +139,17 @@ impl Painter<'_> {
                     font_size: l.font_size,
                     color: l.color,
                     weight: l.weight,
+                    style: l.style,
                 };
                 y += self.line_height(label.font_size);
                 label
             })
             .collect()
+    }
+
+    /// Lines in a box with the standard padding: its size and labels.
+    pub fn boxed_lines(&self, lines: Vec<Line>) -> (Size, Vec<RelLabel>) {
+        self.boxed(lines, PAD_X, 0.0, 0.0, 0.0)
     }
 
     fn boxed(
@@ -157,8 +177,16 @@ impl Painter<'_> {
 
     /// Transition: a pill in the machine's full hue, `before → after` with
     /// the trigger underneath.
+    #[cfg(test)]
     pub fn pill(&self, primary: String, trigger: String, style: MachineStyle) -> NodeLook {
-        let lines = vec![self.line(primary, style.on_hue), self.small(trigger, style.on_hue)];
+        self.pill_lines(primary, vec![trigger], style)
+    }
+
+    /// A pill with several small lines under `before → after`: the
+    /// trigger, then (for a subscription) its `where` filter.
+    pub fn pill_lines(&self, primary: String, details: Vec<String>, style: MachineStyle) -> NodeLook {
+        let mut lines = vec![self.line(primary, style.on_hue)];
+        lines.extend(details.into_iter().map(|d| self.small(d, style.on_hue)));
         let block = self.block(&lines);
         let height = block.height + 2.0 * PAD_Y;
         let pad = PAD_X.max(height * 0.35);
@@ -230,6 +258,7 @@ impl Painter<'_> {
             font_size: self.theme.font_size,
             color: self.theme.text,
             weight: FontWeight::Bold,
+            style: FontStyle::Normal,
         }];
         lines.extend(handlers.into_iter().map(|h| self.small(h, self.theme.text_muted)));
         // The pointed sides take up to 40% of the height each (see the SVG
@@ -300,6 +329,7 @@ impl Painter<'_> {
                 font_size: small,
                 color: self.theme.text,
                 weight: FontWeight::Bold,
+                style: FontStyle::Normal,
             });
         }
         NodeLook {
@@ -341,6 +371,7 @@ impl Painter<'_> {
                 font_size: self.theme.font_size,
                 color: self.theme.text,
                 weight: FontWeight::Bold,
+                style: FontStyle::Normal,
             },
             self.small(detail, self.theme.text_muted),
         ];
@@ -376,6 +407,19 @@ impl Painter<'_> {
     /// Controller → transition: dashed in the target machine's hue.
     pub fn fire_stroke(&self, target: MachineStyle) -> Stroke {
         Stroke::dashed(target.hue, self.theme.stroke_width)
+    }
+
+    /// Event → subscribed transition: solid in the subscribing machine's
+    /// hue. Solid like a subscription (no controller in between), in the
+    /// hue like a fire (it drives that machine).
+    pub fn notify_stroke(&self, target: MachineStyle) -> Stroke {
+        Stroke::solid(target.hue, self.theme.stroke_width)
+    }
+
+    /// Transition → the timer it arms: short dashes in the machine's hue
+    /// (labelled with the clock).
+    pub fn delay_stroke(&self, machine: MachineStyle) -> Stroke {
+        Stroke { color: machine.hue, width: self.theme.stroke_width, dash: Dash::Dashed { on: 2.0, off: 3.0 } }
     }
 
     /// External source → transition: solid, the external sources' neutral.

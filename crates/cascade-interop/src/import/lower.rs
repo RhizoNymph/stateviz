@@ -22,8 +22,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cascade_core::definition::{EmitDef, FieldDef, MachineDef, StateDef, StateKindDef, TransitionDef};
-use cascade_core::expr::Guard;
+use cascade_core::definition::{EmitDef, MachineDef, StateDef, StateKindDef, TransitionDef, TriggerSpec as DefTrigger};
+use cascade_core::expr::{Duration, Guard};
 use cascade_core::{Definition, SourceSpan, Spanned};
 
 use crate::error::InteropError;
@@ -129,7 +129,7 @@ impl Lowerer<'_> {
                 color: chart.attrs.color.map(Spanned::synthetic),
                 domain: chart.attrs.domain.clone().map(Spanned::synthetic),
                 initial: initial.map(Spanned::synthetic),
-                fields: chart.attrs.fields.iter().map(|f| FieldDef::untyped(f.as_str())).collect(),
+                fields: chart.attrs.fields.clone(),
                 states,
                 transitions: Vec::new(),
                 span: SourceSpan::unknown(),
@@ -147,27 +147,42 @@ impl Lowerer<'_> {
                 let Some(from) = self.edge_sources(chart, source, edge, &names) else {
                     continue;
                 };
-                let trigger = self.trigger_name(chart, source, edge, &names, &mut triggers);
-                let origin = match &edge.trigger {
-                    TriggerSpec::Event(raw) => {
-                        lowered.event_triggers.entry(raw.clone()).or_insert_with(|| trigger.clone());
-                        TriggerOrigin::Event
+                let trigger = match &edge.trigger {
+                    // A positive delay is a Cascade timer, a subscription a
+                    // subscription: neither is fired by a source.
+                    TriggerSpec::After(Delay::Millis(ms)) if *ms > 0 => {
+                        DefTrigger::After(Spanned::synthetic(Duration::from_millis(*ms)))
                     }
-                    TriggerSpec::After(_) => TriggerOrigin::Delay,
-                    TriggerSpec::ActorDone(actor) | TriggerSpec::ActorError(actor) => {
-                        TriggerOrigin::Actor(actor.clone())
+                    TriggerSpec::Subscription { event, filter } => DefTrigger::Event {
+                        event: synthetic(self.events.name(event, event, &edge.location, self.warnings)),
+                        filter: filter.clone().map(Spanned::synthetic),
+                    },
+                    _ => {
+                        let trigger = self.trigger_name(chart, source, edge, &names, &mut triggers);
+                        let origin = match &edge.trigger {
+                            TriggerSpec::Event(raw) => {
+                                lowered.event_triggers.entry(raw.clone()).or_insert_with(|| trigger.clone());
+                                TriggerOrigin::Event
+                            }
+                            TriggerSpec::After(_) => TriggerOrigin::Delay,
+                            TriggerSpec::ActorDone(actor) | TriggerSpec::ActorError(actor) => {
+                                TriggerOrigin::Actor(actor.clone())
+                            }
+                            TriggerSpec::StateDone | TriggerSpec::Subscription { .. } => TriggerOrigin::Completion,
+                        };
+                        if seen_triggers.insert(trigger.clone()) {
+                            lowered.triggers.push((trigger.clone(), origin, edge.location.clone()));
+                        }
+                        DefTrigger::Command(synthetic(trigger))
                     }
-                    TriggerSpec::StateDone => TriggerOrigin::Completion,
                 };
-                if seen_triggers.insert(trigger.clone()) {
-                    lowered.triggers.push((trigger.clone(), origin, edge.location.clone()));
-                }
                 let emits = attributed_emits(chart, source, edge);
                 let mut emit_names: Vec<EmitDef> = Vec::new();
                 for emit in &emits {
                     let name = self.events.name(&emit.event, &emit.event, &edge.location, self.warnings);
                     if !emit_names.iter().any(|e| e.event.value == name) {
-                        emit_names.push(EmitDef::plain(name));
+                        let with = emit.with.iter().cloned().map(Spanned::synthetic).collect();
+                        emit_names.push(EmitDef { event: synthetic(name), with });
                     }
                     lowered.emits.push((emit.clone(), edge.location.clone()));
                 }
@@ -180,9 +195,9 @@ impl Lowerer<'_> {
                     lowered.def.transitions.push(TransitionDef {
                         from: from.into_iter().map(synthetic).collect(),
                         to: synthetic(to),
-                        trigger: cascade_core::definition::TriggerSpec::Command(synthetic(trigger.as_str())),
+                        trigger: trigger.clone(),
                         guard: edge.guard.as_deref().and_then(choice_guard).map(Spanned::synthetic),
-                        sets: Vec::new(),
+                        sets: edge.sets.iter().cloned().map(Spanned::synthetic).collect(),
                         emits: emit_names.clone(),
                         bounded: edge.bounded,
                         span: SourceSpan::unknown(),
@@ -347,6 +362,7 @@ impl Lowerer<'_> {
             }
             TriggerSpec::ActorDone(actor) => ((edge.trigger.clone(), None), format!("{}_done", sanitize(actor))),
             TriggerSpec::ActorError(actor) => ((edge.trigger.clone(), None), format!("{}_error", sanitize(actor))),
+            TriggerSpec::Subscription { event, .. } => ((edge.trigger.clone(), None), event.clone()),
             TriggerSpec::StateDone => {
                 let state = if source == NodeIx::ROOT { sanitize(chart.name()) } else { names.local[source.0].clone() };
                 self.warnings.approximated(
@@ -461,7 +477,7 @@ mod tests {
     use crate::import::chart::Route;
 
     fn emit(event: &str) -> Emit {
-        Emit { event: event.to_owned(), route: Route::Own }
+        Emit::new(event.to_owned(), Route::Own)
     }
 
     fn edge(target: Option<NodeIx>, reenter: bool) -> Edge {
@@ -469,6 +485,7 @@ mod tests {
             trigger: TriggerSpec::Event("go".into()),
             target,
             guard: None,
+            sets: Vec::new(),
             emits: vec![emit("T")],
             reenter,
             bounded: false,

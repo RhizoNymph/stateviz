@@ -8,8 +8,11 @@
 //! | event | controller | the controller handles the event |
 //! | controller or handler | transition or trigger | a rule firing the trigger at the one instance |
 //! | source | transition or trigger | the source exposes the trigger |
+//! | event | transition | subscribe the transition to the event; or a rule of a controller handling it |
+//! | transition | transition of another machine | subscribe to an event the first emits (a new one if none); or a rule |
 //!
-//! Pure; dropping anywhere else cancels.
+//! A drop can offer several edits ([`offers`]); the subscription offers
+//! live in [`super::subscribe`]. Pure; dropping anywhere else cancels.
 
 use cascade_core::definition::{EmitDef, EventDef, TriggerRef};
 use cascade_core::edit::{EditOp, fresh_name};
@@ -38,7 +41,8 @@ pub fn can_connect(from: &ElementKey, to: &ElementKey) -> bool {
     match (from, to) {
         (K::State { machine: a, .. }, K::State { machine: b, .. }) => a == b,
         (K::Transition { .. }, K::Controller { .. } | K::Event { .. }) => true,
-        (K::Event { .. }, K::Controller { .. }) => true,
+        (K::Event { .. }, K::Controller { .. } | K::Transition { .. }) => true,
+        (K::Transition { machine: a, .. }, K::Transition { machine: b, .. }) => a != b,
         (K::Controller { .. } | K::Handler { .. } | K::External { .. }, K::Transition { .. } | K::Trigger { .. }) => {
             true
         }
@@ -47,7 +51,7 @@ pub fn can_connect(from: &ElementKey, to: &ElementKey) -> bool {
 }
 
 /// The trigger a transition or trigger key names.
-fn trigger_of(key: &ElementKey) -> Option<TriggerRef> {
+pub(super) fn trigger_of(key: &ElementKey) -> Option<TriggerRef> {
     match key {
         ElementKey::Transition { machine, trigger, .. } | ElementKey::Trigger { machine, trigger } => {
             Some(TriggerRef { machine: machine.clone(), trigger: trigger.clone() })
@@ -56,16 +60,34 @@ fn trigger_of(key: &ElementKey) -> Option<TriggerRef> {
     }
 }
 
-fn not_connectable(message: impl Into<String>) -> PlanError {
+pub(super) fn not_connectable(message: impl Into<String>) -> PlanError {
     PlanError::NotConnectable(message.into())
 }
 
-/// The op for a drop of `from` on `to`.
+/// The op for a drop of `from` on `to`: the first of its [`offers`]
+/// (the app shows every offer; tests read the preferred one).
+#[cfg(test)]
 pub fn connect(definition: &Definition, from: &ElementKey, to: &ElementKey) -> Result<Planned, PlanError> {
+    offers(definition, from, to)?.into_iter().next().ok_or_else(|| not_connectable("nothing to connect"))
+}
+
+/// Every edit a drop of `from` on `to` can make, the preferred one first.
+/// Most drops make exactly one; event or transition drops on a transition
+/// offer subscribing and controller rules (see [`super::subscribe`]).
+pub fn offers(definition: &Definition, from: &ElementKey, to: &ElementKey) -> Result<Vec<Planned>, PlanError> {
     use ElementKey as K;
     if !can_connect(from, to) {
         return Err(not_connectable(format!("cannot connect {} to {}", from.kind().prefix(), to.kind().prefix())));
     }
+    match (from, to) {
+        (K::Event { event }, K::Transition { .. }) => super::subscribe::event_offers(definition, event, to),
+        (K::Transition { .. }, K::Transition { .. }) => super::subscribe::transition_offers(definition, from, to),
+        _ => single(definition, from, to).map(|planned| vec![planned]),
+    }
+}
+
+fn single(definition: &Definition, from: &ElementKey, to: &ElementKey) -> Result<Planned, PlanError> {
+    use ElementKey as K;
     match (from, to) {
         (K::State { machine, path: source }, K::State { path: target, .. }) => {
             add_transition(definition, machine, source, target)
@@ -113,7 +135,7 @@ fn add_transition(definition: &Definition, machine: &str, from: &str, to: &str) 
     ))
 }
 
-fn declare(event: &str) -> EditOp {
+pub(super) fn declare(event: &str) -> EditOp {
     EditOp::DeclareEvent {
         event: EventDef { name: defs::synthetic(event), payload: Vec::new(), span: SourceSpan::unknown() },
         index: None,
@@ -167,7 +189,7 @@ fn subscribe(definition: &Definition, controller: &str, event: &str) -> Result<P
     ))
 }
 
-fn add_rule(controller: &str, event: &str, to: &ElementKey) -> Result<Planned, PlanError> {
+pub(super) fn add_rule(controller: &str, event: &str, to: &ElementKey) -> Result<Planned, PlanError> {
     let fire = trigger_of(to).ok_or_else(|| not_connectable("drop on a transition or trigger to fire it"))?;
     let label = format!("{controller} on {event} fires {fire}");
     Ok(Planned::new(

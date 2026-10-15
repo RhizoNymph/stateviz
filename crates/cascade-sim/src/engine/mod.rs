@@ -7,14 +7,21 @@
 //! queue item: Event ──▶ Deliver (per handler) ──▶ Fire | Spawn+Fire | NoTarget | Ambiguous
 //!                                                   └──▶ queue
 //! queue item: Fire  ──▶ Transition | Dropped ──▶ Emit ──▶ queue
+//! event ──▶ subscribing instance ──▶ Notify ──▶ [Choice] ──▶ Transition ──▶ [SetFields] ──▶ Emit
+//! advance ──▶ Wait ──▶ TimerExpired ──▶ queue item: Timer ──▶ Transition | Dropped
 //! ```
 //!
-//! - `core`: the state and one operation per thing that can happen.
+//! - `core`: the state, the queue and per-consumer delivery, decisions.
+//! - `deliver`: picking a transition (guards, choices), taking it (`sets`,
+//!   emits with `with`), delivering events to subscribers and controllers.
+//! - `clock`: arming, cancelling and expiring timers.
 //! - `exec`: a [`PlayAction`](crate::PlayAction) → checked core operations.
 //! - `drive`: a scenario → play actions, for the batch run and
 //!   `PlaySession::from_scenario` alike.
 
+mod clock;
 pub(crate) mod core;
+mod deliver;
 pub(crate) mod drive;
 pub(crate) mod exec;
 pub(crate) mod instance;
@@ -29,7 +36,7 @@ use self::core::Core;
 use self::drive::Player;
 use self::exec::{Schedule, exec};
 use crate::SimRun;
-use crate::error::SimError;
+use crate::error::{ScenarioDiagnostic, ScenarioError, ScenarioErrorKind, SimError};
 use crate::scenario::ResolvedScenario;
 use crate::session::PlayAction;
 
@@ -86,7 +93,8 @@ impl Player for Batch {
 /// Run a validated scenario, in FIFO order or with one swap.
 pub(crate) fn run(model: &Model, scenario: &ResolvedScenario, swap: Option<Swap>) -> Result<Outcome, SimError> {
     let mut batch = Batch { core: Core::default(), schedule: Schedule::new(swap) };
-    drive::drive(model, scenario, &mut batch)?;
+    let report = drive::drive(model, scenario, &mut batch)?;
+    unused_choices(&batch.core, &report)?;
     let swapped = batch.schedule.swapped();
     tracing::debug!(
         scenario = %scenario.name,
@@ -96,4 +104,20 @@ pub(crate) fn run(model: &Model, scenario: &ResolvedScenario, swap: Option<Swap>
         "simulation finished"
     );
     Ok(Outcome { run: batch.core.finish(&scenario.name).run, swapped })
+}
+
+/// Decisions no choice point took are a scenario diagnostic in a batch run,
+/// reported at their `choose` directive.
+fn unused_choices(core: &Core, report: &drive::DriveReport) -> Result<(), SimError> {
+    let diagnostics: Vec<ScenarioDiagnostic> = core
+        .decisions_with_seq()
+        .filter_map(|(option, seq)| {
+            let span = *report.choose_spans.get(seq)?;
+            Some(ScenarioDiagnostic { kind: ScenarioErrorKind::UnusedChoice { option: option.to_owned() }, span })
+        })
+        .collect();
+    if !diagnostics.is_empty() {
+        tracing::info!(unused = diagnostics.len(), "scenario left decisions untaken");
+    }
+    ScenarioError::from_list(diagnostics).map_err(SimError::Scenario)
 }

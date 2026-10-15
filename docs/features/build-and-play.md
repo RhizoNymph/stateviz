@@ -22,8 +22,8 @@ a scenario.
 ## Non-scope
 
 - Free-form manual layout: layout stays automatic, dragging still pins.
-- Deciding `?choice` guards or conditions during play (they take the
-  default until wave 2's choice prompt).
+- Deciding choices during **Run until quiet** (they take their defaults;
+  stepping one item at a time asks).
 - Collaborative or multi-file editing.
 
 ## Data and control flow
@@ -295,6 +295,32 @@ Gestures (`gesture::Gesture::press_handle`, `build::connect`):
 | controller handle | transition or trigger | `AddRule` on the controller's latest handler firing that trigger at the one instance (no `target:`) |
 | handler handle | transition or trigger | `AddRule` on that handler |
 | source handle | transition or trigger | `SetExternalTriggers` with the trigger added |
+| event handle | transition | offers: subscribe (`UpdateTransition`, trigger `on: { event }`), then a rule from each controller handling the event (command triggers only) |
+| transition handle | transition of another machine | the same offers for each event the first transition emits; emitting nothing, one `Batch`: declare `<Trigger>Done` (strict files), emit it, subscribe to it |
+
+An event tag's handle is the scene's `HitTarget::SubscribeHandle { event }`
+(not a `ConnectHandle`): `build::pick::connect_source` maps a press on it
+to `ElementKey::Event { event }`, and `locate::drop_key` maps a drop on it
+to the same key, so a drag from a tag onto a transition pill (or, with
+arrows, onto a transition arrow's `ConnectHandle`) reaches the
+`(event, transition)` subscribe offers above.
+
+Most drops make one edit and commit at once. A drop that can make several
+(`build::connect::offers`, `build::subscribe`) lists them in a row under
+the build bar, the preferred one (subscribe) highlighted; clicking one
+commits it, **Cancel** drops them. A transition already subscribed to an
+event is not offered it again. Subscribing a command that rules or sources
+fire is refused by the resolver (`TriggerKindConflict`), shown in the build
+bar like any rejected edit.
+
+**Emit handles (adapter).** The scene branch adds a drag target for an
+emitting transition's event. The app treats any connect handle whose
+element is `ElementKey::Event` as that event, wherever it is drawn: a
+handle drawn at a transition's emit should carry
+`HitTarget::ConnectHandle { element: Event { event } }`. If the scene uses
+a new `HitTarget` variant instead, map it to that key in
+`build::pick::connect_source` and `locate::drop_key` (the only two places
+that read connect handles); nothing else changes.
 
 With transition pills off (arrows), there are no transition handles:
 pressing within `ARROW_PICK_PX` (8 screen pixels, divided by the zoom for
@@ -323,14 +349,42 @@ commit on click.
 
 | Element | Fields → op |
 | --- | --- |
-| machine | name → `RenameMachine`; color → `SetMachineColor`; initial → `SetMachineInitial`; fields → `SetMachineFields`; domain → `SetMachineDomain` |
+| machine | name → `RenameMachine`; color → `SetMachineColor`; initial → `SetMachineInitial`; fields (typed list, below) → `SetMachineFields`; domain → `SetMachineDomain` |
 | state | name → `RenameState`; kind → `SetStateKind`; initial child → `SetStateInitial` |
-| transition | from, to, trigger, guard, emits, bounded → `UpdateTransition` (entry found by `locate_transition`) |
-| event | name → `RenameEvent`; payload → `Batch[RemoveEventDeclaration, DeclareEvent at the same index]` (or `DeclareEvent` when undeclared) |
+| transition | from, to, trigger kind and its fields, guard, `sets:` rows, emits, `with:` rows, bounded → `UpdateTransition` (entry found by `locate_transition`) |
+| event | name → `RenameEvent`; payload (typed list) → `Batch[RemoveEventDeclaration, DeclareEvent at the same index]` (or `DeclareEvent` when undeclared) |
 | controller | name → `RenameController`; "handle event" → `AddHandler`; handlers listed with select and remove |
 | handler | rules listed with select and remove |
 | rule | fire, target, when, bounded → `UpdateRule` |
 | source | name → `RenameExternal`; triggers → `SetExternalTriggers` |
+
+**Typed field lists.** Machine fields and event payloads are one text field
+in the YAML's own terms: `orderId, amount: number, tier: enum [basic,
+gold]` (`build::inspector::syntax::{parse_field_list, format_field_list}`;
+commas inside `[…]` or quotes do not split). Types are `any`, `string`,
+`number`, `bool` and `enum [members]`. With no `:` anywhere the list is
+untyped (the YAML list form); with any type it is the mapping form and an
+item without a type is `any`. The text is the whole truth: it shows every
+type, so a name without a type is untyped even if it had one before.
+
+**Transitions.** A **Trigger kind** selector (command / subscribe to event
+/ timer) picks which fields follow: **Trigger** (command name), **Event** and
+**Where** (a filter in filter context: a bare left name is the candidate's
+field), or **After** (a duration above zero, `30s`, `5m`, `2h`). Picking a
+kind is a draft (`BuildUi::trigger_draft`, shown through
+`inspect_with`): nothing changes until its name, event or delay is entered,
+and a note says what to enter. Entering an event keeps an existing `where`;
+`where` on a command is refused. **Set** rows are `field = value` (value:
+`event.x`, `self.x` or a literal) with a **+ Set** row to add one; each emit
+gets **With E** rows and a **+ With E** row. Clearing a row and pressing
+Enter removes it.
+
+**Live feedback.** While a field is typed, `inspector::check` runs the
+grammar (`validate`), then plans the edit as a commit would and applies it
+to a copy of the definition (`edit::apply`): the resolver's diagnostics
+(unknown field, type mismatch, not an enum member, `self` in a rule,
+names taken, a field still used by a guard or `sets`) show under the field,
+one message per kind, without the span. Nothing is written until Enter.
 
 ### Committing, undo and the file
 
@@ -383,12 +437,45 @@ note.
   trigger the target's state does not accept is drawn dashed and muted but
   still fires (and records a drop). An optional payload field applies to the
   next fire.
-- **Queue:** `pending()` in order, head marked; **Step** (Space) delivers
-  the head, clicking an item delivers that one (`Step { choice }`), **Run
-  until quiet** (R) drains the queue.
+- **Clock:** `now()` in the section title; `timers()` as rows (instance,
+  trigger, "in 30s" / "due now", deadline order; `play::clock`). **Next
+  timer** (T) is `Advance { by: None }`; the "advance by" box takes a
+  duration (`Advance { by: Some(d) }`, Enter or the button; blank means the
+  next timer; zero or bad text is a form error). The simulator's errors
+  (e.g. `NoTimerArmed`) show like any failed action. The canvas overlay
+  gets the same timers (`play::overlay::play_timers`: `PlayTimer {
+  instance, trigger, remaining }`, remaining = deadline − `now()`, zero
+  when due), so the scene draws each armed timer's countdown.
+- **Queue:** `pending()` in order, head marked (`play::queue::queue_rows`);
+  **Step** (Space) delivers the head, clicking an item delivers that one
+  (`Step { choice }`), **Run until quiet** (R) drains the queue. An event
+  with several `consumers_left` shows "waiting for: …" and one **→ name**
+  button per consumer: `Step { choice, consumer: Some(name) }` (the head
+  as `choice: None`, like Space). Fires and timers have one consumer and no
+  buttons. **Pending decisions** (`pending_decisions()`) are listed under
+  the queue.
+- **Choice prompt** (`play::choices`): every step (Space, an item click, a
+  consumer button) and every external fire from the trigger palette first
+  asks `choice_points_of(model, &action)` (a step's request is a
+  `StepRequest`; a fire is the `PlayAction::Fire` itself, so the bank's
+  `?approved` / `?card declined` in the checkout saga is asked when the
+  bank fires, not taken by default). A point is decided when a pending
+  decision is one of its options (each decision used once, oldest first,
+  as the simulator does). The first undecided point opens a prompt in the
+  queue section ("o1 chooses (1 of 2)", its options, the first marked
+  default, **Cancel**). Each answer is pushed as a decision on a *copy* of
+  the session and the points are asked again, since an answer can change
+  the later points. When none is left the real session gets one `Choose {
+  option }` per answer, then the action; Cancel records nothing. A preview
+  fails like the action would (an empty queue says "nothing is queued to
+  deliver"), and the error shows in the status bar. With a prompt open,
+  Space takes the first option. Any other play action, seek, branch
+  switch, new session or model change drops the prompt.
 - **Last action:** its trace steps as `cascade_sim::step_text` lines.
 - **Timeline:** a start chip plus one chip per action
-  (`play::timeline::chips`); clicking seeks; actions past the position are
+  (`play::timeline::chips`: `wait 30s`, `wait for next timer`, `choose
+  card declined`, `deliver #2 to Fulfil`; labels over 28 characters end in
+  `…`); clicking seeks; actions past the position are
   muted and acting then forks (the note says so); branches are listed with
   Switch (`switch_branch`).
 - **Save as scenario:** a name (a valid name) → `to_scenario` →
@@ -412,18 +499,26 @@ note.
 | `crates/cascade-app/src/mode.rs` | Modes, views per mode, scene mode (pure) | `AppMode`, `view_for` |
 | `crates/cascade-app/src/build/defs.rs` | Definition lookups, names in use, synthetic elements (pure) | `machine`, `state`, `trigger_names`, `event_names`, `pascal_case`, `split_list` |
 | `crates/cascade-app/src/build/ops.rs` | Toolbar adds and deletes as ops (pure) | `Planned`, `PlanError`, `add_machine`, `state_target`, `add_state`, `add_controller`, `add_external`, `delete`, `transition_entry` |
-| `crates/cascade-app/src/build/connect.rs` | Drag-to-connect mapping (pure) | `is_source`, `can_connect`, `connect` |
+| `crates/cascade-app/src/build/connect.rs` | Drag-to-connect mapping (pure) | `is_source`, `can_connect`, `offers` (`connect`, the first offer, in tests) |
+| `crates/cascade-app/src/build/subscribe.rs` | Offers for an event or a foreign transition dropped on a transition: subscribe, controller rules, a new emitted event (pure) | `event_offers`, `transition_offers` |
 | `crates/cascade-app/src/build/pick.rs` | Press and drop targets: pick tolerances, arrows as handles on the build canvas, which presses connect (pure) | `ARROW_PICK_PX`, `HIT_TOLERANCE_PX`, `scene_units`, `Picking`, `hit`, `connect_source` |
-| `crates/cascade-app/src/build/inspector/` | Inspector fields, live validation, field → op (pure) | `inspect`, `validate`, `field_op`, `Inspection`, `FieldId`, `FieldInput`, `FieldValue`, `FieldError` |
+| `crates/cascade-app/src/build/inspector/mod.rs` | Inspector fields and grammar validation (pure) | `inspect_with`, `validate`, `Inspection`, `Field`, `FieldId`, `FieldInput`, `FieldValue`, `FieldError` |
+| `crates/cascade-app/src/build/inspector/commit.rs` | Committed field → op | `field_op` |
+| `crates/cascade-app/src/build/inspector/transition.rs` | Transition fields: trigger kind, `sets:`/`with:` rows, the edited entry | `inspect`, `edit`, `same_transition` (module-private) |
+| `crates/cascade-app/src/build/inspector/syntax.rs` | Typed field lists, assignment rows, trigger kind tags | `parse_field_list`, `format_field_list`, `same_fields`, `parse_assignment`, `split_top_level`, `TriggerKindTag` |
+| `crates/cascade-app/src/build/inspector/feedback.rs` | Live feedback: grammar, then the resolver on the edited copy | `check` |
 | `crates/cascade-app/src/build/pipeline.rs` | apply → patch → load (pure) | `commit`, `commit_with`, `Commit`, `CommitError` |
 | `crates/cascade-app/src/build/undo.rs` | Undo/redo stacks (pure) | `History`, `Entry`, `Direction` |
 | `crates/cascade-app/src/build/disk.rs` | Atomic writes, own-write detection, new files | `write_atomic`, `DiskSync`, `DiskChange`, `ContentHash`, `create_new`, `NEW_FILE_TEXT` |
 | `crates/cascade-app/src/play/mod.rs` | Session state for the panels (pure) | `PlayState` |
-| `crates/cascade-app/src/play/overlay.rs` | Session → `PlayOverlay` (pure) | `build_overlay` |
+| `crates/cascade-app/src/play/overlay.rs` | Session → `PlayOverlay` (pure) | `build_overlay`, `play_timers` |
 | `crates/cascade-app/src/play/timeline.rs` | Timeline chips and labels (pure) | `chips`, `action_label`, `branch_label`, `acting_forks` |
 | `crates/cascade-app/src/play/forms.rs` | Assignments, palette grouping, scenario saving | `parse_assignments`, `group_fires`, `scenario_path`, `scenario_text`, `write_scenario` |
-| `crates/cascade-app/src/workspace/building.rs` | Build glue: commit, undo/redo, toolbar, connect, inspector inputs, new file | `BuildUi`, `InspectorUi`, `Workspace::commit`, `undo_redo`, `sync_inspector`, `commit_field` |
-| `crates/cascade-app/src/workspace/playing.rs` | Play glue: actions, seek, branches, scenarios | `PlayUi`, `Workspace::play`, `seek`, `save_scenario`, `load_play_scenario` |
+| `crates/cascade-app/src/play/clock.rs` | Armed timer rows, the Advance box (pure) | `TimerRow`, `timer_rows`, `advance_action`, `advance_label` |
+| `crates/cascade-app/src/play/queue.rs` | Queue rows and per-consumer buttons (pure) | `QueueRow`, `ConsumerItem`, `queue_rows` |
+| `crates/cascade-app/src/play/choices.rs` | The choice prompt state machine (pure, over a `ChoiceOracle`) | `StepRequest`, `ChoicePrompt`, `PromptStep`, `ChoiceOracle`, `SessionOracle`, `begin`, `pick`, `first_undecided` |
+| `crates/cascade-app/src/workspace/building.rs` | Build glue: commit, undo/redo, toolbar, connect and its offers menu, inspector inputs with live feedback and trigger drafts, new file | `BuildUi`, `ConnectMenu`, `InspectorUi`, `Workspace::commit`, `undo_redo`, `connect_keys`, `pick_connect_offer`, `sync_inspector`, `commit_field` |
+| `crates/cascade-app/src/workspace/playing.rs` | Play glue: actions, the choice prompt, per-consumer steps, the clock, seek, branches, scenarios | `PlayUi`, `Workspace::play`, `request_step`, `pick_choice`, `cancel_choice`, `play_advance`, `seek`, `save_scenario`, `load_play_scenario` |
 | `crates/cascade-app/src/panels/build.rs` | Build bar and inspector panel | `render_build_bar`, `render_inspector` |
 | `crates/cascade-app/src/panels/play.rs` | Play panel | `render_play_panel` |
 
@@ -435,9 +530,14 @@ note.
   do (when there is history to clear).
 - Play overlays are only drawn over the model generation the session was
   built from.
-- Pure logic (ops, connect mapping, inspector, pipeline, history, own-write
-  detection, overlay, timeline, forms) has no GPUI dependency and is unit
-  tested; `workspace/*` and `panels/*` only wire it to the UI.
+- Pure logic (ops, connect mapping and offers, inspector and its feedback,
+  pipeline, history, own-write detection, overlay, timeline, forms, clock,
+  queue rows, choice prompt) has no GPUI dependency and is unit tested;
+  `workspace/*` and `panels/*` only wire it to the UI.
+- Live feedback never writes: it applies the planned edit to a copy.
+- A choice prompt records nothing until every decision is made: answers
+  are tried on a copy of the session, and the real session gets the
+  `Choose` actions and the step together (or nothing, on Cancel).
 
 ## Invariants and constraints
 
@@ -696,6 +796,26 @@ only change outside `patch/` makes `yaml::quote` visible within the crate.
 - **Lists of names** (`fields`, `emits`, `from`, `payload`, external
   triggers) change item by item, keeping unchanged items' text. A single
   name becomes a flow list when a second one is added.
+- **Keyed mappings** (`sets:`, emit `with:`, typed `fields:`/`payload:`;
+  `patch/ops/keyed.rs`) change entry by entry: removals, then changed
+  values (in their old quoting), then insertions after the nearest
+  preceding key. Typed fields switch form in place: a block list's
+  `- name` items become `name: any` entries (then get their types) when
+  the first type is added, and typed entries become `- name` when the last
+  type goes; comments between and after entries stay. A flow list becomes a
+  flow mapping and back. When the keys are reordered (or none survive) the
+  value is replaced whole, in place and in its own style.
+- **Emits** (`patch/ops/emits.rs`) change item by item: a name becomes
+  `{ event: E, with: {…} }` and back (a multi-line block item collapses to
+  the name, keeping its first line's comment), a shaped emit's event and
+  `with:` entries change on their own.
+- **Triggers** keep their kind in place: a command's name, a timer's
+  delay (`after:` is written plain, like `to_yaml`), a subscription's
+  `event` and `where` inside `on: { … }` (flow or block). Switching kinds
+  replaces the key (`on:` ↔ `after:`).
+- **Free text quoting** (`guard:`/`when:`): in a file that writes its
+  free text plain, a value that was quoted only because YAML needed it
+  (`"?choice"`) goes back to plain when it can (`else`).
 - **Rules** follow their neighbours (block or flow mappings). A handler
   written as one flow rule mapping becomes a one-item list when a rule is
   added. A handler that loses its last rule is `Event: []`.

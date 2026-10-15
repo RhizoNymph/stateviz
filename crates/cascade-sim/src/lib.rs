@@ -5,30 +5,39 @@
 //!
 //! - **One global FIFO queue.** A transition's emitted events join the back
 //!   of the queue. The simulator takes the head: an event is delivered to
-//!   each subscribed controller (handler) in definition order, and each of
-//!   the handler's rules picks its target(s) and *queues* a fire. Fires are
-//!   queue items too, so the fires of two controllers interleave with each
-//!   other and with the events their transitions emit.
+//!   its consumers in order, first the live instances of machines that
+//!   subscribe to it (model order, then creation order), then each
+//!   controller with a handler for it (definition order), whose rules pick
+//!   their target(s) and *queue* a fire. Fires and expired timers are queue
+//!   items too, so the fires of two controllers interleave with each other
+//!   and with the events their transitions emit. An event can also be
+//!   delivered to one consumer at a time.
 //! - **Scenario steps** are external triggers. A step waits until the queue
 //!   has drained ([`StepTiming::AfterQuiescence`], the default), unless it is
 //!   marked [`StepTiming::Immediate`]: then it runs right after the previous
 //!   step, before the cascade that step queued, so external triggers can
 //!   interleave with a running cascade. A step's trigger is delivered to its
 //!   target at once; the events that transition emits join the queue.
-//! - **Delivering a trigger** takes the first enabled transition in
-//!   definition order ([`Model::enabled_transitions`]) whose guard does not
-//!   rule it out: an expression guard must evaluate true; `?choice` and
-//!   `else` guards take the default (they stay candidates). A rule whose
-//!   `when:` expression is false does not fire; a `?choice` condition holds.
-//!   No enabled transition means the trigger is dropped. Subscription and
-//!   timer triggers never fire yet. Compound targets are entered by default
-//!   entry; history targets restore the last active leaf under their parent
-//!   (deep) or its active child by default entry (shallow), and enter the
-//!   parent by default when it was never active.
+//! - **Delivering a trigger** considers the enabled transitions
+//!   ([`Model::enabled_transitions`]) whose subscription `where` holds. An
+//!   expression guard must hold; when `?choice` candidates remain beside
+//!   others, it is a choice point decided by the oldest matching pending
+//!   decision (`choose`) or the first option; otherwise the first holding
+//!   candidate is taken, and `else` only when none holds. Nothing to take
+//!   drops the trigger (a subscription ignores the event). A rule's `when:`
+//!   expression must hold; a `?choice` condition is a choice point at the
+//!   controller. Compound targets are entered by default entry; history
+//!   targets restore the last active leaf under their parent (deep) or its
+//!   active child by default entry (shallow), and enter the parent by
+//!   default when it was never active. `sets` assigns fields after the
+//!   transition.
+//! - **Timers and the clock.** Entering a state arms its timer transitions;
+//!   leaving cancels them. The virtual clock only moves by `wait` /
+//!   [`PlayAction::Advance`]; timers due by then join the queue.
 //! - **Payloads.** An emitted event carries the emitting instance's fields
-//!   overlaid with the payload that came with the trigger: the step's
-//!   `payload:` for a scenario step, the handled event's payload for a
-//!   controller fire.
+//!   overlaid with the payload that came with the trigger (the step's
+//!   `payload:`, the handled event's payload for a controller fire or a
+//!   subscription, nothing for a timer), then the emit's `with` entries.
 //! - **Selectors.** Filters are expressions (`field == event.x` compares the
 //!   instance's field with the payload's `x`, a literal compares with the
 //!   literal, `event.x == lit` tests the event); a missing side never
@@ -39,9 +48,10 @@
 //! - **Races.** [`race_orderings`] replays a race candidate a second time
 //!   with its two contested fires delivered in the opposite order.
 //! - **Manual steps.** Besides external fires, a scenario may deliver a
-//!   chosen queue item (`- step`, `- { step: n }`), run until quiet
-//!   (`- run`), create or remove instances mid-run, and end without
-//!   draining (`end: pause`). Saved play sessions use these.
+//!   chosen queue item (`- step`, `- { step: n }`, `- { step: n, consumer:
+//!   c }`), run until quiet (`- run`), advance the clock (`- wait`), push a
+//!   decision (`- { choose: o }`), create or remove instances mid-run, and
+//!   end without draining (`end: pause`). Saved play sessions use these.
 //!
 //! # Play
 //!
@@ -131,6 +141,20 @@ pub struct RaceRuns {
 pub fn race_orderings(model: &Model, scenario: &Scenario, race: &FindingDetail) -> Result<RaceTraces, SimError> {
     race_runs(model, scenario, race)
         .map(|runs| RaceTraces { as_queued: runs.as_queued.trace, swapped: runs.swapped.trace })
+}
+
+/// Why [`race_orderings`] cannot replay `race`, or `None` when it can (a
+/// [`FindingDetail::RaceCandidate`] between two controller rules). A race
+/// with a subscription side ([`FindingDetail::SubscriptionRace`]) is not
+/// replayed yet; callers show the note and fall back to the plain run.
+pub fn race_replay_note(race: &FindingDetail) -> Option<&'static str> {
+    match race {
+        FindingDetail::RaceCandidate { .. } => None,
+        FindingDetail::SubscriptionRace { .. } => {
+            Some("it involves a subscription, and only races between two controller rules replay in both orders")
+        }
+        _ => Some("it is not a race candidate"),
+    }
 }
 
 /// Like [`race_orderings`], keeping the payloads.

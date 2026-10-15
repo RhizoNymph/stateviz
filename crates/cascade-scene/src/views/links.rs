@@ -1,6 +1,6 @@
 //! Derived facts about the causal graph that several views share.
 
-use cascade_core::{CausalEdgeKind, CausalGraph, CausalNode, EdgeIx, RuleId, TransitionId};
+use cascade_core::{CausalEdgeKind, CausalGraph, CausalNode, EdgeIx, RuleId, TransitionId, TriggerId};
 
 /// One derived causal link `from → event → handler → to`, the unit the
 /// matrix counts and the structure view draws between lanes. Mirrors
@@ -39,6 +39,46 @@ pub(crate) fn causal_links(graph: &CausalGraph) -> Vec<CausalLink> {
                     {
                         out.push(CausalLink { from, to, rule, chain: [emit, sub, fire] });
                     }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One derived subscription link `from → event → to`: `to` accepts a
+/// machine subscription to an event `from` emits. Together with
+/// [`causal_links`] these are exactly
+/// [`CausalGraph::transition_successors`] (the subscriptions are its
+/// `None`-rule entries).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SubscriptionLink {
+    pub from: TransitionId,
+    pub to: TransitionId,
+    /// The subscription trigger `to` accepts.
+    pub trigger: TriggerId,
+    /// Emit and notify edges, in causal order.
+    pub chain: [EdgeIx; 2],
+}
+
+/// Every derived subscription link, deduplicated by `(from, to)`, in graph
+/// order.
+pub(crate) fn subscription_links(graph: &CausalGraph) -> Vec<SubscriptionLink> {
+    let mut out: Vec<SubscriptionLink> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (ix, node) in graph.nodes() {
+        let CausalNode::Transition(from) = node else { continue };
+        for &emit in graph.outgoing(ix) {
+            if graph.edge(emit).kind != CausalEdgeKind::Emit {
+                continue;
+            }
+            for &notify in graph.outgoing(graph.edge(emit).to) {
+                let edge = graph.edge(notify);
+                if let (CausalEdgeKind::Notify { trigger }, CausalNode::Transition(to)) =
+                    (edge.kind, graph.node(edge.to))
+                    && seen.insert((from, to))
+                {
+                    out.push(SubscriptionLink { from, to, trigger, chain: [emit, notify] });
                 }
             }
         }
@@ -137,6 +177,54 @@ mod tests {
             let [emit, sub, fire] = link.chain.map(|e| graph.edge(e));
             assert_eq!(emit.to, sub.from);
             assert_eq!(sub.to, fire.from);
+        }
+    }
+
+    #[test]
+    fn rule_and_subscription_links_are_the_successors() {
+        let model = load(
+            r#"
+machines:
+  A:
+    states: [a0, a1, a2]
+    transitions:
+      - { from: a0, to: a1, on: go, emits: [Go] }
+      - { from: a1, to: a2, on: { event: Back } }
+      - { from: a1, to: a0, after: 5s }
+  B:
+    states: [b0, b1]
+    transitions:
+      - { from: b0, to: b1, on: { event: Go }, emits: [Back] }
+      - { from: b1, to: b0, on: poke }
+controllers:
+  C:
+    on:
+      Go: [{ fire: B.poke }]
+external:
+  User: [A.go]
+"#,
+        );
+        let graph = CausalGraph::build(&model);
+        let rules = causal_links(&graph);
+        let subs = subscription_links(&graph);
+        assert_eq!((rules.len(), subs.len()), (1, 2));
+        for t in model.transition_ids() {
+            let mut expected = graph.transition_successors(t);
+            expected.sort();
+            expected.dedup();
+            let mut got: Vec<_> = rules
+                .iter()
+                .filter(|l| l.from == t)
+                .map(|l| (l.to, Some(l.rule)))
+                .chain(subs.iter().filter(|l| l.from == t).map(|l| (l.to, None)))
+                .collect();
+            got.sort();
+            assert_eq!(got, expected);
+        }
+        for link in &subs {
+            let [emit, notify] = link.chain.map(|e| graph.edge(e));
+            assert_eq!(emit.to, notify.from);
+            assert_eq!(model.trigger(link.trigger).accepted_by, vec![link.to]);
         }
     }
 

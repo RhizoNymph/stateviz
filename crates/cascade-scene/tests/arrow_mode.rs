@@ -279,6 +279,7 @@ fn play_overlays_thicken_the_active_arrow() {
         markers: vec![marker("o1", "state:Order:paid")],
         active: vec![k(key)],
         pending: vec![k("event:OrderPaid")],
+        timers: Vec::new(),
     };
     let scene = bench.build_with(&mut SceneBuilder::new(), &arrows(), SceneMode::View, Some(&play));
     assert_eq!(arrow_for(&scene, key).stroke.width, bench.theme.selected_stroke_width);

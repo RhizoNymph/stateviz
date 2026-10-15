@@ -18,6 +18,9 @@
 //! | subscribe | event → controller | East → West | solid gray |
 //! | fire | controller → pill | North → South / South → North | dashed in the target hue, short selector and `[when]` |
 //! | trigger | source → pill | North → South / South → North | solid external neutral |
+//! | notify | event → pill (a machine subscription) | North → South / South → North | solid in the subscriber's hue, unlabelled |
+//!
+//! Timers get no wire: the pill (or arrow) says `◷ 30s`.
 //!
 //! Fire labels follow [`super::selector`]. Ends on a collapsed state or
 //! machine are unported; ends on a hidden machine's stub become dotted
@@ -31,6 +34,7 @@ use cascade_layout::{Insets, LayerConstraint};
 use crate::emphasis::Anchor;
 use crate::scene::{Arrow, EdgeKind, HitTarget, Stroke};
 use crate::views::draft::{DraftEdge, DraftGraph, DraftGroup, DraftNode, EdgeText, Meta, standard_ports};
+use crate::views::labels;
 use crate::views::structure::gutters::memo::{Row, WiringMemo};
 use crate::views::structure::gutters::order::{WiringNode, order};
 use crate::views::structure::gutters::{Assignment, Gutter, LaneEnd, Stack, Wires, assign};
@@ -222,9 +226,12 @@ impl Wiring<'_> {
                     let CausalNode::Transition(t) = self.graph.node(edge.from) else { continue };
                     (EdgeKind::Emit, painter.emit_stroke(), ElementRef::Transition(t), None, None)
                 }
-                // Machine subscriptions and timers are not wired on the
-                // build canvas yet.
-                CausalEdgeKind::Notify { .. } | CausalEdgeKind::Delay { .. } => continue,
+                CausalEdgeKind::Notify { trigger } => {
+                    let machine = painter.machine(model.trigger(trigger).machine);
+                    (EdgeKind::Notify, painter.notify_stroke(machine), ElementRef::Trigger(trigger), None, None)
+                }
+                // Timers need no wire: the pill says `◷ 30s`.
+                CausalEdgeKind::Delay { .. } => continue,
                 CausalEdgeKind::Subscribe => {
                     let CausalNode::Handler(h) = self.graph.node(edge.to) else { continue };
                     (EdgeKind::Subscribe, painter.subscribe_stroke(), ElementRef::Handler(h), None, None)
@@ -283,6 +290,10 @@ impl Wiring<'_> {
         };
         // (event, controller) → index into the event's `handled_into`.
         let mut handled: HashMap<(usize, usize), usize> = HashMap::new();
+        // (event, subscribing machine) → index into the event's
+        // `handled_into`: a subscribing machine weighs like a handling
+        // controller, by the nearest pill its subscription enters.
+        let mut subscribed: HashMap<(usize, MachineId), usize> = HashMap::new();
         for wire in wires {
             let (from, to) = (nodes.wiring.get(&wire.from).copied(), nodes.wiring.get(&wire.to).copied());
             match (wire.causal, from, to) {
@@ -307,6 +318,15 @@ impl Wiring<'_> {
                         });
                         inputs.events[e].handled_into[slot].extend(end);
                     }
+                }
+                (CausalEdgeKind::Notify { trigger }, Some(WiringNode::Event(e)), None) => {
+                    let machine = model.trigger(trigger).machine;
+                    let slot = *subscribed.entry((e, machine)).or_insert_with(|| {
+                        let list = &mut inputs.events[e].handled_into;
+                        list.push(Vec::new());
+                        list.len() - 1
+                    });
+                    inputs.events[e].handled_into[slot].extend(lane_end(wire.to));
                 }
                 (CausalEdgeKind::Trigger { .. }, Some(WiringNode::Source(s)), None) => {
                     inputs.sources[s].triggers.extend(lane_end(wire.to));
@@ -372,6 +392,11 @@ impl Wiring<'_> {
             _ => false,
         };
         let labels: Vec<Option<String>> = wires.iter().map(|w| selector::merged(&w.rules)).collect();
+        // A fire label naming a `?choice` condition is italic.
+        let choices: Vec<bool> = wires
+            .iter()
+            .map(|w| w.rules.iter().any(|r| r.condition.as_deref().is_some_and(labels::text_is_choice)))
+            .collect();
         // Parallel fires: one controller's fires into one machine.
         let groups: Vec<(Parallel, Option<&str>)> =
             wires.iter().zip(&labels).map(|(w, l)| (w.target_machine.map(|m| (w.from, m)), l.as_deref())).collect();
@@ -379,7 +404,7 @@ impl Wiring<'_> {
 
         let mut edges = Vec::with_capacity(wires.len());
         let mut stub_links: HashMap<usize, u32> = HashMap::new();
-        for ((wire, label), show) in wires.into_iter().zip(labels).zip(shown) {
+        for (((wire, label), show), choice) in wires.into_iter().zip(labels).zip(shown).zip(choices) {
             for end in [wire.from, wire.to] {
                 if stubs.iter().any(|&(_, n)| n == end) {
                     *stub_links.entry(end).or_insert(0) += 1;
@@ -415,6 +440,7 @@ impl Wiring<'_> {
                 stroke: wire.stroke,
                 arrow: Arrow::End,
                 label: label.filter(|_| show).map(|text| EdgeText {
+                    style: labels::style_for(choice),
                     text,
                     font_size: theme.small_font_size,
                     color: theme.text,

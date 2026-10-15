@@ -41,9 +41,12 @@ argument (missing file, invalid `--view` link).
   click-to-source, pins, diff mode, shareable links, light/dark theme,
   status bar, the structure view's pills/arrows toggle.
 - App settings remembered between runs (`settings.rs`).
-- Modes: View, Build (toolbar adds and deletes, drag-to-connect, inspector,
-  undo/redo, saving edits to the file, new files) and Play (instances,
-  trigger palette, queue stepping, timeline with branches, scenarios).
+- Modes: View, Build (toolbar adds and deletes, drag-to-connect with
+  subscribe offers, inspector with typed fields, trigger kinds and live
+  expression feedback, undo/redo, saving edits to the file, new files) and
+  Play (instances, trigger palette, clock and armed timers, choice prompt,
+  queue stepping with per-consumer delivery, timeline with branches,
+  scenarios).
 
 ## Non-scope
 
@@ -136,7 +139,9 @@ render ──▶ rebuild_scene (once per frame at most):
 - Labels are shaped with the monospace family and a forced per-glyph
   advance of `0.6 × font size`, so text occupies exactly the width
   `MonoMeasure` gave the builder. Screen font sizes are rounded to 0.25 px so
-  zooming reuses GPUI's line cache; labels under 3.5 px are skipped.
+  zooming reuses GPUI's line cache; labels under 3.5 px are skipped. A
+  label's `weight` and `style` carry over (`FontStyle::Italic`, used for
+  choice labels like `?approved`, paints with the family's italic face).
 - Hover thickens the outline (weight, never hue).
 - The viewport lives in `ViewState::viewport`. `None` means "fit": each
   frame fits the scene to the canvas. Pan/zoom store an explicit viewport;
@@ -172,7 +177,9 @@ render ──▶ rebuild_scene (once per frame at most):
   and centres the element, falling back to the finding's other subjects and
   then related elements (a state's transitions, a rule's handler) when the
   primary is not drawn. A race candidate instead opens the trace view with
-  `race` set, when a scenario exists.
+  `race` set, when a scenario exists; a race the simulator cannot replay (a
+  subscription race, `cascade_sim::race_replay_note`) is located like any
+  finding, with the note in the status bar.
 - Search runs `cascade_core::search::search` on every edit, shows up to 12
   hits, and sets `ViewState::search` for highlighting. Enter (or a click)
   selects the highlighted hit, centres it (switching to the causal view if
@@ -187,7 +194,8 @@ render ──▶ rebuild_scene (once per frame at most):
   scenario when none is selected.
 - `TraceRequest { scenario, race, generation }` runs on the background
   executor: parse, then `simulate` or `race_orderings` (for `race`, the
-  n-th race-candidate finding). Results are used only when their request
+  n-th race-candidate finding; one that cannot be replayed runs as queued
+  and the panel's race line says why). Results are used only when their request
   (including the generation) matches the current one, because traces hold
   ids of one model. Errors show in the trace panel.
 
@@ -289,14 +297,18 @@ a text field has focus; chords are bound in `Workspace`.
 | ctrl/cmd-shift-Z, ctrl-Y | Redo |
 | `Delete`, `Backspace` | Build mode: delete the selection |
 | ctrl/cmd-N | New definition file |
-| `Space` | Play mode: deliver the queue's head |
-| `R` | Play mode: run until the queue is quiet |
+| `Space` | Play mode: deliver the queue's head (asking first for the decisions it needs); with a choice prompt open, take its first option (the default) |
+| `R` | Play mode: run until the queue is quiet (choices take their defaults) |
+| `T` | Play mode: advance the clock to the next armed timer |
 
 Undo and redo are chords, so they also work (on the definition) while a
 text field has focus; the text fields have no undo of their own.
 
 In a text field: Enter submits, Esc returns to the canvas, ↑/↓ move through
-search results, plus the usual editing keys.
+search results, plus the usual editing keys. In the play panel's "advance
+by" field, Enter advances the clock by the typed duration (blank: to the
+next timer). `T` was free; it is a plain key, so typing a `t` in a field
+never advances the clock.
 
 | Pointer | Action |
 | --- | --- |
@@ -306,7 +318,7 @@ search results, plus the usual editing keys.
 | alt-click | Unpin |
 | drag a node (causal, structure) | Pin it where it is dropped |
 | drag the background | Pan |
-| drag a connect handle (Build) | Connect: transition, emit, fire or source trigger (see build-and-play.md) |
+| drag a connect handle (Build) | Connect: transition, emit, fire, source trigger, or subscribe a transition to an event (see build-and-play.md); a drop with several possible edits lists them in the build bar |
 | drag from within 8 px of a transition arrow (Build, pills off) | Connect from that transition, as from its handle; a click selects it |
 | scroll / shift-scroll | Pan / pan horizontally |
 | ctrl/cmd-scroll, pinch | Zoom about the pointer |
@@ -341,7 +353,7 @@ search results, plus the usual editing keys.
 | `crates/cascade-app/src/workspace/scene.rs` | Scene rebuild, viewport helpers, trace and diff orchestration | `Workspace::changed`, `rebuild_scene`, `switch_view`, `trace_request`, `diff_request` |
 | `crates/cascade-app/src/workspace/operations.rs` | Files, commands, selection, findings, pins, source, links, search, diff | `Workspace::run_command`, `open_finding`, `pin`, `unpin`, `open_source`, `pins_supported` |
 | `crates/cascade-app/src/workspace/canvas_events.rs` | Canvas element and pointer handlers | `Workspace::render_canvas_area` |
-| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle, the structure view's pills toggle), build bar, inspector, play panel, sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace` |
+| `crates/cascade-app/src/panels/*.rs` | Toolbar (mode control, the causal view's group-by-machine toggle, the structure view's pills toggle), build bar (with the connect offers menu), inspector, play panel (clock, choice prompt, per-consumer queue buttons), sidebar (legend, findings), overlays (search, notes, trace picker), banner and status bar | `render_*` methods on `Workspace`, `hint` |
 | `crates/cascade-app/src/mode.rs` | View/Build/Play modes (pure) | `AppMode`, `view_for` |
 | `crates/cascade-app/src/build/*` | Build mode logic: ops, connect, inspector, pipeline, undo, disk (pure) | see build-and-play.md |
 | `crates/cascade-app/src/play/*` | Play mode logic: session state, overlay, timeline, forms (pure) | see build-and-play.md |

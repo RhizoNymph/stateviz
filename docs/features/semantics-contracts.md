@@ -648,7 +648,226 @@ semantics yet:
   for `Wait`, `Choice`, `SetFields`); `cascade simulate --format json`
   writes them as `notify`, `wait`, `timer-expired`, `choice`, `set-fields`.
 - `PlaySession::{now, timers, pending_decisions, choice_points}` return
-  zero / empty / `Ok(vec![])`; `state_key` is real.
+  zero / empty / `Ok(vec![])`; `state_key` is real. (Superseded by wave 2,
+  below.)
+
+## Wave 2 as landed
+
+The five wave 2 branches were merged in this order on
+`chore/integrate-semantics` (sim, guard analysis, interop, scenes, app),
+then glued together (see *Integration* below). Each section records what
+its branch settled that the sections above left open.
+
+### Simulator (`feat/sim-semantics`)
+
+As landed in cascade-sim; the details the sections above leave open:
+
+- **Picking a transition.** Candidates are `enabled_transitions` whose
+  `where` holds. A choice point happens only when `?choice` candidates
+  remain *and* at least two candidates remain; its options are the
+  remaining candidates' labels in definition order: a choice's label, a
+  holding expression's canonical text, `unguarded` for a candidate with no
+  guard, `else`. A single remaining candidate (even a `?choice`) is taken
+  without a choice point. Without choices, several holding expressions
+  take the first in definition order (no choice point; the nondeterminism
+  check flags them) and `else` is taken only when nothing else holds.
+- **Choice steps.** `Choice.at` is the instance (guards) or the controller
+  (conditions). Options for a condition are `label` and `not label`.
+- **Event consumers are fixed when the event is queued** (the subscribing
+  instances alive at emit time, then controllers); a removed instance drops
+  out, an instance created later is not added. A whole delivery equals
+  per-consumer deliveries in order. Each per-consumer delivery counts as
+  one delivery for the step limit.
+- **Per-consumer steps are recorded as `Step { choice: Some(position),
+  consumer }`** (the head as `Some(0)`), so saving round-trips exactly. A
+  consumer not among `consumers_left` is the new
+  `ScenarioErrorKind::UnknownConsumer { consumer, item, consumers }`; a
+  fire or timer with `consumer: Some(target)` is delivered whole.
+- **Timers.** Entering and leaving are computed from the transition's
+  domain (the nearest state properly containing source and target); timers
+  of a state are its own timer transitions' triggers, deduplicated, in
+  definition order; ties between equal deadlines go by arming order (outer
+  state first on creation). `Advance { by: Some(_) }` with nothing armed is
+  allowed (the clock moves); `Advance { by: None }` is `NoTimerArmed`.
+  Removal cancels armed timers and discards queued timer items.
+- **Unused decisions.** Batch runs report `ScenarioErrorKind::UnusedChoice
+  { option }` at each leftover `choose` directive (the run fails with
+  `SimError::Scenario`); `PlaySession::from_scenario` keeps them pending.
+- **Value typing.** `ScenarioErrorKind::InvalidValue { field, value,
+  expected }` (expected from `FieldType::expected`): instance fields
+  against the machine's declarations; step payload entries against the
+  fired machine's field of that name and the declared payload field of
+  that name of every event emitted by a transition accepting the trigger.
+  `AddInstance` and `Fire` actions are checked the same way.
+- **`choice_points`** runs the step on a copy of the session; it returns
+  the same errors the step would (e.g. `QueueEmpty`). Added at
+  integration: `choice_points_of(model, &action)` previews any action the
+  same way (the app asks it before an external `Fire`, whose `?choice`
+  guards would otherwise take their defaults); `choice_points` is it with a
+  `Step`.
+- **`state_key`** adds timer queue items, armed timers (instance, trigger,
+  arming state, `deadline - now`) and pending decisions; the absolute clock
+  is excluded.
+- **Race replays** treat a `Choice` caused by a contested fire as that
+  fire's delivery; findings other than `RaceCandidate` (including the
+  analysis branch's subscription races) return `SimError::NotARace`.
+- `ScenarioErrorKind::Unsupported` is kept but no longer returned.
+
+### Guard analysis (`feat/guard-analysis`)
+
+On `feat/guard-analysis` (static-analysis.md has the details):
+
+- **New check** `Check::UncoveredGuard` (`uncovered-guard`, info, last in
+  `Check::ALL`, which now has 9 entries) with `FindingDetail::UncoveredGuard
+  { state, trigger, transitions, gaps }`. Gap examples made only of missing
+  fields are dropped.
+- **Subscription races**: a new `FindingDetail::SubscriptionRace { origin,
+  machine, first: RaceParty, second: RaceParty }` (check `RaceCandidate`)
+  with `pub enum RaceParty { Rule(RuleId), Subscription(TriggerId) }`
+  (`RaceParty::element()`), re-exported from the crate root. Rule-only pairs
+  stay `RaceCandidate` with `RuleId`s, so the simulator's race replay is
+  unchanged; it returns `SimError::NotARace` for a `SubscriptionRace`
+  (cascade-sim may add replay for it later). Code that indexes race findings
+  by `check() == RaceCandidate` sees both variants. At integration,
+  `cascade_sim::race_replay_note` names the unreplayable ones, and the CLI
+  (`simulate --race`, `render` with `race=`) and the app (trace view,
+  findings list) show the note and the as-queued run instead of an error.
+- **Constant tests**: `DiagnosticKind::ConstantTest { test, what:
+  &'static str, suggestion: Option<String> }`, a load error for a test that
+  reads no field (`x > 0` with a bare `x`, `1 == 1`, a literal `in`). Fixtures
+  and tests with such guards now use `self.x` / `event.x`.
+- Unchanged messages: unhandled-event still says "no controller subscribes
+  to it" (it is only reported when no machine subscribes either), and
+  unreachable-state still says "through external triggers or controller
+  fires". The shop and order-fulfillment findings are unchanged.
+
+### Interop (`feat/interop-semantics`)
+
+- **SCXML.** Timers: `<onentry><send event="M.after-30m" delay="1800s"
+  id="<state id>.after-30m"/>` + `<onexit><cancel sendid/>` in the source
+  state and a transition on `M.after-30m`. Subscriptions: a transition on
+  the bare event name; `cond` = filter (plain context) `and` an expression
+  guard, for engines; `cascade:where`/`cascade:guard` carry them apart.
+  Choices stay `cond="?label"` with an XML comment before the transition.
+  `sets` → `<assign location expr>`, emit `with` → `<param name expr>`,
+  typed fields/payloads → `<cascade:field name type/>` children. Import
+  reads all of these back; in foreign documents a delayed `<send>` in
+  `<onentry>` whose event a transition of the same state takes is a timer,
+  and `<assign>`/`<param>` are kept only when `expr` is `event.x`/`self.x`.
+- **XState.** Numeric `after` delays (> 0) are Cascade timers (no `Clock`
+  source); named delays stay `after_NAME` commands fired by `Clock`.
+  `guard: { type, params }` → `?type` (parameters dropped). `assign` with a
+  static `assignment` copying `event.x` → `sets`; other assignments and
+  `assign` in entry/exit are ignored with a warning.
+- **Mermaid.** Structure labels: `after 30s`, `on Event where …`, guards as
+  canonical text. Causal: notify edges `e ==>|where …| t`, delay edges
+  `t -.->|after 30s| t` with a dashed stroke, from `CausalGraph::build`.
+- **P.** `number` → `float`; enums → P `enum`s; instance fields → machine
+  variables; expression guards over typed instance fields and rule
+  conditions over a typed payload → P conditions, else `$`; `else` → the
+  `else` branch; `sets` → assignments; emits also go to subscribers;
+  timers → nondeterministic self-send on entry (TODO comment for a timer
+  machine).
+
+### Scenes (`feat/scene-semantics`)
+
+- **Scene types.** `Label::style: FontStyle { Normal, Italic }` (choices
+  and `else` italic; a label carrying a choice is italic as a whole);
+  `EdgeKind::{Notify, Delay}`; `CLOCK_GLYPH` = `◷` (U+25F7: DejaVu Sans
+  Mono and the other monospace faces carry it at one advance; `⏱` does
+  not). Backends must render `FontStyle::Italic` (SVG writes
+  `font-style="italic"`; the GPUI painter needs `.italic()`).
+- **Labels.** Pills: `from → to` over `capture` / `on Event` (+ a `where
+  …` line in filter-context canonical text) / `◷ 30s`; the pill's way out
+  carries `sets a, b`. Arrow mode: `trigger [where …] [guard] / sets a, b`.
+  Causal `Delay` edges: `◷ 30s [guard]`.
+- **Links.** Structure view (view mode): subscription links emitter pill →
+  subscriber pill as `Notify` edges labelled with the event; edit mode:
+  `Notify` wires event tag → subscribing pill. Timers get no wire. The
+  matrix counts subscription links like rule links (timers never).
+- **Cycles.** Cycles through `Notify`/`Delay` edges are drawn as back edges
+  (red) like cascade cycles; a timer that re-arms itself is a red
+  self-loop. Causal lanes keep "no leftward arrows" except back edges.
+- **Subscribe affordance.** A new `HitTarget::SubscribeHandle { event:
+  String }` (not `ConnectHandle { element: Event }`, because existing
+  scene tests pin connect handles to states, transitions, controllers and
+  sources): an `Overlay::Rect` circle (radius 4.5) on every event tag's
+  point in `SceneMode::Edit`; `Scene::hit_test`/`hit_test_arrows` return it
+  before nodes (`HitTarget::is_handle`). Drop on a transition pill
+  (`Element(Transition)`) or, in arrow mode, the arrow
+  (`ConnectHandle { element: Transition }`). The app maps it to the drag
+  source `ElementKey::Event { event }` in `build::pick::connect_source`
+  and handles `(Event, Transition)` drops; on this branch `locate.rs` only
+  got the match arms needed to compile (selects the event, not a drop
+  key). Subscribe handles are exported (connect handles are not).
+- **Play.** `PlayOverlay::timers: Vec<PlayTimer { instance, trigger:
+  ElementKey, remaining: Duration }>`, drawn as `◷ 25s` / `◷ due` chips
+  after the instance marker; the app fills it from `PlaySession::timers`
+  minus `now` (this branch sets `timers: Vec::new()` in the app).
+- **Trace.** `Notify` delivery arrow, `Wait` full-width divider
+  `◷ +30s · now 1m`, `TimerExpired` clock self-message, `Choice` note
+  `◇ chosen (default)` over `of a | b`, `SetFields` note `set f = v`.
+
+### App (`feat/app-semantics`)
+
+As landed in `cascade-app` (details in build-and-play.md):
+
+- **Typed fields in the inspector** are one text field in YAML terms
+  (`id, amount: number, tier: enum [a, b]`); no `:` anywhere means the list
+  form. This replaces wave 1's "keep the types of names that stay": the
+  text shows every type, so it is the whole truth.
+- **Live type feedback** plans the edit and runs `edit::apply` on a copy;
+  the diagnostics' kinds (not spans) are shown under the field.
+- **Choice prompt** relies on `PlaySession: Clone`, `apply(Choose)` and
+  `choice_points` returning every point the step hits (decided or not): the
+  app works out which are undecided from `pending_decisions()` (first
+  matching decision, oldest first, one per point). If `choice_points`
+  returns only undecided points instead, the prompt still works. Run until
+  quiet never prompts (defaults). At integration the prompt moved to
+  `choice_points_of` and covers external fires too (generic over
+  `choices::Request`: `StepRequest` or a `PlayAction`).
+- **Per-consumer delivery** buttons appear for `PendingKind::Event` items
+  with more than one `consumers_left`; the head is sent as `choice: None`.
+- **Drag-to-connect** onto a transition from an event (or from another
+  machine's transition) offers subscribing, plus rules of controllers
+  handling the event. The branch assumed event handles would be
+  `HitTarget::ConnectHandle { element: ElementKey::Event { .. } }`; the
+  scene's `SubscribeHandle` is mapped at integration (below).
+- Keys: `T` advances the clock to the next timer; with a prompt open,
+  Space takes the first option.
+
+### Integration (`chore/integrate-semantics`)
+
+- **Subscribe handle.** The scene draws an event tag's handle as
+  `HitTarget::SubscribeHandle { event }`, not a `ConnectHandle`;
+  `build::pick::connect_source` and `locate::drop_key` (which now returns
+  an owned `ElementKey`) map it to `ElementKey::Event { event }`, so
+  dragging a tag onto a transition pill or arrow reaches the
+  `(event, transition)` subscribe offers.
+- **Italics.** The GPUI painter paints `Label.style == FontStyle::Italic`
+  with the family's italic face (`canvas::paint::run_font`).
+- **Play overlay timers.** `PlayOverlay::timers` is filled from
+  `PlaySession::timers()` (remaining = deadline − `now()`, zero when due;
+  `play::overlay::play_timers`).
+- **Choice prompt.** `PlaySession::choice_points_of(model, &action)`
+  previews any action; the app asks it before steps *and* external fires
+  (the checkout saga's `?approved` is a fire by the bank). A preview of a
+  step on an empty queue fails like the step ("nothing is queued to
+  deliver"); the app shows that error rather than stepping.
+- **Subscription races.** `cascade_sim::race_replay_note(detail)` is
+  `None` only for a rule `RaceCandidate`. Race indices still count every
+  `Check::RaceCandidate` finding in `cascade check` order; for a
+  subscription race `cascade simulate --race n` prints the note and the
+  as-queued trace (JSON `replayed: false`), `cascade render` with
+  `race=n` renders the as-queued trace with the note on stderr, and the
+  app runs the scenario as queued with the note in the trace panel (the
+  findings list locates the race instead of opening the trace view).
+- **Analysis findings in scenes.** With subscriptions understood by the
+  analysis, the scene fixture saga has fewer unhandled-event /
+  unreachable-state findings; its golden fingerprints were re-blessed.
+- **Checkout saga** declares field types (`orderId: string`, `amount:
+  number`, `reason: enum [underpaid, declined, timeout]`, …); the SCXML
+  round trip keeps them.
 
 ## Invariants
 

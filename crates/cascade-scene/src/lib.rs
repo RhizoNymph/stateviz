@@ -26,10 +26,10 @@ pub mod views;
 pub use color::{MachineStyle, Rgba, Theme, ThemeMode, machine_colors, machine_styles};
 pub use export::{ExportError, to_png, to_svg};
 pub use pins::{LayoutSidecar, SidecarError, load_sidecar, save_sidecar, sidecar_path};
-pub use play::{PlayMarker, PlayOverlay, SceneMode};
+pub use play::{PlayMarker, PlayOverlay, PlayTimer, SceneMode};
 pub use scene::{
-    Arrow, Badge, Border, Dash, EdgeKind, Emphasis, FontWeight, HitTarget, Label, Lane, Layer, Overlay, Scene,
-    SceneEdge, SceneNode, Shape, Stroke,
+    Arrow, Badge, Border, CLOCK_GLYPH, Dash, EdgeKind, Emphasis, FontStyle, FontWeight, HitTarget, Label, Lane, Layer,
+    Overlay, Scene, SceneEdge, SceneNode, Shape, Stroke,
 };
 pub use text::{MonoMeasure, TextMeasure};
 pub use view_state::{ConeFocus, DiffRefs, OutsideFocus, ViewKind, ViewLinkError, ViewState, Viewport};
