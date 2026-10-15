@@ -621,7 +621,7 @@ fn parse_delay(text: &str) -> Option<u64> {
         return None;
     }
     let millis = number.parse::<f64>().ok()? * scale;
-    (millis >= 1.0 && millis.fract() == 0.0 && millis < u64::MAX as f64).then(|| millis as u64)
+    (millis >= 1.0 && millis.fract() == 0.0 && millis < u64::MAX as f64).then_some(millis as u64)
 }
 
 /// `Machine.trigger` → (machine, trigger).

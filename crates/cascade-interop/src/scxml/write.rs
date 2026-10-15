@@ -414,7 +414,7 @@ fn typed(fields: &[FieldDecl]) -> bool {
 /// An SCXML delay (CSS2 time: seconds or milliseconds).
 fn scxml_delay(delay: Duration) -> String {
     let ms = delay.millis();
-    if ms % 1000 == 0 { format!("{}s", ms / 1000) } else { format!("{ms}ms") }
+    if ms.is_multiple_of(1000) { format!("{}s", ms / 1000) } else { format!("{ms}ms") }
 }
 
 /// The selector text for a rule target, or `None` for "the one instance".

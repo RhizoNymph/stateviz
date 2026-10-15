@@ -55,8 +55,9 @@ pub(crate) fn reconcile(text: &str, locate: Locate<'_>, old: &[EmitDef], new: &[
     for index in (old_mid.start + paired..old_mid.end).rev() {
         text = step(&text, |doc, _| Ok(vec![remove_child(doc, &locate(doc)?.value, index)?]))?;
     }
-    for index in new_mid.start + paired..new_mid.end {
-        let emit = &new[index];
+    // Each new item goes to its own position in `new`: everything before it
+    // already matches.
+    for (index, emit) in new.iter().enumerate().take(new_mid.end).skip(new_mid.start + paired) {
         text = step(&text, |doc, style| {
             let mut block = Block::new();
             block.line(0, format!("- {}", item_text(emit, false)));

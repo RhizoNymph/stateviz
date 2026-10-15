@@ -67,14 +67,11 @@ fn semantics(model: &Model) -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|element| {
             let text = match element {
-                ElementRef::Trigger(id) => {
-                    let kind = match model.trigger(id).kind {
-                        TriggerKind::Command => "command".to_owned(),
-                        TriggerKind::Event(e) => format!("event {}", model.event(e).name),
-                        TriggerKind::Timer(d) => format!("timer {d}"),
-                    };
-                    kind
-                }
+                ElementRef::Trigger(id) => match model.trigger(id).kind {
+                    TriggerKind::Command => "command".to_owned(),
+                    TriggerKind::Event(e) => format!("event {}", model.event(e).name),
+                    TriggerKind::Timer(d) => format!("timer {d}"),
+                },
                 ElementRef::Transition(id) => {
                     let t = model.transition(id);
                     let sets: Vec<String> = t.sets.iter().map(|a| format!("{}={}", a.field, a.value)).collect();
