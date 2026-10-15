@@ -23,7 +23,8 @@ the interactive play session built on the same engine.
 
 ## Non-scope
 
-- Evaluating guards or `when:` conditions (free text; see below).
+- Deciding `?choice` guards and conditions, `sets`, emit `with`,
+  subscriptions and timers (semantics phase, wave 2).
 - Drawing the sequence diagram (view-scenes.md) or the app's trace panel
   (native-app.md).
 - Finding race candidates (static-analysis.md); the simulator only replays
@@ -158,9 +159,12 @@ name is never given out again, by `create`, a player or a spawn.
 - The instance's current state is always a leaf (atomic or final).
 - `Model::enabled_transitions(leaf, trigger)` gives the candidates from the
   innermost state that has any. None means the trigger is **dropped**
-  (`Dropped`). Several (guarded alternatives) means the **first in
-  definition order** is taken: guards are free text and never evaluated, and
-  neither are rule `when:` conditions (rules always fire).
+  (`Dropped`). Otherwise the **first in definition order whose guard does
+  not rule it out** is taken: an expression guard must evaluate true
+  (`cascade_core::expr::eval` over the instance's fields and the trigger's
+  payload); `?choice` and `else` guards stay candidates (the default). A rule
+  whose `when:` expression is false does not apply (no trace step); a
+  `?choice` condition holds. Selector filters are evaluated the same way.
 - Before entering the target, the leaf being left is recorded as the last
   active leaf under each of its ancestors (and under the machine's top
   level).
@@ -447,8 +451,9 @@ on.
   state; external and controller lifelines exist only if a step uses them.
 - `Trace` and `TraceStepKind` shapes are a contract with the trace view;
   payloads travel beside the trace in `SimRun`, not inside it.
-- Guards and conditions are never evaluated: the first enabled transition in
-  definition order is taken and every rule fires.
+- Expression guards and conditions are evaluated; choices take the
+  default (first candidate, condition holds). Subscription and timer
+  triggers never fire yet.
 - The queue is bounded by `STEP_LIMIT` delivered items per run.
 - Race replays change only the order of the two contested fires; every other
   item keeps its FIFO position. (A race replay of a scenario with manual

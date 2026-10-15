@@ -74,7 +74,7 @@ external:
   Clock: [Order.timeout]
 ```
 
-Nested states use a `states:` map inside a state, as in statecharts. Guards are free-text strings in v1; Cascade displays them but does not evaluate them.
+Nested states use a `states:` map inside a state, as in statecharts. Guards were free-text strings in v1; since the semantics phase they are typed expressions, `?choice` labels or `else` (see docs/features/expressions.md).
 
 **Import:** XState v5 machine configs and SCXML files, mapped onto the same model. Extracting machines from code (Rust enums with match arms, TypeScript discriminated unions) is a later experiment.
 

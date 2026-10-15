@@ -22,7 +22,8 @@ a scenario.
 ## Non-scope
 
 - Free-form manual layout: layout stays automatic, dragging still pins.
-- Evaluating guards or conditions during play (they remain free text).
+- Deciding `?choice` guards or conditions during play (they take the
+  default until wave 2's choice prompt).
 - Collaborative or multi-file editing.
 
 ## Data and control flow
@@ -655,9 +656,10 @@ only change outside `patch/` makes `yaml::quote` visible within the crate.
 
 - **Scalars** that change keep their quoting style (`'…'` stays single
   quoted, `"…"` double quoted, plain stays plain when it can). New names
-  are plain unless YAML would read them differently. New free text
-  (`guard:`, `when:`) is double-quoted when most of the file's free text
-  is.
+  are plain unless YAML would read them differently. New guard and
+  condition text (`guard:`, `when:`, canonical; see expressions.md) is
+  double-quoted when most of the file's such text is, and always when YAML
+  needs it (a `?choice` always does).
 - **Transitions** are written like their neighbours. Among one-line flow
   mappings a new row is `{ from: …, to: …, on: … }`, padded to the
   neighbours' `to:`, `on:` and extra-key columns when every row shares

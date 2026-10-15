@@ -23,10 +23,26 @@ given model. Edges:
 
 ```text
 External ──Trigger{trigger}──▶ Transition ──Emit──▶ Event ──Subscribe──▶ Handler ──Fire{rule}──▶ Transition
+                                                      └──Notify{trigger}──────────────────────────▶ Transition
+Transition ──Delay{trigger}──▶ Transition (timer)
 ```
 
-- `Trigger` and `Fire` edges go to every transition that accepts the trigger,
-  since which one is taken depends on the target instance's current state.
+- `Trigger`, `Fire` and `Notify` edges go to every transition that accepts
+  the trigger, since which one is taken depends on the target instance's
+  current state.
+- `Notify`: event → every transition accepting a subscription trigger on it
+  (`Event::subscribers`).
+- `Delay`: from each transition of the same machine that enters the timer
+  transition's source state to the timer transition. A transition enters a
+  state when its target is the state or inside it (the contract's rule), when
+  default entry from its target passes through the state, or when its target
+  is a history pseudo-state whose parent contains the state. The machine's
+  initial entry has no node, so a timer on the initial state has no incoming
+  `Delay` edge.
+- `transition_successors(t)` returns `(successor, Option<RuleId>)`: through
+  a handler's rule (`Some`) or a subscription (`None`). `Delay` links are not
+  successors (a timer is not a cascade), so cascade cycles ignore them;
+  `CycleStep::rule` is `None` for a subscription link.
 - A handler is one controller's subscription to one event. Drawing handlers
   (rather than whole controllers) keeps paths honest: a controller that
   handles two events does not create a false path from one to the other.
@@ -52,6 +68,7 @@ the spec's path query regardless of selection order.
 | `crates/cascade-core/src/causal/mod.rs` | Graph types, derivation, depths, successors | `CausalGraph`, `CausalNode`, `CausalEdge`, `CausalEdgeKind`, `NodeIx`, `EdgeIx` |
 | `crates/cascade-core/src/causal/cone.rs` | Cones and path queries | `Cone`, `Direction`, `CausalGraph::cone`, `CausalGraph::paths_between` |
 | `crates/cascade-core/tests/causal.rs` | Behavioural tests on the spec example and a chain with fan-out | — |
+| `crates/cascade-core/tests/causal_semantics.rs` | `Notify` and `Delay` edges, successors, subscription cycles | — |
 
 ## Invariants and constraints
 

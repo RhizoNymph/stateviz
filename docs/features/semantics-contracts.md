@@ -549,6 +549,70 @@ builds and every existing test passes (existing guards in examples and
 fixtures are rewritten to expressions or `?choices`). Wave 2 branches stack
 on wave 1 and run in parallel; wave 3 stacks on the wave 2 integration.
 
+## Wave 1 as landed
+
+Names and details the Rust blocks above leave open, as implemented on
+`feat/lang-contracts` (wave 2 builds on these):
+
+- **Parsing.** `ExprContext::{Plain, Filter}`; `parse_expr(text, ctx)`,
+  `parse_guard`, `parse_condition`, `parse_operand` (assignment values),
+  `parse_field_type`, `parse_duration` all return `Result<_, ExprError>`
+  with `ExprError { message, column }` (1-based character column).
+  `Expr::display_filter()` prints filter-context canonical text (left
+  `self.x` as `x`); `TargetSpec`'s `Display` uses it.
+- **Literals.** `Literal::new(text)` quotes only when needed;
+  `Literal::quoted`. A quoted literal is always a string for typing
+  (`"42"` is not a number). `true`/`false` unquoted are bool literals.
+- **Types.** `Types::new(self_fields, event_payload)`, `Types::untyped()`,
+  `Model::types_for(machine, Option<EventId>)`, `Model::event_types(event)`;
+  `MapScope { event, self_fields }` implements `Scope` over the simulator's
+  maps. `compare(left, op, right, ty)` and `literal_fits` are public.
+- **Definition.** `TransitionDef { from, to, trigger: TriggerSpec, guard:
+  Option<Spanned<Guard>>, sets: Vec<Spanned<Assignment>>, emits:
+  Vec<EmitDef>, bounded, span }` with `TriggerSpec::{Command(name),
+  Event { event, filter: Option<Spanned<Expr>> }, After(Spanned<Duration>)}`
+  and `TriggerSpec::name()`; `EmitDef { event, with }`; `FieldDef { name, ty:
+  Option<Spanned<FieldType>> }` (`None` = list form; `fields_are_typed`);
+  `RuleDef.when: Option<Spanned<Condition>>`; `TargetSpec::{One { machine,
+  filter }, All { machine, filter }, Spawn { machine, assignments }}` with
+  `mode()`, `machine()`, `machine_mut()`, `filter()` (`TargetMode` stays as
+  the mode tag). `EditOp::SetMachineFields` carries `Vec<FieldDef>`.
+- **Model.** `Transition { guard, filter, sets, emits: Vec<Emit>, .. }`
+  (`filter` only on subscriptions; an event emitted twice by one transition
+  is kept once); `TriggerKind::{Command, Event(EventId), Timer(Duration)}`
+  with `describe()`; `Event.subscribers`; `Model::subscription_trigger`.
+- **Diagnostics.** `InvalidExpression { text, message }`, `InvalidFieldType
+  { text, message }`, `InvalidDuration { text, message }` (also a zero timer
+  delay), `TypeMismatch { text, left, right }`, `NotAMember { value, ty }`,
+  `SelfNotAllowed { text, context }`, `TriggerKindConflict { machine,
+  trigger, first, second }` (also when a rule or external source names a
+  subscription or timer trigger), and one addition: `ConflictingKeys {
+  context, first, second }` for `on:` with `after:` (neither is `MissingKey
+  on`). `UnknownField` / `UnknownPayloadField` are reused, also for `sets`
+  targets and `with` keys; duplicate field names are `Duplicate { what:
+  "field" }`.
+- **Causal graph.** `Delay` edges come from transitions that *enter* the
+  timer's source state: the contract's rule (target is the state or inside
+  it) plus default entry below the target and history targets whose parent
+  contains the state, all within the timer's machine.
+- **Coverage.** `Coverage::Gaps` examples read `self.tier = vip, event.amount
+  is missing`; no expressions at all is `Gaps(["any input"])`.
+- **Simulator (wave 1 stub).** A trigger takes the first candidate in
+  definition order whose `Expr` guard is not false (`Choice`/`Else` stay
+  candidates); command guards read `event.x` as `any`. A rule whose `Expr`
+  condition is false does not apply (no trace step); a `Choice` condition
+  holds. Subscriptions and timers never fire; `sets`/`with` are not applied.
+- **Interop, scene, app (wave 1).** Canonical text everywhere a guard or
+  condition used to be shown (so choices show their `?`). Importers produce
+  `?label` choices, except that text already in Cascade syntax (`else`,
+  `?label`, or an expression reading `event.x`/`self.x`) is kept, so a
+  Cascade SCXML export imports back unchanged. The YAML writer quotes guard,
+  `when:` and `where:` text only when YAML needs it (a `?choice` always
+  does). The structure view does not draw `Notify`/`Delay` wires yet; the
+  causal view draws them like subscribe/trigger links. The app inspector
+  parses guard/`when` text on commit and shows parse errors inline; field
+  and payload lists keep the types of names that stay.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /
