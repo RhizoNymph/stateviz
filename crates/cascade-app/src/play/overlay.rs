@@ -4,8 +4,9 @@
 use std::ops::Range;
 
 use cascade_core::{ElementKey, ElementRef, Model};
-use cascade_scene::{PlayMarker, PlayOverlay};
-use cascade_sim::{InstanceState, PendingItem, PendingKind, Trace, TraceStepKind};
+use cascade_core::expr::Duration;
+use cascade_scene::{PlayMarker, PlayOverlay, PlayTimer};
+use cascade_sim::{ArmedTimer, InstanceState, PendingItem, PendingKind, Trace, TraceStepKind};
 
 /// The element a step "went through", for emphasis: transitions taken,
 /// events emitted, handlers run, rules fired. External fires, drops and
@@ -71,6 +72,19 @@ pub fn build_overlay(
         push_unique(&mut queued, model.key_of(pending_element(&item.kind)));
     }
     PlayOverlay { markers, active, pending: queued, timers: Vec::new() }
+}
+
+/// The overlay's timers: each armed timer with the time left until its
+/// deadline at `now` (zero once due), in the session's deadline order.
+pub fn play_timers(model: &Model, armed: &[ArmedTimer], now: Duration) -> Vec<PlayTimer> {
+    armed
+        .iter()
+        .map(|timer| PlayTimer {
+            instance: timer.instance.clone(),
+            trigger: model.key_of(ElementRef::Trigger(timer.trigger)),
+            remaining: timer.deadline.saturating_sub(now),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -209,5 +223,25 @@ external:
     fn an_empty_session_draws_nothing() {
         let m = model();
         assert_eq!(build_overlay(&m, &trace(Vec::new()), &[], &[], None), PlayOverlay::default());
+    }
+    #[test]
+    fn timers_count_down_from_now_and_stop_at_zero() {
+        let m = model();
+        let (_, _, _, pay, ..) = ids(&m);
+        let secs = Duration::from_secs;
+        let armed = [
+            ArmedTimer { instance: "o1".into(), trigger: pay, deadline: secs(30) },
+            ArmedTimer { instance: "o2".into(), trigger: pay, deadline: secs(5) },
+        ];
+        let timers = play_timers(&m, &armed, secs(10));
+        let trigger = ElementKey::Trigger { machine: "Order".into(), trigger: "pay".into() };
+        assert_eq!(
+            timers,
+            [
+                PlayTimer { instance: "o1".into(), trigger: trigger.clone(), remaining: secs(20) },
+                PlayTimer { instance: "o2".into(), trigger, remaining: Duration::ZERO },
+            ]
+        );
+        assert!(play_timers(&m, &[], secs(10)).is_empty());
     }
 }

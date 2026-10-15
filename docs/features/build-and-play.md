@@ -442,7 +442,10 @@ note.
   timer** (T) is `Advance { by: None }`; the "advance by" box takes a
   duration (`Advance { by: Some(d) }`, Enter or the button; blank means the
   next timer; zero or bad text is a form error). The simulator's errors
-  (e.g. `NoTimerArmed`) show like any failed action.
+  (e.g. `NoTimerArmed`) show like any failed action. The canvas overlay
+  gets the same timers (`play::overlay::play_timers`: `PlayTimer {
+  instance, trigger, remaining }`, remaining = deadline − `now()`, zero
+  when due), so the scene draws each armed timer's countdown.
 - **Queue:** `pending()` in order, head marked (`play::queue::queue_rows`);
   **Step** (Space) delivers the head, clicking an item delivers that one
   (`Step { choice }`), **Run until quiet** (R) drains the queue. An event
@@ -503,7 +506,7 @@ note.
 | `crates/cascade-app/src/build/undo.rs` | Undo/redo stacks (pure) | `History`, `Entry`, `Direction` |
 | `crates/cascade-app/src/build/disk.rs` | Atomic writes, own-write detection, new files | `write_atomic`, `DiskSync`, `DiskChange`, `ContentHash`, `create_new`, `NEW_FILE_TEXT` |
 | `crates/cascade-app/src/play/mod.rs` | Session state for the panels (pure) | `PlayState` |
-| `crates/cascade-app/src/play/overlay.rs` | Session → `PlayOverlay` (pure) | `build_overlay` |
+| `crates/cascade-app/src/play/overlay.rs` | Session → `PlayOverlay` (pure) | `build_overlay`, `play_timers` |
 | `crates/cascade-app/src/play/timeline.rs` | Timeline chips and labels (pure) | `chips`, `action_label`, `branch_label`, `acting_forks` |
 | `crates/cascade-app/src/play/forms.rs` | Assignments, palette grouping, scenario saving | `parse_assignments`, `group_fires`, `scenario_path`, `scenario_text`, `write_scenario` |
 | `crates/cascade-app/src/play/clock.rs` | Armed timer rows, the Advance box (pure) | `TimerRow`, `timer_rows`, `advance_action`, `advance_label` |
