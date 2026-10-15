@@ -72,6 +72,9 @@ pub(crate) struct Finished {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Recorder {
+    /// Steps forgotten by [`Recorder::forget`]: `steps[0]` is step `base`.
+    /// Always 0 except in exploration, which never finishes a recording.
+    base: usize,
     steps: Vec<RawStep>,
     payloads: BTreeMap<StepRef, Payload>,
 }
@@ -79,20 +82,33 @@ pub(crate) struct Recorder {
 impl Recorder {
     pub fn push(&mut self, cause: Option<StepRef>, kind: RawKind) -> StepRef {
         self.steps.push(RawStep { cause, kind });
-        self.steps.len() - 1
+        self.base + self.steps.len() - 1
     }
 
     pub fn len(&self) -> usize {
-        self.steps.len()
+        self.base + self.steps.len()
+    }
+
+    /// The kinds of the steps recorded from step `from` on (forgotten steps
+    /// excluded).
+    pub fn kinds_since(&self, from: StepRef) -> impl Iterator<Item = &RawKind> + '_ {
+        self.steps.iter().skip(from.saturating_sub(self.base)).map(|step| &step.kind)
+    }
+
+    /// Drop every recorded step and payload, keeping the step count, so a
+    /// copy of the core is cheap. Exploration only: a recorder that forgot
+    /// steps can no longer [`finish`](Self::finish) a trace.
+    pub fn forget(&mut self) {
+        self.base += self.steps.len();
+        self.steps.clear();
+        self.payloads.clear();
     }
 
     /// The choice points recorded from step `from` on: who decided and the
     /// options.
     pub fn choices_since(&self, from: StepRef) -> Vec<(Participant, Vec<String>)> {
-        self.steps
-            .iter()
-            .skip(from)
-            .filter_map(|step| match &step.kind {
+        self.kinds_since(from)
+            .filter_map(|kind| match kind {
                 RawKind::Choice { at, options, .. } => Some((*at, options.clone())),
                 _ => None,
             })

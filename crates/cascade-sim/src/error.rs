@@ -181,4 +181,8 @@ pub enum SimError {
     /// A play session was asked to switch to a branch it does not have.
     #[error("there is no branch {index}; the timeline has {count} branches")]
     NoSuchBranch { index: usize, count: usize },
+    /// Exploration could not replay the path it found to an outcome (a bug
+    /// in exploration, never expected).
+    #[error("exploration could not rebuild the witness of an outcome at move {at}")]
+    WitnessLost { at: usize },
 }

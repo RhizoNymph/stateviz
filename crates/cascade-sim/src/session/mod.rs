@@ -357,6 +357,11 @@ impl PlaySession {
         (session, failure)
     }
 
+    /// The simulator state at the current position (for exploration).
+    pub(crate) fn core(&self) -> &Core {
+        &self.core
+    }
+
     pub fn timeline(&self) -> &Timeline {
         &self.timeline
     }
