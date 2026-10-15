@@ -39,8 +39,8 @@ machines:
       - { from: running, to: failed, on: crash, emits: [JobFailed] }
       - { from: [running.computing, waiting], to: done, on: finish, emits: [JobDone] }
       - { from: failed, to: hist, on: resume }
-      - { from: fetching, to: fetching, on: retry, guard: "attempts < 3" }
-      - { from: fetching, to: fetching, on: retry, guard: "attempts >= 3" }
+      - { from: fetching, to: fetching, on: retry, guard: "event.attempts < 3" }
+      - { from: fetching, to: fetching, on: retry, guard: "event.attempts >= 3" }
       - { from: running, to: paused, on: pause }
       - { from: resuming, to: running.hist, on: resume }
       - { from: waiting, to: resuming, on: wake }

@@ -38,7 +38,11 @@ fn large_model() -> String {
             let _ = writeln!(y, "      - {{ from: s{s}, to: s{}, on: t{s}{emits} }}", (s + 1) % STATES);
         }
         for s in 0..5 {
-            let _ = writeln!(y, "      - {{ from: s{s}, to: s{}, on: jump{s}, guard: \"x > {s}\" }}", (s + 3) % STATES);
+            let _ = writeln!(
+                y,
+                "      - {{ from: s{s}, to: s{}, on: jump{s}, guard: \"self.x > {s}\" }}",
+                (s + 3) % STATES
+            );
         }
         if m % 5 == 0 {
             let _ = writeln!(y, "      - {{ from: s5.inner0, to: s5.inner1, on: step }}");

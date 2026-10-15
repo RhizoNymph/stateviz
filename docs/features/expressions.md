@@ -112,7 +112,11 @@ assignments; `event.x` must be declared when the event in scope is known and
 declares a payload (a command trigger's guard has an open event: `any`).
 Tests need compatible types (`TypeMismatch`), enum literals must be members
 (`NotAMember`), ordering needs numbers or `any`. Assignments must fit the
-target field's type.
+target field's type. A test that reads no field (two literals compared, or
+`in` on a literal) is `ConstantTest { test, what, suggestion }`: since a bare
+word is a literal outside a filter's left-hand side, `x > 0` in a guard would
+silently be constant, so the message suggests `self.x` or `event.x` (only
+`event.x` where `self` is not available).
 
 ## Files
 
