@@ -29,8 +29,8 @@ Overview:
       Scenario files and the simulator: instances, one global FIFO queue of
       events, controller fires and expired timers, guards and choice points,
       sets/with, subscriptions, a virtual clock, target selectors, traces
-      with cause links; replays race candidates with the contested fires
-      swapped. One
+      with cause links; replays race candidates between two controller
+      rules with the contested fires swapped. One
       steppable engine serves batch runs and the interactive PlaySession
       (rewind, branches, replay after edits, save as a scenario).
     cascade-scene: >
@@ -100,7 +100,9 @@ Features Index:
     description: >
       The shared design of the semantics phase (expressions, exploration,
       subscriptions and timers) and its workstreams; wave 1 (the core
-      language) has landed.
+      language) and wave 2 (simulator, analysis, interop, scenes, app) have
+      landed and been integrated, with the glue between them recorded in
+      the contract's as-landed sections. Exploration (wave 3) is next.
     entry_points: []
     depends_on: [expressions, definition_format, causal_graph, simulator]
     doc: docs/features/semantics-contracts.md
@@ -148,8 +150,12 @@ Features Index:
       (`choose`, `PlayAction::Choose`) or the first option; `sets` and emit
       `with` shape fields and payloads; events can be delivered to one
       consumer at a time; scenario values are checked against declared
-      types; `state_key` and `choice_points` support exploration.
-    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::PlaySession, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
+      types; `state_key`, `choice_points` and `choice_points_of` (any
+      action, e.g. an external fire) support exploration and the app's
+      choice prompt. Subscription races are not replayed:
+      `race_replay_note` says why and callers fall back to the as-queued
+      run.
+    entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::race_replay_note, cascade_sim::PlaySession, cascade_sim::PlaySession::choice_points_of, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
     depends_on: [definition_format, expressions, static_analysis]
     doc: docs/features/simulator.md
   timers_and_subscriptions:
@@ -190,9 +196,12 @@ Features Index:
       live reload that keeps the last good model on screen. View/Build/Play modes: Build edits the definition
       (toolbar, drag-to-connect from handles or, with pills off, from
       anywhere within 8 px of a transition arrow, inspector, undo/redo,
-      own-write-aware saves, `--new`); Play drives an interactive simulator session with an overlay,
-      a clock (T advances to the next timer), a choice prompt before steps that need decisions, and
-      per-consumer delivery from the queue.
+      own-write-aware saves, `--new`; event tags' subscribe handles drag onto
+      transitions to subscribe them); Play drives an interactive simulator session with an overlay
+      (instance markers, armed timer countdowns), a clock (T advances to the next timer), a choice
+      prompt before steps and external fires that need decisions, and per-consumer delivery from
+      the queue. Choice labels paint in italics; subscription races open as the as-queued trace
+      with a note.
     entry_points: [cascade-app, cascade-app --new, cascade new, cascade open, cascade_app::workspace::Workspace, cascade_app::settings, cascade_app::build::pick]
     depends_on: [definition_format, causal_graph, view_scenes, static_analysis, simulator, interop_and_diff]
     doc: docs/features/native-app.md
@@ -205,8 +214,10 @@ Features Index:
       timeline, record as scenario). The app's inspector edits typed fields,
       trigger kinds (command, subscription with `where`, timer), guards and
       conditions with live type feedback, `sets:` and emit `with:` rows;
-      drag-to-connect offers subscriptions; play shows the clock, armed
-      timers, a choice prompt and per-consumer delivery.
+      drag-to-connect (from event tags' subscribe handles too) offers
+      subscriptions; play shows the clock, armed timers (also on the
+      canvas), a choice prompt (steps and external fires) and per-consumer
+      delivery.
     entry_points: [cascade_core::edit::apply, cascade_core::edit::locate_transition, cascade_interop::patch_text, cascade_sim::PlaySession, cascade_scene::PlayOverlay, cascade-app build/play modes, cascade_app::build::inspector::check, cascade_app::build::subscribe, cascade_app::play::choices]
     depends_on: [definition_format, simulator, view_scenes, interop_and_diff, native_app]
     doc: docs/features/build-and-play.md

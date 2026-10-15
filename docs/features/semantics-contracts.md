@@ -549,34 +549,6 @@ builds and every existing test passes (existing guards in examples and
 fixtures are rewritten to expressions or `?choices`). Wave 2 branches stack
 on wave 1 and run in parallel; wave 3 stacks on the wave 2 integration.
 
-## Interop as landed (wave 2, `feat/interop-semantics`)
-
-- **SCXML.** Timers: `<onentry><send event="M.after-30m" delay="1800s"
-  id="<state id>.after-30m"/>` + `<onexit><cancel sendid/>` in the source
-  state and a transition on `M.after-30m`. Subscriptions: a transition on
-  the bare event name; `cond` = filter (plain context) `and` an expression
-  guard, for engines; `cascade:where`/`cascade:guard` carry them apart.
-  Choices stay `cond="?label"` with an XML comment before the transition.
-  `sets` → `<assign location expr>`, emit `with` → `<param name expr>`,
-  typed fields/payloads → `<cascade:field name type/>` children. Import
-  reads all of these back; in foreign documents a delayed `<send>` in
-  `<onentry>` whose event a transition of the same state takes is a timer,
-  and `<assign>`/`<param>` are kept only when `expr` is `event.x`/`self.x`.
-- **XState.** Numeric `after` delays (> 0) are Cascade timers (no `Clock`
-  source); named delays stay `after_NAME` commands fired by `Clock`.
-  `guard: { type, params }` → `?type` (parameters dropped). `assign` with a
-  static `assignment` copying `event.x` → `sets`; other assignments and
-  `assign` in entry/exit are ignored with a warning.
-- **Mermaid.** Structure labels: `after 30s`, `on Event where …`, guards as
-  canonical text. Causal: notify edges `e ==>|where …| t`, delay edges
-  `t -.->|after 30s| t` with a dashed stroke, from `CausalGraph::build`.
-- **P.** `number` → `float`; enums → P `enum`s; instance fields → machine
-  variables; expression guards over typed instance fields and rule
-  conditions over a typed payload → P conditions, else `$`; `else` → the
-  `else` branch; `sets` → assignments; emits also go to subscribers;
-  timers → nondeterministic self-send on entry (TODO comment for a timer
-  machine).
-
 ## Wave 1 as landed
 
 Names and details the Rust blocks above leave open, as implemented on
@@ -679,7 +651,14 @@ semantics yet:
   zero / empty / `Ok(vec![])`; `state_key` is real. (Superseded by wave 2,
   below.)
 
-### Simulator semantics (wave 2, `feat/sim-semantics`)
+## Wave 2 as landed
+
+The five wave 2 branches were merged in this order on
+`chore/integrate-semantics` (sim, guard analysis, interop, scenes, app),
+then glued together (see *Integration* below). Each section records what
+its branch settled that the sections above left open.
+
+### Simulator (`feat/sim-semantics`)
 
 As landed in cascade-sim; the details the sections above leave open:
 
@@ -734,7 +713,7 @@ As landed in cascade-sim; the details the sections above leave open:
   analysis branch's subscription races) return `SimError::NotARace`.
 - `ScenarioErrorKind::Unsupported` is kept but no longer returned.
 
-## Wave 2 guard analysis as landed
+### Guard analysis (`feat/guard-analysis`)
 
 On `feat/guard-analysis` (static-analysis.md has the details):
 
@@ -762,7 +741,35 @@ On `feat/guard-analysis` (static-analysis.md has the details):
   unreachable-state still says "through external triggers or controller
   fires". The shop and order-fulfillment findings are unchanged.
 
-### Scene semantics as landed (wave 2, `feat/scene-semantics`)
+### Interop (`feat/interop-semantics`)
+
+- **SCXML.** Timers: `<onentry><send event="M.after-30m" delay="1800s"
+  id="<state id>.after-30m"/>` + `<onexit><cancel sendid/>` in the source
+  state and a transition on `M.after-30m`. Subscriptions: a transition on
+  the bare event name; `cond` = filter (plain context) `and` an expression
+  guard, for engines; `cascade:where`/`cascade:guard` carry them apart.
+  Choices stay `cond="?label"` with an XML comment before the transition.
+  `sets` → `<assign location expr>`, emit `with` → `<param name expr>`,
+  typed fields/payloads → `<cascade:field name type/>` children. Import
+  reads all of these back; in foreign documents a delayed `<send>` in
+  `<onentry>` whose event a transition of the same state takes is a timer,
+  and `<assign>`/`<param>` are kept only when `expr` is `event.x`/`self.x`.
+- **XState.** Numeric `after` delays (> 0) are Cascade timers (no `Clock`
+  source); named delays stay `after_NAME` commands fired by `Clock`.
+  `guard: { type, params }` → `?type` (parameters dropped). `assign` with a
+  static `assignment` copying `event.x` → `sets`; other assignments and
+  `assign` in entry/exit are ignored with a warning.
+- **Mermaid.** Structure labels: `after 30s`, `on Event where …`, guards as
+  canonical text. Causal: notify edges `e ==>|where …| t`, delay edges
+  `t -.->|after 30s| t` with a dashed stroke, from `CausalGraph::build`.
+- **P.** `number` → `float`; enums → P `enum`s; instance fields → machine
+  variables; expression guards over typed instance fields and rule
+  conditions over a typed payload → P conditions, else `$`; `else` → the
+  `else` branch; `sets` → assignments; emits also go to subscribers;
+  timers → nondeterministic self-send on entry (TODO comment for a timer
+  machine).
+
+### Scenes (`feat/scene-semantics`)
 
 - **Scene types.** `Label::style: FontStyle { Normal, Italic }` (choices
   and `else` italic; a label carrying a choice is italic as a whole);
@@ -801,7 +808,7 @@ On `feat/guard-analysis` (static-analysis.md has the details):
   `◷ +30s · now 1m`, `TimerExpired` clock self-message, `Choice` note
   `◇ chosen (default)` over `of a | b`, `SetFields` note `set f = v`.
 
-### App (`feat/app-semantics`, wave 2)
+### App (`feat/app-semantics`)
 
 As landed in `cascade-app` (details in build-and-play.md):
 
@@ -823,12 +830,44 @@ As landed in `cascade-app` (details in build-and-play.md):
   with more than one `consumers_left`; the head is sent as `choice: None`.
 - **Drag-to-connect** onto a transition from an event (or from another
   machine's transition) offers subscribing, plus rules of controllers
-  handling the event. The app reads emit handles as
-  `HitTarget::ConnectHandle { element: ElementKey::Event { .. } }`; a
-  different hit target shape needs mapping in `build::pick::connect_source`
-  and `locate::drop_key` only.
+  handling the event. The branch assumed event handles would be
+  `HitTarget::ConnectHandle { element: ElementKey::Event { .. } }`; the
+  scene's `SubscribeHandle` is mapped at integration (below).
 - Keys: `T` advances the clock to the next timer; with a prompt open,
   Space takes the first option.
+
+### Integration (`chore/integrate-semantics`)
+
+- **Subscribe handle.** The scene draws an event tag's handle as
+  `HitTarget::SubscribeHandle { event }`, not a `ConnectHandle`;
+  `build::pick::connect_source` and `locate::drop_key` (which now returns
+  an owned `ElementKey`) map it to `ElementKey::Event { event }`, so
+  dragging a tag onto a transition pill or arrow reaches the
+  `(event, transition)` subscribe offers.
+- **Italics.** The GPUI painter paints `Label.style == FontStyle::Italic`
+  with the family's italic face (`canvas::paint::run_font`).
+- **Play overlay timers.** `PlayOverlay::timers` is filled from
+  `PlaySession::timers()` (remaining = deadline − `now()`, zero when due;
+  `play::overlay::play_timers`).
+- **Choice prompt.** `PlaySession::choice_points_of(model, &action)`
+  previews any action; the app asks it before steps *and* external fires
+  (the checkout saga's `?approved` is a fire by the bank). A preview of a
+  step on an empty queue fails like the step ("nothing is queued to
+  deliver"); the app shows that error rather than stepping.
+- **Subscription races.** `cascade_sim::race_replay_note(detail)` is
+  `None` only for a rule `RaceCandidate`. Race indices still count every
+  `Check::RaceCandidate` finding in `cascade check` order; for a
+  subscription race `cascade simulate --race n` prints the note and the
+  as-queued trace (JSON `replayed: false`), `cascade render` with
+  `race=n` renders the as-queued trace with the note on stderr, and the
+  app runs the scenario as queued with the note in the trace panel (the
+  findings list locates the race instead of opening the trace view).
+- **Analysis findings in scenes.** With subscriptions understood by the
+  analysis, the scene fixture saga has fewer unhandled-event /
+  unreachable-state findings; its golden fingerprints were re-blessed.
+- **Checkout saga** declares field types (`orderId: string`, `amount:
+  number`, `reason: enum [underpaid, declined, timeout]`, …); the SCXML
+  round trip keeps them.
 
 ## Invariants
 
