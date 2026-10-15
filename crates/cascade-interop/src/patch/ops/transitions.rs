@@ -2,12 +2,14 @@
 //! one-line flow mapping padded to their columns, or a block mapping with
 //! their key indentation.
 
-use cascade_core::definition::{TransitionDef, TriggerSpec};
+use cascade_core::Spanned;
+use cascade_core::definition::{EmitDef, TransitionDef, TriggerSpec};
+use cascade_core::expr::Assignment;
 
-use super::{Child, add_child, definition, insert_at, nav, step};
+use super::{Child, add_child, definition, emits, insert_at, keyed, nav, step};
 use crate::patch::collection::{Value, remove_child, replace_scalar, set_key, set_names, set_text_key};
-use crate::patch::doc::{Doc, Node, Seq};
-use crate::patch::error::{Result, SurgeryError, not_found, out_of_range};
+use crate::patch::doc::{Doc, Node, ScalarStyle, Seq};
+use crate::patch::error::{Result, SurgeryError, Unsupported, not_found, out_of_range};
 use crate::patch::render::{Block, RowLayout, Style, transition_block, transition_row};
 use crate::patch::splice::Splice;
 use crate::yaml::{assignments_text, emits_text, trigger_entry};
@@ -128,44 +130,123 @@ pub(super) fn update(text: &str, machine: &str, index: usize, new: &TransitionDe
             .collect::<Vec<_>>()
     };
     if trigger_entry(&old.trigger) != trigger_entry(&new.trigger) {
-        match (&old.trigger, &new.trigger) {
-            (TriggerSpec::Command(_), TriggerSpec::Command(name)) => {
-                let name = name.value.clone();
-                edit(&mut text, &|doc, n| Ok(vec![replace_scalar(doc, &nav::require(n, "on")?.value, &name)?]))?;
-            }
-            _ => {
-                let (key, value) = trigger_entry(&new.trigger);
-                let other = if key == "on" { "after" } else { "on" };
-                edit(&mut text, &|doc, n| set_key(doc, n, other, None, nav::TRANSITION_ORDER))?;
-                edit(&mut text, &|doc, n| {
-                    set_key(doc, n, key, Some(Value::Inline(value.clone())), nav::TRANSITION_ORDER)
-                })?;
-            }
-        }
+        text = update_trigger(&text, machine, index, &old.trigger, &new.trigger)?;
     }
     if old.guard.as_ref().map(|g| &g.value) != new.guard.as_ref().map(|g| &g.value) {
         let guard = new.guard.as_ref().map(|g| g.value.to_string());
         edit(&mut text, &|doc, n| set_text_key(doc, n, "guard", guard.as_deref(), nav::TRANSITION_ORDER))?;
     }
     if sets(old) != sets(new) {
-        let sets = (!new.sets.is_empty()).then(|| Value::Inline(assignments_text(&new.sets)));
-        edit(&mut text, &|doc, n| set_key(doc, n, "sets", sets.clone(), nav::TRANSITION_ORDER))?;
+        text = update_sets(&text, machine, index, &new.sets)?;
     }
     if emits(old) != emits(new) {
-        let names: Vec<String> = new.emits.iter().map(|e| e.event.value.clone()).collect();
-        let plain = |t: &TransitionDef| t.emits.iter().all(|e| e.with.is_empty());
-        let whole = Value::Inline(emits_text(&new.emits));
-        edit(&mut text, &|doc, n| match (n.as_map().and_then(|m| m.get("emits")), names.is_empty()) {
-            (_, true) => set_key(doc, n, "emits", None, nav::TRANSITION_ORDER),
-            (Some((_, entry)), false) if plain(old) && plain(new) => set_names(doc, entry, &names),
-            (_, false) => set_key(doc, n, "emits", Some(whole.clone()), nav::TRANSITION_ORDER),
-        })?;
+        text = update_emits(&text, machine, index, &old.emits, &new.emits)?;
     }
     if old.bounded != new.bounded {
         let bounded = new.bounded.then(|| Value::Inline("true".to_owned()));
         edit(&mut text, &|doc, n| set_key(doc, n, "bounded", bounded.clone(), nav::TRANSITION_ORDER))?;
     }
     Ok(text)
+}
+
+/// The trigger: a command's name, a timer's delay, or a subscription's
+/// event and filter in place when the kind stays; otherwise the old key
+/// is replaced by the new one.
+fn update_trigger(text: &str, machine: &str, index: usize, old: &TriggerSpec, new: &TriggerSpec) -> Result<String> {
+    let edit = |text: &str, f: &dyn Fn(&Doc, &Node) -> Result<Vec<Splice>>| {
+        step(text, |doc, _| f(doc, node(doc, machine, index)?))
+    };
+    match (old, new) {
+        (TriggerSpec::Command(_), TriggerSpec::Command(name)) => {
+            edit(text, &|doc, n| Ok(vec![replace_scalar(doc, &nav::require(n, "on")?.value, &name.value)?]))
+        }
+        (TriggerSpec::After(_), TriggerSpec::After(delay)) => {
+            // Durations are written plain, as `to_yaml` writes them.
+            let delay = delay.value.to_string();
+            edit(text, &|doc, n| {
+                let value = &nav::require(n, "after")?.value;
+                match value.as_scalar().map(|s| s.style) {
+                    Some(ScalarStyle::Plain) => Ok(vec![Splice::replace(value.start, value.end, delay.clone())]),
+                    _ => Ok(vec![replace_scalar(doc, value, &delay)?]),
+                }
+            })
+        }
+        (
+            TriggerSpec::Event { event: old_event, filter: old_filter },
+            TriggerSpec::Event { event: new_event, filter: new_filter },
+        ) if node(&Doc::parse(text)?, machine, index).is_ok_and(|n| on_map(n).is_some()) => {
+            let mut text = text.to_owned();
+            if old_event.value != new_event.value {
+                text = edit(&text, &|doc, n| {
+                    let on = on_map(n).ok_or(Unsupported::Shape)?;
+                    Ok(vec![replace_scalar(doc, &nav::require(on, "event")?.value, &new_event.value)?])
+                })?;
+            }
+            let filter_text = |f: &Option<cascade_core::Spanned<cascade_core::expr::Expr>>| {
+                f.as_ref().map(|f| f.value.display_filter().to_string())
+            };
+            let (old_where, new_where) = (filter_text(old_filter), filter_text(new_filter));
+            if old_where != new_where {
+                text = edit(&text, &|doc, n| {
+                    let on = on_map(n).ok_or(Unsupported::Shape)?;
+                    set_text_key(doc, on, "where", new_where.as_deref(), &["event", "where"])
+                })?;
+            }
+            Ok(text)
+        }
+        _ => {
+            let (key, value) = trigger_entry(new);
+            let other = if key == "on" { "after" } else { "on" };
+            let text = edit(text, &|doc, n| set_key(doc, n, other, None, nav::TRANSITION_ORDER))?;
+            edit(&text, &|doc, n| set_key(doc, n, key, Some(Value::Inline(value.clone())), nav::TRANSITION_ORDER))
+        }
+    }
+}
+
+/// The `on:` value of a transition node, when it is a mapping.
+fn on_map(n: &Node) -> Option<&Node> {
+    let on = &nav::require(n, "on").ok()?.value;
+    on.as_map().map(|_| on)
+}
+
+/// `sets:` entry by entry (see [`keyed`]); removed when empty.
+fn update_sets(text: &str, machine: &str, index: usize, sets: &[Spanned<Assignment>]) -> Result<String> {
+    let has_sets = |doc: &Doc| node(doc, machine, index).is_ok_and(|n| nav::require(n, "sets").is_ok());
+    if sets.is_empty() || !has_sets(&Doc::parse(text)?) {
+        let value = (!sets.is_empty()).then(|| Value::Inline(assignments_text(sets)));
+        return step(text, |doc, _| {
+            set_key(doc, node(doc, machine, index)?, "sets", value.clone(), nav::TRANSITION_ORDER)
+        });
+    }
+    let pairs: Vec<keyed::Pair> = sets.iter().map(|a| (a.value.field.clone(), a.value.value.to_string())).collect();
+    keyed::reconcile_map(text, &|doc| nav::require(node(doc, machine, index)?, "sets"), &pairs)
+}
+
+/// `emits:` item by item (see [`emits`]); plain lists of names use
+/// [`set_names`]; removed when empty.
+fn update_emits(text: &str, machine: &str, index: usize, old: &[EmitDef], new: &[EmitDef]) -> Result<String> {
+    let names: Vec<String> = new.iter().map(|e| e.event.value.clone()).collect();
+    let plain = |list: &[EmitDef]| list.iter().all(|e| e.with.is_empty());
+    let locate = |doc: &Doc| -> Option<bool> {
+        let entry = nav::require(node(doc, machine, index).ok()?, "emits").ok()?;
+        Some(entry.value.as_seq().is_some())
+    };
+    let shape = locate(&Doc::parse(text)?);
+    match shape {
+        _ if new.is_empty() => {
+            step(text, |doc, _| set_key(doc, node(doc, machine, index)?, "emits", None, nav::TRANSITION_ORDER))
+        }
+        Some(_) if plain(old) && plain(new) => {
+            step(text, |doc, _| set_names(doc, nav::require(node(doc, machine, index)?, "emits")?, &names))
+        }
+        Some(true) => emits::reconcile(text, &|doc| nav::require(node(doc, machine, index)?, "emits"), old, new),
+        Some(false) | None => {
+            let whole = Value::Inline(emits_text(new));
+            step(text, |doc, _| {
+                set_key(doc, node(doc, machine, index)?, "emits", Some(whole.clone()), nav::TRANSITION_ORDER)
+            })
+        }
+    }
 }
 
 /// Remove a transition; removing the last one removes the `transitions:`

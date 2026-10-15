@@ -47,7 +47,7 @@ pub(crate) struct Annotations {
 #[derive(Debug)]
 pub(crate) struct AnnotatedEvent {
     pub name: String,
-    pub payload: Vec<String>,
+    pub payload: Vec<FieldDef>,
     pub location: String,
 }
 
@@ -243,7 +243,11 @@ fn annotated(
         .iter()
         .map(|e| EventDef {
             name: synthetic(events.name(&e.name, &e.name, &e.location, warnings)),
-            payload: e.payload.iter().map(|p| FieldDef::untyped(sanitize(p))).collect(),
+            payload: e
+                .payload
+                .iter()
+                .map(|p| FieldDef { name: synthetic(sanitize(&p.name.value)), ty: p.ty.clone() })
+                .collect(),
             span: SourceSpan::unknown(),
         })
         .collect();

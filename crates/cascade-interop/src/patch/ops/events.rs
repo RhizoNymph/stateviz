@@ -2,12 +2,10 @@
 //! entries (`Name: { payload: [a] }`, `Name: [Machine.trigger]`).
 
 use cascade_core::Spanned;
-use cascade_core::definition::{
-    Definition, EventDef, ExternalDef, FieldDef, TriggerRef, TriggerSpec, fields_are_typed,
-};
+use cascade_core::definition::{Definition, EventDef, ExternalDef, FieldDef, TriggerRef, TriggerSpec};
 use cascade_core::span::SourceSpan;
 
-use super::{Child, add_child, add_section, check_new_name, definition, insert_at, nav, remove_section, step};
+use super::{Child, add_child, add_section, check_new_name, definition, insert_at, keyed, nav, remove_section, step};
 use crate::patch::collection::{Value, remove_child, replace_scalar, replace_value, set_key, set_names};
 use crate::patch::doc::{Doc, Entry, Kind, Node};
 use crate::patch::error::{Result, Unsupported, not_found};
@@ -155,8 +153,14 @@ pub(super) fn set_payload(
     if map.entries.len() < 2 || index.unwrap_or(map.entries.len() - 1) != position {
         return Ok(None);
     }
-    let typed = fields_are_typed(payload);
-    let names: Vec<String> = payload.iter().map(|p| p.name.value.clone()).collect();
+    let locate_body = |doc: &Doc| -> Result<bool> {
+        let section = nav::section(doc, "events")?.ok_or(Unsupported::Shape)?;
+        let (_, entry) = nav::named(&section.value, event, "event")?;
+        Ok(entry.value.as_map().and_then(|m| m.get("payload")).is_some())
+    };
+    if !payload.is_empty() && locate_body(&doc)? {
+        return keyed::set_field_decls(text, &|doc| payload_entry(doc, event), payload).map(Some);
+    }
     let list = crate::yaml::fields_text(payload);
     let patched = step(text, |doc, _| {
         let section = nav::section(doc, "events")?.ok_or(Unsupported::Shape)?;
@@ -167,7 +171,6 @@ pub(super) fn set_payload(
         match (existing, payload.is_empty()) {
             (Some(_), true) if only_key => replace_value(doc, entry, Value::Inline("{}".to_owned())),
             (Some(_), true) => set_key(doc, body, "payload", None, &["payload"]),
-            (Some(old), false) if !typed && old.value.as_map().is_none() => set_names(doc, old, &names),
             (Some(old), false) => replace_value(doc, old, Value::Inline(list.clone())),
             (None, true) => Ok(Vec::new()),
             (None, false) if body.as_map().is_some_and(|m| !m.entries.is_empty()) => {
@@ -177,6 +180,13 @@ pub(super) fn set_payload(
         }
     })?;
     Ok(Some(patched))
+}
+
+/// The `payload:` entry of a declaration.
+fn payload_entry<'d>(doc: &'d Doc, event: &str) -> Result<&'d Entry> {
+    let section = nav::section(doc, "events")?.ok_or(Unsupported::Shape)?;
+    let (_, entry) = nav::named(&section.value, event, "event")?;
+    nav::require(&entry.value, "payload")
 }
 
 /// Renames an event in its declaration, every `emits:` and every handler.
