@@ -650,6 +650,33 @@ semantics yet:
 - `PlaySession::{now, timers, pending_decisions, choice_points}` return
   zero / empty / `Ok(vec![])`; `state_key` is real.
 
+### App (`feat/app-semantics`, wave 2)
+
+As landed in `cascade-app` (details in build-and-play.md):
+
+- **Typed fields in the inspector** are one text field in YAML terms
+  (`id, amount: number, tier: enum [a, b]`); no `:` anywhere means the list
+  form. This replaces wave 1's "keep the types of names that stay": the
+  text shows every type, so it is the whole truth.
+- **Live type feedback** plans the edit and runs `edit::apply` on a copy;
+  the diagnostics' kinds (not spans) are shown under the field.
+- **Choice prompt** relies on `PlaySession: Clone`, `apply(Choose)` and
+  `choice_points` returning every point the step hits (decided or not): the
+  app works out which are undecided from `pending_decisions()` (first
+  matching decision, oldest first, one per point). If `choice_points`
+  returns only undecided points instead, the prompt still works. Run until
+  quiet never prompts (defaults).
+- **Per-consumer delivery** buttons appear for `PendingKind::Event` items
+  with more than one `consumers_left`; the head is sent as `choice: None`.
+- **Drag-to-connect** onto a transition from an event (or from another
+  machine's transition) offers subscribing, plus rules of controllers
+  handling the event. The app reads emit handles as
+  `HitTarget::ConnectHandle { element: ElementKey::Event { .. } }`; a
+  different hit target shape needs mapping in `build::pick::connect_source`
+  and `locate::drop_key` only.
+- Keys: `T` advances the clock to the next timer; with a prompt open,
+  Space takes the first option.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /
