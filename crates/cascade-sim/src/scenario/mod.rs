@@ -16,9 +16,9 @@
 //!   - run                                     # deliver until the queue is empty
 //!   - { create: o2, machine: Order, fields: { orderId: "2" } }
 //!   - { remove: o2 }
-//!   - { wait: 30s }                           # advance the clock (not run yet)
-//!   - { choose: "card declined" }             # a pending decision (not run yet)
-//!   - { step: 0, consumer: Fulfillment }      # one consumer only (not run yet)
+//!   - { wait: 30s }                           # advance the clock (`- wait`: to the next deadline)
+//!   - { choose: "card declined" }             # a pending decision for the next choice point
+//!   - { step: 0, consumer: Fulfillment }      # deliver the head to one consumer only
 //! end: pause                                  # optional: leave the queue as it is
 //! ```
 //!
@@ -31,6 +31,7 @@ mod file;
 mod node;
 mod parse;
 mod validate;
+mod values;
 mod write;
 
 use std::collections::BTreeMap;
@@ -43,6 +44,7 @@ pub use file::{DiscoverError, ScenarioFileError, discover_scenarios, load_scenar
 pub use parse::parse_scenario;
 pub(crate) use validate::{ResolvedEntry, ResolvedInstance, ResolvedStep, StepTarget, lookup_state, spawn_prefix};
 pub use validate::{ResolvedScenario, validate};
+pub(crate) use values::{check_field_value, check_payload_value};
 pub use write::scenario_to_yaml;
 
 /// Event payloads and instance fields: string values by name.

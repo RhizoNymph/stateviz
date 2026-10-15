@@ -48,10 +48,6 @@ fn problem(kind: ScenarioErrorKind) -> SimError {
     SimError::Action(kind)
 }
 
-fn unsupported(what: &str) -> SimError {
-    problem(ScenarioErrorKind::Unsupported { what: what.to_owned() })
-}
-
 /// Perform `action`. Returns the action as it should be recorded: an
 /// `AddInstance` without a name gets the name it was given. On error nothing
 /// has changed, except that a `RunUntilQuiet` hitting the step limit has
@@ -78,7 +74,7 @@ pub(crate) fn exec(
                 Some(name) => name.clone(),
                 None => core.free_name(model, machine_id),
             };
-            core.add_instance(Instance::new(model, name.clone(), machine_id, fields.clone(), start));
+            core.add_instance(model, Instance::new(model, name.clone(), machine_id, fields.clone(), start));
             Ok(PlayAction::AddInstance {
                 name: Some(name),
                 machine: machine.clone(),
@@ -96,20 +92,51 @@ pub(crate) fn exec(
             core.external_fire(model, source_id, target_ix, trigger_id, payload);
             Ok(action.clone())
         }
-        PlayAction::Step { consumer: Some(_), .. } => Err(unsupported("delivering to one consumer")),
-        PlayAction::Advance { .. } => Err(unsupported("advancing the clock")),
-        PlayAction::Choose { .. } => Err(unsupported("choosing")),
-        PlayAction::Step { choice, consumer: None } => {
+        PlayAction::Advance { by } => {
+            let by = match by {
+                Some(by) => *by,
+                None => match core.next_deadline() {
+                    Some(deadline) => deadline.saturating_sub(core.now()),
+                    None => return Err(problem(ScenarioErrorKind::NoTimerArmed)),
+                },
+            };
+            core.advance(model, by);
+            Ok(action.clone())
+        }
+        PlayAction::Choose { option } => {
+            core.push_decision(option.clone());
+            Ok(action.clone())
+        }
+        PlayAction::Step { choice, consumer } => {
             let pending = core.queue().len();
             if pending == 0 {
                 return Err(problem(ScenarioErrorKind::QueueEmpty));
             }
             let position = choice.unwrap_or(0);
-            match usize::try_from(position) {
-                Ok(at) if at < pending => core.deliver_at(model, at)?,
+            let at = match usize::try_from(position) {
+                Ok(at) if at < pending => at,
                 _ => return Err(problem(ScenarioErrorKind::NoPendingItem { position, pending })),
+            };
+            match consumer {
+                None => {
+                    core.deliver_at(model, at)?;
+                    Ok(action.clone())
+                }
+                Some(name) => {
+                    let queued = &core.queue()[at];
+                    if !queued.consumers_left.iter().any(|c| c.name == *name) {
+                        return Err(problem(ScenarioErrorKind::UnknownConsumer {
+                            consumer: name.clone(),
+                            item: queued.label.clone(),
+                            consumers: queued.consumers_left.iter().map(|c| c.name.clone()).collect(),
+                        }));
+                    }
+                    core.deliver_to_consumer(model, at, name)?;
+                    // The head is recorded as position 0, the only spelling a
+                    // scenario file has for it with a consumer.
+                    Ok(PlayAction::Step { choice: Some(position), consumer: Some(name.clone()) })
+                }
             }
-            Ok(action.clone())
         }
         PlayAction::RunUntilQuiet => {
             run_until_quiet(core, model, schedule)?;
@@ -160,6 +187,11 @@ fn resolve_instance(
                 field: field.clone(),
                 declared: m.fields.iter().map(|f| f.name.clone()).collect(),
             }));
+        }
+    }
+    for (field, value) in fields {
+        if let Some(kind) = crate::scenario::check_field_value(model, machine_id, field, value) {
+            return Err(problem(kind));
         }
     }
     let start = match state {
@@ -214,6 +246,11 @@ fn resolve_fire(
     }
     if let Some(key) = payload.keys().find(|k| !is_valid_name(k)) {
         return Err(problem(ScenarioErrorKind::InvalidName { context: "payload".to_owned(), name: key.clone() }));
+    }
+    for (key, value) in payload {
+        if let Some(kind) = crate::scenario::check_payload_value(model, trigger_id, key, value) {
+            return Err(problem(kind));
+        }
     }
     Ok((source_id, trigger_id, target_ix))
 }

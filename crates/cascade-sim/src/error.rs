@@ -83,6 +83,10 @@ pub enum ScenarioErrorKind {
     InvalidDuration { text: String, message: String },
 
     // --- Against the model --------------------------------------------------
+    /// A declared instance field or a step payload value that does not fit
+    /// the field's declared type.
+    #[error("`{value}` is not a valid `{field}`: expected {expected}")]
+    InvalidValue { field: String, value: String, expected: String },
     #[error("instance `{name}` is declared more than once")]
     DuplicateInstance { name: String },
     #[error("unknown machine `{name}`")]
@@ -126,8 +130,14 @@ pub enum ScenarioErrorKind {
     /// armed.
     #[error("no timer is armed, so there is no next deadline to wait for")]
     NoTimerArmed,
-    /// A directive or play action the simulator does not run yet (`wait`,
-    /// `choose`, `consumer:`).
+    /// A per-consumer step named someone who is not (or no longer) among the
+    /// queue item's remaining consumers.
+    #[error("`{consumer}` is not a remaining consumer of `{item}` (remaining: {})", consumers.join(", "))]
+    UnknownConsumer { consumer: String, item: String, consumers: Vec<String> },
+    /// A `choose` decision no choice point took by the end of a batch run.
+    #[error("no choice point took the decision `{option}`")]
+    UnusedChoice { option: String },
+    /// Kept from the contract stubs; nothing returns it any more.
     #[error("{what} is not supported yet")]
     Unsupported { what: String },
 }

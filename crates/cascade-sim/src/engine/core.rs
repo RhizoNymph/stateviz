@@ -1,22 +1,25 @@
 //! The steppable simulator: instances, the queue, history (inside each
-//! instance), payloads and the recorder, with one operation per thing that
-//! can happen. It holds no model; every operation takes the one the state
-//! was built with.
+//! instance), payloads, the clock and armed timers, pending decisions and
+//! the recorder, with one operation per thing that can happen. It holds no
+//! model; every operation takes the one the state was built with.
 //!
 //! Callers check names and positions first (see `exec`); the operations
 //! here assume the ids and positions they are given are valid.
+//!
+//! - `deliver`: offering triggers to instances (guards, choices, `sets`,
+//!   emits), delivering events to subscribers and controllers.
+//! - `clock`: arming, cancelling and expiring timers.
 
 use std::collections::{HashMap, VecDeque};
 
 use cascade_core::Model;
-use cascade_core::expr::{Condition, Expr, Guard, MapScope, eval};
-use cascade_core::ids::{ControllerId, EventId, ExternalId, MachineId, RuleId, TriggerId};
-use cascade_core::model::Target;
+use cascade_core::expr::Duration;
+use cascade_core::ids::{ControllerId, EventId, MachineId, RuleId, TriggerId};
 
 use super::instance::{Instance, InstanceIx};
-use super::record::{Finished, RawKind, Recorder, StepRef};
+use super::record::{Finished, Participant, Recorder, StepRef};
 use super::schedule::{SwapState, next_swapped};
-use super::{STEP_LIMIT, Swap, select};
+use super::{STEP_LIMIT, Swap};
 use crate::error::SimError;
 use crate::scenario::Payload;
 use crate::session::PendingId;
@@ -25,18 +28,35 @@ use crate::session::PendingId;
 #[derive(Clone, Debug)]
 pub(crate) struct Queued {
     pub id: PendingId,
-    /// `OrderPaid from o1` or `Fulfillment → s1: start`, fixed when queued.
+    /// `OrderPaid from o1`, `Fulfillment → s1: start` or `timer → o1:
+    /// after-30m`, fixed when queued.
     pub label: String,
     /// Who still has to receive it, in delivery order (see
-    /// `PendingItem::consumers_left`).
-    pub consumers_left: Vec<String>,
+    /// `PendingItem::consumers_left`). A fire or timer has its target only.
+    pub consumers_left: Vec<Consumer>,
     pub item: QueueItem,
+}
+
+/// One receiver of a queue item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Consumer {
+    pub name: String,
+    pub target: ConsumerRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConsumerRef {
+    /// A subscribing instance (for an event) or the target (fire, timer).
+    Instance(InstanceIx),
+    /// A controller with handlers for the event.
+    Controller(ControllerId),
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum QueueItem {
     Event { event: EventId, payload: Payload, emitted: StepRef },
     Fire { rule: RuleId, target: InstanceIx, payload: Payload, fired: StepRef, occurrence: u32 },
+    Timer { trigger: TriggerId, target: InstanceIx, expired: StepRef },
 }
 
 impl QueueItem {
@@ -45,26 +65,52 @@ impl QueueItem {
         match self {
             QueueItem::Event { emitted, .. } => *emitted,
             QueueItem::Fire { fired, .. } => *fired,
+            QueueItem::Timer { expired, .. } => *expired,
         }
     }
+}
+
+/// A timer armed by a state an instance is in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Armed {
+    pub instance: InstanceIx,
+    pub trigger: TriggerId,
+    /// The state whose entry armed it; leaving the state cancels it.
+    pub state: cascade_core::ids::StateId,
+    pub deadline: Duration,
+    /// Arming order, for ties between equal deadlines.
+    pub seq: u64,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Core {
     /// In creation order; removed instances stay (flagged).
-    instances: Vec<Instance>,
+    pub(super) instances: Vec<Instance>,
     /// Every name ever given, removed instances included: names are never
     /// reused.
-    by_name: HashMap<String, InstanceIx>,
-    queue: VecDeque<Queued>,
-    recorder: Recorder,
-    /// Queue items delivered so far, for the step limit.
-    delivered: usize,
+    pub(super) by_name: HashMap<String, InstanceIx>,
+    pub(super) queue: VecDeque<Queued>,
+    pub(super) recorder: Recorder,
+    /// Queue deliveries so far (a whole item or one consumer of an event),
+    /// for the step limit.
+    pub(super) delivered: usize,
     /// Fires queued so far per (rule, target), for `FireKey::occurrence`.
-    fire_counts: HashMap<(RuleId, InstanceIx), u32>,
+    pub(super) fire_counts: HashMap<(RuleId, InstanceIx), u32>,
     /// Next suffix tried for each machine's spawned instance names.
-    spawn_counters: HashMap<MachineId, u32>,
-    next_id: u32,
+    pub(super) spawn_counters: HashMap<MachineId, u32>,
+    pub(super) next_id: u32,
+    /// The virtual clock.
+    pub(super) now: Duration,
+    /// Armed timers, sorted by (deadline, seq).
+    pub(super) armed: Vec<Armed>,
+    pub(super) next_arm: u64,
+    /// Pending decisions, oldest first.
+    decisions: Vec<String>,
+    /// Each pending decision's push order within the core (0 for the first
+    /// `Choose`), parallel to `decisions`, so a batch run can report unused
+    /// decisions at their directive.
+    decision_seqs: Vec<usize>,
+    next_decision: usize,
 }
 
 impl Core {
@@ -84,6 +130,25 @@ impl Core {
 
     pub fn step_count(&self) -> usize {
         self.recorder.len()
+    }
+
+    pub fn now(&self) -> Duration {
+        self.now
+    }
+
+    /// Armed timers in deadline order (ties: arming order).
+    pub fn armed(&self) -> &[Armed] {
+        &self.armed
+    }
+
+    /// Pending decisions, oldest first.
+    pub fn decisions(&self) -> &[String] {
+        &self.decisions
+    }
+
+    /// Pending decisions with their push order.
+    pub fn decisions_with_seq(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
+        self.decisions.iter().map(String::as_str).zip(self.decision_seqs.iter().copied())
     }
 
     /// Whether an instance has ever had this name.
@@ -121,45 +186,94 @@ impl Core {
         self.recorder.finish(scenario, &self.instances)
     }
 
+    /// The choice points recorded from step `from` on: the deciding
+    /// instance's or controller's name and the options.
+    pub fn choices_since(&self, model: &Model, from: StepRef) -> Vec<(String, Vec<String>)> {
+        self.recorder
+            .choices_since(from)
+            .into_iter()
+            .map(|(at, options)| {
+                let name = match at {
+                    Participant::Instance(ix) => self.instances[ix.0].name.clone(),
+                    Participant::Controller(c) => model.controller(c).name.clone(),
+                };
+                (name, options)
+            })
+            .collect()
+    }
+
     // --- Instances ----------------------------------------------------------------
 
-    /// Add an instance whose name is not taken.
-    pub fn add_instance(&mut self, instance: Instance) -> InstanceIx {
+    /// Add an instance whose name is not taken, arming the timers of every
+    /// state it starts in.
+    pub fn add_instance(&mut self, model: &Model, instance: Instance) -> InstanceIx {
         let ix = InstanceIx(self.instances.len());
+        let entered = instance.active_states(model);
         self.by_name.insert(instance.name.clone(), ix);
         self.instances.push(instance);
+        self.arm(model, ix, &entered);
         ix
     }
 
-    /// Take an instance out of play. Fires queued for it are discarded (it
-    /// can no longer receive them); events it emitted stay queued, since
-    /// they were already sent.
+    /// Take an instance out of play. Fires and timers queued for it are
+    /// discarded and its armed timers cancelled (it can no longer receive
+    /// them), and it is no longer a consumer of queued events; events it
+    /// emitted stay queued, since they were already sent.
     pub fn remove_instance(&mut self, ix: InstanceIx) {
         self.instances[ix.0].removed = true;
-        self.queue.retain(|q| !matches!(q.item, QueueItem::Fire { target, .. } if target == ix));
-    }
-
-    // --- External fires and delivery ---------------------------------------------
-
-    /// An external source fires `trigger` at `target`: recorded, then
-    /// delivered at once.
-    pub fn external_fire(
-        &mut self,
-        model: &Model,
-        source: ExternalId,
-        target: InstanceIx,
-        trigger: TriggerId,
-        payload: &Payload,
-    ) {
-        let fire = self.recorder.push(None, RawKind::ExternalFire { source, target, trigger });
-        if !payload.is_empty() {
-            self.recorder.set_payload(fire, payload.clone());
+        self.queue.retain(|q| match q.item {
+            QueueItem::Fire { target, .. } | QueueItem::Timer { target, .. } => target != ix,
+            QueueItem::Event { .. } => true,
+        });
+        for queued in &mut self.queue {
+            queued.consumers_left.retain(|c| c.target != ConsumerRef::Instance(ix));
         }
-        self.deliver_trigger(model, target, trigger, payload, fire);
+        self.armed.retain(|a| a.instance != ix);
     }
 
-    /// Deliver the queue item at `position` (which must exist). Fails,
-    /// changing nothing, when the step limit is reached.
+    // --- Decisions ------------------------------------------------------------------
+
+    /// Push a pending decision.
+    pub fn push_decision(&mut self, option: String) {
+        self.decision_seqs.push(self.next_decision);
+        self.next_decision += 1;
+        self.decisions.push(option);
+    }
+
+    /// Decide at a choice point: the first pending decision that is one of
+    /// `options` is consumed and taken; without one the first option is
+    /// (`defaulted`). Returns the index of the option taken, its text and
+    /// whether it defaulted. `options` is never empty.
+    pub(super) fn decide(&mut self, options: &[String]) -> (usize, String, bool) {
+        let found = self
+            .decisions
+            .iter()
+            .enumerate()
+            .find_map(|(at, d)| options.iter().position(|o| o == d).map(|ix| (at, ix)));
+        match found {
+            Some((at, ix)) => {
+                self.decision_seqs.remove(at);
+                (ix, self.decisions.remove(at), false)
+            }
+            None => (0, options.first().cloned().unwrap_or_default(), true),
+        }
+    }
+
+    // --- Delivery -------------------------------------------------------------------
+
+    /// Count one delivery against the step limit. Fails, changing nothing,
+    /// when the limit is already reached.
+    fn count_delivery(&mut self) -> Result<(), SimError> {
+        if self.delivered >= STEP_LIMIT {
+            return Err(step_limit());
+        }
+        self.delivered += 1;
+        Ok(())
+    }
+
+    /// Deliver the queue item at `position` (which must exist) to all of
+    /// its remaining consumers. Fails, changing nothing, when the step limit
+    /// is reached.
     pub fn deliver_at(&mut self, model: &Model, position: usize) -> Result<(), SimError> {
         if self.delivered >= STEP_LIMIT {
             return Err(step_limit());
@@ -170,16 +284,52 @@ impl Core {
         }
     }
 
-    /// Deliver an item already taken off the queue.
+    /// Deliver the event at `position` to its remaining consumer `name`
+    /// only (both must exist); the item stays queued while others remain.
+    /// A fire or timer is delivered whole.
+    pub fn deliver_to_consumer(&mut self, model: &Model, position: usize, name: &str) -> Result<(), SimError> {
+        let Some(queued) = self.queue.get_mut(position) else {
+            return Ok(());
+        };
+        if !matches!(queued.item, QueueItem::Event { .. }) {
+            return self.deliver_at(model, position);
+        }
+        let Some(at) = queued.consumers_left.iter().position(|c| c.name == name) else {
+            return Ok(());
+        };
+        self.count_delivery()?;
+        let Some(queued) = self.queue.get_mut(position) else {
+            return Ok(());
+        };
+        let consumer = queued.consumers_left.remove(at);
+        let QueueItem::Event { event, payload, emitted } = queued.item.clone() else {
+            return Ok(());
+        };
+        if queued.consumers_left.is_empty() {
+            self.queue.remove(position);
+        }
+        self.deliver_event_to(model, event, &payload, emitted, consumer.target);
+        Ok(())
+    }
+
+    /// Deliver an item already taken off the queue to all of its remaining
+    /// consumers.
     pub fn deliver(&mut self, model: &Model, queued: Queued) -> Result<(), SimError> {
         self.delivered += 1;
         if self.delivered > STEP_LIMIT {
             return Err(step_limit());
         }
         match queued.item {
-            QueueItem::Event { event, payload, emitted } => self.deliver_event(model, event, &payload, emitted),
+            QueueItem::Event { event, payload, emitted } => {
+                for consumer in queued.consumers_left {
+                    self.deliver_event_to(model, event, &payload, emitted, consumer.target);
+                }
+            }
             QueueItem::Fire { rule, target, payload, fired, .. } => {
-                self.deliver_trigger(model, target, model.rule(rule).trigger, &payload, fired);
+                self.offer(model, target, model.rule(rule).trigger, &payload, fired, None);
+            }
+            QueueItem::Timer { trigger, target, expired } => {
+                self.offer(model, target, trigger, &Payload::new(), expired, None);
             }
         }
         Ok(())
@@ -190,7 +340,7 @@ impl Core {
         let instances = &self.instances;
         let is_fire_at = |q: &Queued, rule: RuleId, name: &str| match &q.item {
             QueueItem::Fire { rule: r, target, .. } => *r == rule && instances[target.0].name == name,
-            QueueItem::Event { .. } => false,
+            QueueItem::Event { .. } | QueueItem::Timer { .. } => false,
         };
         let yielder = &swap.yielder;
         next_swapped(
@@ -204,156 +354,44 @@ impl Core {
         )
     }
 
-    /// Deliver `trigger` to an instance: take the first enabled transition in
-    /// definition order whose guard does not rule it out (an expression guard
-    /// that evaluates false; choices and `else` take the default, i.e. stay
-    /// candidates), or drop the trigger. Each
-    /// emitted event carries the instance's fields overlaid with `context`,
-    /// the payload that came with the trigger.
-    fn deliver_trigger(
-        &mut self,
-        model: &Model,
-        target: InstanceIx,
-        trigger: TriggerId,
-        context: &Payload,
-        cause: StepRef,
-    ) {
-        let instance = &mut self.instances[target.0];
-        let from = instance.leaf();
-        let types = model.types_for(instance.machine, None);
-        let scope = MapScope { event: context, self_fields: &instance.fields };
-        let enabled =
-            model.enabled_transitions(from, trigger).into_iter().find(|&t| match &model.transition(t).guard {
-                Some(Guard::Expr(guard)) => eval(guard, &scope, &types),
-                Some(Guard::Choice(_) | Guard::Else) | None => true,
-            });
-        let Some(transition) = enabled else {
-            self.recorder.push(Some(cause), RawKind::Dropped { instance: target, trigger, state: from });
-            return;
-        };
-        let to = instance.take(model, transition);
-        let mut payload = instance.fields.clone();
-        payload.extend(context.iter().map(|(k, v)| (k.clone(), v.clone())));
-        let label_from = instance.name.clone();
-
-        let step = self.recorder.push(Some(cause), RawKind::Transition { instance: target, transition, from, to });
-        for event in model.transition(transition).emits.iter().map(|e| e.event) {
-            let emitted = self.recorder.push(Some(step), RawKind::Emit { instance: target, event });
-            self.recorder.set_payload(emitted, payload.clone());
-            let label = format!("{} from {label_from}", model.event(event).name);
-            let consumers = event_consumers(model, event);
-            self.enqueue(label, consumers, QueueItem::Event { event, payload: payload.clone(), emitted });
-        }
-    }
-
-    /// Deliver an event to every subscribed handler in definition order.
-    fn deliver_event(&mut self, model: &Model, event: EventId, payload: &Payload, emitted: StepRef) {
-        for &handler in &model.event(event).handlers {
-            let h = model.handler(handler);
-            let deliver =
-                self.recorder.push(Some(emitted), RawKind::Deliver { controller: h.controller, event, handler });
-            for &rule in &h.rules {
-                self.apply_rule(model, rule, payload, deliver);
-            }
-        }
-    }
-
-    fn apply_rule(&mut self, model: &Model, rule: RuleId, payload: &Payload, deliver: StepRef) {
-        let r = model.rule(rule);
-        let controller = r.controller;
-        let machine = model.trigger(r.trigger).machine;
-        // A condition that evaluates false means the rule does not apply; a
-        // choice takes the default (it holds).
-        if let Some(Condition::Expr(condition)) = &r.condition {
-            let none = Payload::new();
-            let scope = MapScope { event: payload, self_fields: &none };
-            if !eval(condition, &scope, &model.event_types(r.event)) {
-                return;
-            }
-        }
-        let filter = r.target.filter();
-        match &r.target {
-            Target::One { .. } => {
-                let candidates = self.matching(model, machine, r.event, filter, payload);
-                match candidates.as_slice() {
-                    [] => {
-                        self.recorder.push(Some(deliver), RawKind::NoTarget { controller, rule });
-                    }
-                    [one] => self.fire(model, rule, controller, *one, payload, deliver),
-                    many => {
-                        let candidates = many.to_vec();
-                        self.recorder.push(Some(deliver), RawKind::Ambiguous { controller, rule, candidates });
-                    }
-                }
-            }
-            Target::All { .. } => {
-                let candidates = self.matching(model, machine, r.event, filter, payload);
-                if candidates.is_empty() {
-                    self.recorder.push(Some(deliver), RawKind::NoTarget { controller, rule });
-                }
-                for target in candidates {
-                    self.fire(model, rule, controller, target, payload, deliver);
-                }
-            }
-            Target::Spawn { assignments } => {
-                let fields = select::assign(assignments, payload);
-                let name = self.spawn_name(model, machine);
-                let initial = model.machine(machine).initial;
-                let instance = self.add_instance(Instance::new(model, name, machine, fields, initial));
-                let spawn = self.recorder.push(Some(deliver), RawKind::Spawn { controller, instance, rule });
-                self.fire(model, rule, controller, instance, payload, spawn);
-            }
-        }
-    }
-
-    fn matching(
-        &self,
-        model: &Model,
-        machine: MachineId,
-        event: EventId,
-        filter: Option<&Expr>,
-        payload: &Payload,
-    ) -> Vec<InstanceIx> {
-        let types = model.types_for(machine, Some(event));
-        self.instances_of(machine)
-            .into_iter()
-            .filter(|ix| select::matches(&self.instances[ix.0].fields, filter, payload, &types))
-            .collect()
-    }
-
-    /// Record a fire and queue its delivery.
-    fn fire(
-        &mut self,
-        model: &Model,
-        rule: RuleId,
-        controller: ControllerId,
-        target: InstanceIx,
-        payload: &Payload,
-        cause: StepRef,
-    ) {
-        let fired = self.recorder.push(Some(cause), RawKind::Fire { controller, target, rule });
-        let count = self.fire_counts.entry((rule, target)).or_insert(0);
-        let occurrence = *count;
-        *count += 1;
-        let label = format!(
-            "{} → {}: {}",
-            model.controller(controller).name,
-            self.instances[target.0].name,
-            model.trigger(model.rule(rule).trigger).name
-        );
-        let consumers = vec![self.instances[target.0].name.clone()];
-        self.enqueue(label, consumers, QueueItem::Fire { rule, target, payload: payload.clone(), fired, occurrence });
-    }
-
-    fn enqueue(&mut self, label: String, consumers_left: Vec<String>, item: QueueItem) {
+    pub(super) fn enqueue(&mut self, label: String, consumers_left: Vec<Consumer>, item: QueueItem) {
         let id = PendingId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
         self.queue.push_back(Queued { id, label, consumers_left, item });
     }
 
+    /// The single consumer of a fire or timer: its target.
+    pub(super) fn target_consumer(&self, target: InstanceIx) -> Vec<Consumer> {
+        vec![Consumer { name: self.instances[target.0].name.clone(), target: ConsumerRef::Instance(target) }]
+    }
+
+    /// An event's consumers in delivery order, as of now: for each
+    /// subscribing machine in model order, its live instances in creation
+    /// order; then the controllers whose handlers receive it, in definition
+    /// order.
+    pub(super) fn event_consumers(&self, model: &Model, event: EventId) -> Vec<Consumer> {
+        let mut machines: Vec<MachineId> =
+            model.event(event).subscribers.iter().map(|&t| model.trigger(t).machine).collect();
+        machines.sort_unstable();
+        machines.dedup();
+        let mut consumers: Vec<Consumer> = machines
+            .into_iter()
+            .flat_map(|m| self.instances_of(m))
+            .map(|ix| Consumer { name: self.instances[ix.0].name.clone(), target: ConsumerRef::Instance(ix) })
+            .collect();
+        for &handler in &model.event(event).handlers {
+            let controller = model.handler(handler).controller;
+            if !consumers.iter().any(|c| c.target == ConsumerRef::Controller(controller)) {
+                let name = model.controller(controller).name.clone();
+                consumers.push(Consumer { name, target: ConsumerRef::Controller(controller) });
+            }
+        }
+        consumers
+    }
+
     /// `<machine-lowercase><n>` with the smallest unused `n`, counting up
     /// from the last spawn of this machine.
-    fn spawn_name(&mut self, model: &Model, machine: MachineId) -> String {
+    pub(super) fn spawn_name(&mut self, model: &Model, machine: MachineId) -> String {
         let prefix = crate::scenario::spawn_prefix(model, machine);
         let counter = self.spawn_counters.entry(machine).or_insert(1);
         loop {
@@ -364,20 +402,6 @@ impl Core {
             }
         }
     }
-}
-
-/// An event's consumers in delivery order: the controllers whose handlers
-/// receive it, in definition order. (Subscribing instances come first once
-/// subscriptions run.)
-fn event_consumers(model: &Model, event: EventId) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
-    for &handler in &model.event(event).handlers {
-        let name = &model.controller(model.handler(handler).controller).name;
-        if !names.contains(name) {
-            names.push(name.clone());
-        }
-    }
-    names
 }
 
 fn step_limit() -> SimError {

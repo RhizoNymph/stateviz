@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use cascade_core::expr::Duration;
 use cascade_core::ids::{
     ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId,
 };
@@ -31,6 +32,18 @@ pub(crate) enum RawKind {
     Spawn { controller: ControllerId, instance: InstanceIx, rule: RuleId },
     NoTarget { controller: ControllerId, rule: RuleId },
     Ambiguous { controller: ControllerId, rule: RuleId, candidates: Vec<InstanceIx> },
+    Notify { instance: InstanceIx, event: EventId },
+    Wait { by: Duration, now: Duration },
+    TimerExpired { instance: InstanceIx, trigger: TriggerId },
+    Choice { at: Participant, options: Vec<String>, chosen: String, defaulted: bool },
+    SetFields { instance: InstanceIx, fields: Payload },
+}
+
+/// Who decides at a choice point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Participant {
+    Instance(InstanceIx),
+    Controller(ControllerId),
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +86,19 @@ impl Recorder {
         self.steps.len()
     }
 
+    /// The choice points recorded from step `from` on: who decided and the
+    /// options.
+    pub fn choices_since(&self, from: StepRef) -> Vec<(Participant, Vec<String>)> {
+        self.steps
+            .iter()
+            .skip(from)
+            .filter_map(|step| match &step.kind {
+                RawKind::Choice { at, options, .. } => Some((*at, options.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn set_payload(&mut self, step: StepRef, payload: Payload) {
         self.payloads.insert(step, payload);
     }
@@ -96,8 +122,18 @@ impl Recorder {
                 | RawKind::Fire { controller, .. }
                 | RawKind::Spawn { controller, .. }
                 | RawKind::NoTarget { controller, .. }
-                | RawKind::Ambiguous { controller, .. } => keys.push(LifelineKey::Controller(*controller)),
-                RawKind::Transition { .. } | RawKind::Dropped { .. } | RawKind::Emit { .. } => {}
+                | RawKind::Ambiguous { controller, .. }
+                | RawKind::Choice { at: Participant::Controller(controller), .. } => {
+                    keys.push(LifelineKey::Controller(*controller));
+                }
+                RawKind::Transition { .. }
+                | RawKind::Dropped { .. }
+                | RawKind::Emit { .. }
+                | RawKind::Notify { .. }
+                | RawKind::Wait { .. }
+                | RawKind::TimerExpired { .. }
+                | RawKind::Choice { at: Participant::Instance(_), .. }
+                | RawKind::SetFields { .. } => {}
             }
         }
         keys.sort_unstable();
@@ -157,6 +193,23 @@ impl Recorder {
                         rule,
                         candidates: candidates.into_iter().map(inst).collect(),
                     },
+                    RawKind::Notify { instance, event } => TraceStepKind::Notify { instance: inst(instance), event },
+                    RawKind::Wait { by, now } => TraceStepKind::Wait { by, now },
+                    RawKind::TimerExpired { instance, trigger } => {
+                        TraceStepKind::TimerExpired { instance: inst(instance), trigger }
+                    }
+                    RawKind::Choice { at, options, chosen, defaulted } => TraceStepKind::Choice {
+                        at: match at {
+                            Participant::Instance(ix) => inst(ix),
+                            Participant::Controller(c) => ctl(c),
+                        },
+                        options,
+                        chosen,
+                        defaulted,
+                    },
+                    RawKind::SetFields { instance, fields } => {
+                        TraceStepKind::SetFields { instance: inst(instance), fields }
+                    }
                 },
             })
             .collect();

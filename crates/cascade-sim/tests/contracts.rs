@@ -1,8 +1,8 @@
-//! The contract surface for timers, choices and per-consumer delivery
-//! before their semantics run: the new actions and directives are accepted
-//! by the types, written by `scenario_to_yaml`, and rejected as unsupported
-//! when run; the session queries answer trivially; `consumers_left` and the
-//! state key are real.
+//! The contract surface for timers, choices and per-consumer delivery: the
+//! new directives parse, validate and are written by `scenario_to_yaml`;
+//! the session queries answer trivially for a model without timers or
+//! choices; `consumers_left` and the state key are real. (The semantics
+//! have their own test files: `timers.rs`, `choices.rs`, `consumers.rs`.)
 
 mod common;
 mod support;
@@ -26,10 +26,6 @@ fn race_session(model: &Model, more: &[PlayAction]) -> PlaySession {
 
 fn capture() -> PlayAction {
     fire("PaymentGateway", "Order.capture_ok", "o1")
-}
-
-fn is_unsupported(err: &SimError) -> bool {
-    matches!(err, SimError::Action(ScenarioErrorKind::Unsupported { .. }))
 }
 
 const NEW_DIRECTIVES: &str = r#"scenario: new directives
@@ -131,33 +127,21 @@ fn malformed_new_directives_are_reported() {
 }
 
 #[test]
-fn new_directives_are_rejected_as_unsupported_when_run() {
+fn new_directives_validate_against_the_model() {
     let model = model(RACE);
-    let err = validate(&model, &scenario(NEW_DIRECTIVES)).unwrap_err();
-    let unsupported: Vec<u32> = err
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(d.kind, ScenarioErrorKind::Unsupported { .. }))
-        .map(|d| d.span.start.line)
-        .collect();
-    assert_eq!(unsupported, [7, 8, 9, 10, 11], "{err}");
+    if let Err(err) = validate(&model, &scenario(NEW_DIRECTIVES)) {
+        panic!("{err}");
+    }
 }
 
 #[test]
-fn new_actions_are_rejected_and_change_nothing() {
+fn a_wait_with_nothing_armed_is_rejected_and_changes_nothing() {
     let model = model(RACE);
     let mut session = race_session(&model, &[capture()]);
     let before = session.trace().clone();
     let actions = session.timeline().actions.clone();
-    for action in [
-        PlayAction::Advance { by: Some(Duration::from_secs(30)) },
-        PlayAction::Advance { by: None },
-        PlayAction::Choose { option: "card declined".to_owned() },
-        PlayAction::Step { choice: None, consumer: Some("Fulfillment".to_owned()) },
-    ] {
-        let err = apply_err(&mut session, &model, action);
-        assert!(is_unsupported(&err), "{err}");
-    }
+    let err = apply_err(&mut session, &model, PlayAction::Advance { by: None });
+    assert!(matches!(err, SimError::Action(ScenarioErrorKind::NoTimerArmed)), "{err}");
     assert_eq!(session.trace(), &before);
     assert_eq!(session.timeline().actions, actions);
 }
@@ -176,7 +160,7 @@ fn consumers_left_lists_handlers_for_events_and_the_target_for_fires() {
 }
 
 #[test]
-fn clock_timers_and_choices_are_empty_until_they_run() {
+fn clock_timers_and_choices_are_empty_without_timers_or_choices() {
     let model = model(RACE);
     let session = race_session(&model, &[capture()]);
     assert_eq!(session.now(), Duration::ZERO);
