@@ -40,9 +40,12 @@ Overview:
     cascade-interop: >
       XState v5 and SCXML import through a shared statechart IR (names
       sanitized, entry/exit emits attributed, a routing controller and
-      external sources synthesized so imports resolve); SCXML, Mermaid
-      (structure and causal), P skeleton and YAML export; reading a file at a
-      git revision for diff mode.
+      external sources synthesized so imports resolve; delays become
+      timers, assigns `sets`); SCXML (timers as delayed sends, subscriptions,
+      assign/param), Mermaid (structure and causal, notify/delay edges), P
+      skeleton (typed fields, translated guards) and YAML export;
+      comment-preserving YAML patches; reading a file at a git revision for
+      diff mode.
     cascade-cli: >
       The `cascade` binary: check (CI exit codes), render, export, import,
       diff, simulate, open, new (blank definition opened in Build mode).
@@ -142,11 +145,13 @@ Features Index:
   interop_and_diff:
     description: >
       XState/SCXML import with warnings, SCXML/Mermaid (structure and causal)/P/YAML export,
-      comment-preserving YAML patches for edit ops (span index over the file,
-      rewrite fallback flagged), model diff, ghost merge for diff mode, and
-      git revision loading.
+      including guards, timers, subscriptions, sets, emit payloads and typed
+      fields; comment-preserving YAML patches for edit ops (span index over
+      the file, entry-by-entry edits of keyed mappings and emits, rewrite
+      fallback flagged), model diff, ghost merge for diff mode, and git
+      revision loading.
     entry_points: [cascade_interop::import, cascade_interop::import_with, cascade_interop::export, cascade_interop::to_yaml, cascade_interop::patch_text, cascade_interop::read_at_rev, cascade_core::diff::diff_models, cascade_core::diff::merge_for_display, cascade export, cascade import, cascade diff]
-    depends_on: [definition_format]
+    depends_on: [definition_format, expressions, causal_graph]
     doc: docs/features/interop-and-diff.md
   native_app:
     description: >

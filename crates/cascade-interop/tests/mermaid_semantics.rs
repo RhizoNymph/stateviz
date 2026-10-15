@@ -36,7 +36,10 @@ fn structure_labels_name_guards_timers_and_subscriptions() {
     assert!(text.contains("Order_draft --> Order_paid : capture [event.amount #62; 0]"), "{text}");
     assert!(text.contains("Order_draft --> Order_done : capture [?card declined]"), "{text}");
     assert!(text.contains("Checkout_paid --> Checkout_expired : after 30s"), "{text}");
-    assert!(text.contains("Checkout_waiting --> Checkout_paid : on OrderPaid where orderId == event.orderId"), "{text}");
+    assert!(
+        text.contains("Checkout_waiting --> Checkout_paid : on OrderPaid where orderId == event.orderId"),
+        "{text}"
+    );
 }
 
 #[test]

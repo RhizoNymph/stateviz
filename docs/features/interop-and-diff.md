@@ -6,7 +6,11 @@
 - Importing XState v5 machine configs (JSON) and SCXML documents into a
   definition that resolves and renders without hand edits.
 - Exporting a model to SCXML, Mermaid (structure and causal graph) and a P
-  language skeleton.
+  language skeleton, including the semantics-phase features: guards,
+  timers, subscriptions, `sets`, emit `with` and typed fields (see
+  expressions.md and semantics-contracts.md).
+- Comment-preserving YAML patches for every edit op, including the new
+  keys (build-and-play.md, "Saving edits (YAML patch)").
 - Comparing two versions of a definition (`diff_models`) and merging them
   into one displayable model with removed elements as ghosts
   (`merge_for_display`).
@@ -150,8 +154,11 @@ A machine is named by its `id`, else its key, else `Machine`.
 | targetless transition | self-transition |
 | root-level `on` | one transition whose `from` lists every top-level normal state |
 | transition to the machine itself | its initial state (warning) |
-| `guard`/`cond`: `"name"`, `{ type, params }`, `and`/`or`/`not` | a `?choice` guard, e.g. `?canRetry({"max":3})`, `?(a) && (!(b))`; text that is already a Cascade expression reading `event.x`/`self.x` (or `else`, `?label`) is kept as such |
-| `after: { 1000: … }`, `after: { NAMED: … }` | trigger `after_1000ms` / `after_NAMED`, fired by `Clock` |
+| `guard`/`cond`: `"name"`, `{ type, params }`, `and`/`or`/`not` | a `?choice` guard: `?name`, `?type` (parameters dropped, so the label reads like the guard's name), combinators `?(a) && (!(b))`; text that is already a Cascade expression reading `event.x`/`self.x` (or `else`, `?label`) is kept as such |
+| `after: { 1000: … }` | a Cascade timer `after: 1s` (no source fires it) |
+| `after: { NAMED: … }`, `after: { 0: … }` | trigger `after_NAMED` / `after_0ms`, fired by `Clock` (the delay is only known at run time) |
+| `assign` in transition `actions` with `assignment: { f: "event.x" }` (or `"({ event }) => event.x"`, also under `params`) | `sets: { f: event.x }` |
+| any other `assign` (computed values, no static assignment, `assign` in `entry`/`exit`) | ignored with a warning |
 | `invoke: { id \| src, onDone, onError }` | triggers `<actor>_done` / `<actor>_error`, fired by a source named after the actor |
 | `onDone` on a compound state | trigger `<state>_done`, fired by `Environment` (warning: approximation) |
 | emitting actions (see the routing table) in `actions`, `entry`, `exit` | `emits` on the transitions that run them |
@@ -176,16 +183,24 @@ Any other action emits nothing.
 | `<state id initial>`, `<initial><transition target/></initial>` | a state and its initial child; a deeper initial is lifted to the child containing it (warning); the machine's may be any descendant |
 | `<final>`, `<history type="shallow\|deep">` | `kind: final` / `history` / `deep-history`; a history's default transition is ignored |
 | ids | local names with the parent's id prefix removed (`Order.draft` under `Order` → `draft`); missing ids are generated (warning) |
-| `<transition event="a b" target cond type>` | one transition per event descriptor; `.*`/`*` suffixes and a `Machine.` prefix removed; targetless → self-transition; `cond` → guard; `type="internal"` → no re-entry |
+| `<transition event="a b" target cond type>` | one transition per event descriptor; `.*`/`*` suffixes and a `Machine.` prefix removed; targetless → self-transition; `cond` → guard (Cascade syntax kept, anything else a `?choice`); `type="internal"` → no re-entry |
+| `<send event delay="2.5s" id/>` in a state's `<onentry>` (no `target`), with a `<transition>` of the same state on that event | a timer `after: 2500ms` on that transition (the matching `<cancel>` in `<onexit>` is the pattern's other half and is not needed); delays are `s`/`ms` CSS2 times, whole milliseconds; a delayed send nothing in its state takes stays an entry emit |
+| `<assign location expr>` in a transition | `sets`, when `expr` is a Cascade operand (in a foreign document only `event.x` / `self.x`); else ignored with a warning |
+| `<param name expr>` in a `<send>` | the emit's `with:`, read like `<assign>` |
 | `<raise>`, `<send event target>` in transitions, `<onentry>`, `<onexit>`, also inside `<if>`/`<elseif>`/`<else>`/`<foreach>` | `emits`, routed as in the routing table |
 | `<parallel>` anywhere else, eventless transitions, multiple targets or initial states, transitions into another region | `InteropError::Unsupported` |
 | `<invoke>` | ignored with a warning (its done/error events are ordinary events) |
-| `<datamodel>`, `<script>`, `<log>`, `<assign>`, … | ignored |
+| `<datamodel>`, `<script>`, `<log>`, `<assign>` outside transitions, … | ignored |
 
 A document that declares the `urn:x-cascade:scxml` namespace is Cascade's
 own export: `cascade:controller` regions, `<cascade:event>`,
-`<cascade:source>`, and the `cascade:color|domain|fields|system|bounded|target`
-attributes are read back and no wiring is synthesized.
+`<cascade:source>`, `<cascade:field name type/>` (typed fields of a machine
+or of a `<cascade:event>` payload), and the
+`cascade:color|domain|fields|system|bounded|target|where|guard` attributes
+are read back and no wiring is synthesized. In such a document a
+transition whose event lacks the `Machine.` prefix is a subscription; its
+filter is `cascade:where`, its guard `cascade:guard` when there is a
+filter and `cond` otherwise.
 
 ### Cascade → SCXML
 
@@ -228,6 +243,36 @@ attributes are read back and no wiring is synthesized.
 - Text is escaped for XML attributes (newlines as `&#10;`); characters XML
   cannot carry become U+FFFD.
 
+Semantics-phase features:
+
+```xml
+<state id="Checkout.waiting">
+  <onentry><send event="Checkout.after-30m" delay="1800s" id="Checkout.waiting.after-30m"/></onentry>
+  <onexit><cancel sendid="Checkout.waiting.after-30m"/></onexit>
+  <transition event="OrderPaid" target="Checkout.paid"
+              cond="self.orderId == event.orderId and event.amount &gt;= 10"
+              cascade:where="orderId == event.orderId" cascade:guard="event.amount &gt;= 10"/>
+  <transition event="Checkout.after-30m" target="Checkout.expired"/>
+</state>
+<!-- ?card declined: a choice the data does not decide (a scenario picks it); … -->
+<transition event="Order.pay" target="Order.done" cond="?card declined"/>
+<transition event="Order.pay" target="Order.paid" cond="event.amount &gt; 0">
+  <assign location="amount" expr="event.amount"/>
+  <send event="Receipt"><param name="total" expr="self.amount"/></send>
+</transition>
+<cascade:field name="tier" type="enum [basic, gold]"/>   <!-- typed fields, inside the machine element -->
+```
+
+| Cascade | SCXML |
+| --- | --- |
+| guard (expression, `else`) | `cond` with the canonical text |
+| `?choice` guard | `cond="?label"` preceded by an XML comment saying it is a choice: readable, and opaque to engines either way |
+| timer `after: 30m` on state S | in S: `<onentry><send event="M.after-30m" delay="1800s" id="<S id>.after-30m"/>`, `<onexit><cancel sendid=…/>`, and a transition on `M.after-30m` (delays in `s`, or `ms` when not whole seconds; one send per timer trigger and state) |
+| subscription `on: { event: E, where: f }` | a transition on `E` itself (not `M.E`); `cond` is the filter in plain context (`self.x`) joined with an expression guard by `and`, for engines; `cascade:where`/`cascade:guard` keep them apart |
+| `sets: { f: v }` | `<assign location="f" expr="v"/>` before the sends |
+| emit `with: { k: v }` | `<send event="E"><param name="k" expr="v"/></send>` |
+| typed fields / payload | `<cascade:field name type/>` children of the machine element / `<cascade:event>`; untyped ones stay the `cascade:fields`/`payload` attribute |
+
 ### Cascade → Mermaid
 
 - `--to mermaid` (`stateDiagram-v2`): each machine is a composite
@@ -237,7 +282,10 @@ attributes are read back and no wiring is synthesized.
   Mermaid cannot draw transitions between internal states of different
   composites, so each transition is drawn in the innermost composite holding
   both endpoints, between their ancestors there, with the real endpoints
-  appended to the label (`finish (running.computing → done)`). Ids are
+  appended to the label (`finish (running.computing → done)`). Labels
+  name the trigger by kind: a command by name, a timer `after 30s`, a
+  subscription `on OrderPaid` (plus `where <filter>`); guards are their
+  canonical text (`capture [event.amount #62; 0]` once escaped). Ids are
   `[A-Za-z0-9_]`, globally unique, never a keyword. A system name becomes
   front-matter `title`.
 - `--to mermaid-causal` (`flowchart LR`): sources `s0[/"Customer"/]`,
@@ -246,8 +294,12 @@ attributes are read back and no wiring is synthesized.
   and `u0["M.t (no transition)"]` for fired triggers nothing accepts. Edges:
   source → transition (solid, trigger label), emit (dashed, gray),
   subscribe (solid), fire (dashed, `trigger [when]`, target machine hue via
-  `linkStyle`). Hues follow the app's rule (declared color, else the first
-  unused Okabe-Ito hue).
+  `linkStyle`), notify (event → subscribing transition, thick `==>`,
+  labelled `where <filter>`, machine hue) and delay (transition → timer
+  transition it arms, dotted, labelled `after 30s`, machine hue with
+  `stroke-dasharray:2 4`); notify and delay edges come from
+  `CausalGraph::build`. Hues follow the app's rule (declared color, else
+  the first unused Okabe-Ito hue).
 - Labels are escaped with Mermaid entity codes (`#35;` for `#`, `#59;`,
   `#quot;`, `#60;`/`#62;`, `#123;`/`#125;`, `#37;`, `#124;`, `#96;`, `#38;`,
   `#58;` in transition labels). Output was checked against the Mermaid 11
@@ -259,14 +311,34 @@ attributes are read back and no wiring is synthesized.
   instances together; the `TestDriver` creates one instance of every machine
   and controller, sends each the registry, then for 10 steps lets every
   external source fire each of its triggers nondeterministically (`if ($)`).
-- Events: each Cascade event keeps its name (`type t<Event> = (f: any, …)`
+- Events: each Cascade event keeps its name (`type t<Event> = (f: T, …)`
   when a payload is declared); each trigger is `e<Machine>_<trigger>`.
+- Field types (`p_lang/fields.rs`): `any` → `any`, `string` → `string`,
+  `number` → `float` (Cascade numbers are decimals, so `float` keeps
+  `1.5`; numeric literals are written `42.0`), `bool` → `bool`, `enum [a,
+  b]` → `enum t<Owner>_<field> { <Owner>_<field>_a, … }`. Declared
+  instance fields are machine variables (`var amount: float;`).
+- Guards that are expressions over typed instance fields become P
+  conditions (`if ((amount > 0.0) && (tier == Order_tier_gold))`); rule
+  conditions over the handled event's typed payload read `payload.f`.
+  Anything else (a `?choice`, `event.x` in a guard — trigger events carry
+  no payload — an `any` field, a subscription filter) is `$` with the text
+  as a comment. `else` is the `else` branch. `sets` assign the variables
+  (an `event.x` source is a TODO comment).
+- Subscriptions: an emitted event is also sent, as the subscription
+  trigger event, to each subscribing machine.
+- Timers: a state whose own or ancestors' transitions have a timer gets
+  `entry { if ($) { send this, e<M>_after_30s; } }`: the timer may fire
+  while the state is current, or never. A stale timer is ignored unless
+  the new state takes the same trigger, which is Cascade's rule. Real
+  cancellation and deadline order need a timer machine (TODO comment);
+  moving between children of a compound state re-arms its timers.
 - Each machine: `start state Wiring` defers its triggers until `eWire`, then
   enters the default entry of the initial state. Only atomic and final
   states become P states (paths with `.` → `_`); handlers follow
   `Model::enabled_transitions`, so compound-state transitions are inherited
   and the innermost wins. One unguarded transition → `on e goto S [with { sends }]`;
-  otherwise `on e do { if ($) { … goto A; } else … }` with guards as comments.
+  otherwise `on e do { if (<cond> | $) { … goto A; } else … }` with guards as comments.
   Emits are `send registry["Controller"], Event[, default(tEvent)];` to each
   subscribed controller. Unaccepted triggers are `ignore`d (Cascade drops
   them), with a comment to remove the line to have P report them.
@@ -316,7 +388,9 @@ A rename is a removal plus an addition, since elements match by key.
 | `crates/cascade-interop/src/scxml/write.rs` | Model → SCXML | `export` (crate) |
 | `crates/cascade-interop/src/scxml/xml.rs` | XML escaping and writer | `attr`, `comment`, `XmlWriter` (crate) |
 | `crates/cascade-interop/src/mermaid/` | `structure.rs`, `causal.rs`, `escape.rs`, `ids.rs`, `palette.rs` | `structure`, `causal` (crate) |
-| `crates/cascade-interop/src/p_lang.rs`, `p_lang/` | `names.rs`, `writer.rs`, `machines.rs`, `controllers.rs`, `driver.rs` | `export` (crate) |
+| `crates/cascade-interop/src/p_lang.rs`, `p_lang/` | `names.rs`, `writer.rs`, `fields.rs` (P types, guard/condition translation), `machines.rs`, `controllers.rs`, `driver.rs` | `export` (crate) |
+| `crates/cascade-interop/src/patch/ops/keyed.rs` | Entry-by-entry edits of `sets:`, `with:`, typed `fields:`/`payload:`, list ↔ mapping switch | `reconcile_map`, `set_field_decls` (crate) |
+| `crates/cascade-interop/src/patch/ops/emits.rs` | Item-by-item edits of `emits:` with `with:` | `reconcile` (crate) |
 | `crates/cascade-core/src/diff.rs` | Diff types and entry points | `DiffStatus`, `ModelDiff`, `diff_models`, `merge_for_display` |
 | `crates/cascade-core/src/diff/compare.rs` | Attributes per element | `attributes_by_key` (super) |
 | `crates/cascade-core/src/diff/merge.rs` | Union definition with ghosts | (super) |
@@ -325,7 +399,9 @@ A rename is a removal plus an addition, since elements match by key.
 | `examples/xstate/*.json` | XState fixtures: traffic light (after, onDone, root `on`, emits), fetch (invoke, retry, deep history, raise, `#id`), checkout (three machines, `sendTo`/`sendParent`) | — |
 | `examples/scxml/*.scxml` | SCXML fixtures: microwave (generic, onentry/onexit, history, internal), vending (parallel regions, `#_Id`), order-fulfillment (the golden export) | — |
 
-Tests: `crates/cascade-interop/tests/{yaml,xstate,scxml,mermaid,p_lang,git}.rs`
+Tests: `crates/cascade-interop/tests/{yaml,xstate,scxml,mermaid,p_lang,git}.rs`,
+the semantics-phase suites `{semantics_yaml,patch_semantics,scxml_semantics,xstate_semantics,mermaid_semantics,p_semantics}.rs`
+(the patch suite uses `tests/fixtures/patch/semantics.yaml`, block style with comments everywhere)
 (with `tests/common/mod.rs`, a full element/attribute signature of a model),
 `crates/cascade-core/tests/diff.rs`, `crates/cascade-cli/tests/interop.rs`,
 plus unit tests in the modules.
@@ -343,7 +419,16 @@ plus unit tests in the modules.
   attribute (machines, states and kinds, initials, transitions with guards,
   emits and `bounded`, declared events, controllers, handlers, rules with
   selectors and conditions, sources, colors, domains, fields, system name),
-  with no warnings, for every example, fixture and the kitchen sink.
+  and the semantics-phase ones (trigger kinds, timer delays, subscription
+  filters, `sets`, emit `with`, field and payload types), with no
+  warnings, for every example, fixture, the kitchen sink and a saga using
+  every new feature (`tests/scxml_semantics.rs`).
+- **Patches stay in place for the new keys:** every edit of a guard,
+  trigger (command, timer, subscription and filter), `sets`, emit, `with`,
+  field or payload type is patched without the rewrite fallback and parses
+  to `edit::apply`'s definition; untouched comments survive; a chain of
+  edits that returns to the original definition returns the original text
+  byte for byte (`tests/patch_semantics.rs`).
 - **Imports resolve:** every successful import resolves; fixtures also run
   through the causal graph and the checks without panicking.
 - **Exports are total:** every resolved model exports in every format.
@@ -358,8 +443,10 @@ plus unit tests in the modules.
 Documented losses:
 
 - XState/SCXML import: guards and conditions become `?choices` (unless
-  already Cascade expressions); SCXML export keeps field names but not
-  their types;
+  already Cascade expressions; XState guard parameters are dropped from the
+  label); XState assignments other than copies of an event field, and
+  SCXML `<assign>`/`<param>` that are not Cascade operands, are dropped
+  with a warning; named XState delays stay clock-fired commands;
   `context`/datamodel, non-emitting actions, invoked actors' behavior,
   history default targets and wildcard transitions are dropped; completion
   (`onDone`) is approximated by an environment trigger; exit actions of
@@ -368,7 +455,8 @@ Documented losses:
   event emitted by several actions routes to the union of their receivers;
   a deeper SCXML initial of a compound state is lifted to its child.
 - SCXML export: other tools see guards and conditions as `cond` text they
-  cannot evaluate, and ignore the `cascade:` namespace (sources, declared
+  cannot evaluate (subscription `cond`s and `<assign>`/`<param>` `expr`s
+  use Cascade operands, `event.x`/`self.x`, not a datamodel), and ignore the `cascade:` namespace (sources, declared
   events, selectors, colors, fields, bounded); an event named like a machine
   would prefix-match that machine's trigger events in an SCXML engine.
   Multi-source `from` lists become one transition per source and implicit
@@ -378,6 +466,8 @@ Documented losses:
   controller's handlers into one node and omits selectors; layout is
   Mermaid's.
 - P: one instance per machine (selectors as comments, fan-out/spawn TODO);
-  guards are nondeterministic choices; history enters the parent's default;
-  payload fields are `any` with `default(...)` values; dropped triggers are
-  `ignore`d; no specification monitors; never compiled here.
+  guards other than expressions over typed fields are nondeterministic
+  choices; subscription filters are not checked; timers are
+  nondeterministic self-sends without cancellation; history enters the
+  parent's default; payload values are `default(...)`; dropped triggers
+  are `ignore`d; no specification monitors; never compiled here.

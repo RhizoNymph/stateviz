@@ -696,6 +696,26 @@ only change outside `patch/` makes `yaml::quote` visible within the crate.
 - **Lists of names** (`fields`, `emits`, `from`, `payload`, external
   triggers) change item by item, keeping unchanged items' text. A single
   name becomes a flow list when a second one is added.
+- **Keyed mappings** (`sets:`, emit `with:`, typed `fields:`/`payload:`;
+  `patch/ops/keyed.rs`) change entry by entry: removals, then changed
+  values (in their old quoting), then insertions after the nearest
+  preceding key. Typed fields switch form in place: a block list's
+  `- name` items become `name: any` entries (then get their types) when
+  the first type is added, and typed entries become `- name` when the last
+  type goes; comments between and after entries stay. A flow list becomes a
+  flow mapping and back. When the keys are reordered (or none survive) the
+  value is replaced whole, in place and in its own style.
+- **Emits** (`patch/ops/emits.rs`) change item by item: a name becomes
+  `{ event: E, with: {…} }` and back (a multi-line block item collapses to
+  the name, keeping its first line's comment), a shaped emit's event and
+  `with:` entries change on their own.
+- **Triggers** keep their kind in place: a command's name, a timer's
+  delay (`after:` is written plain, like `to_yaml`), a subscription's
+  `event` and `where` inside `on: { … }` (flow or block). Switching kinds
+  replaces the key (`on:` ↔ `after:`).
+- **Free text quoting** (`guard:`/`when:`): in a file that writes its
+  free text plain, a value that was quoted only because YAML needed it
+  (`"?choice"`) goes back to plain when it can (`else`).
 - **Rules** follow their neighbours (block or flow mappings). A handler
   written as one flow rule mapping becomes a one-item list when a rule is
   added. A handler that loses its last rule is `Event: []`.
