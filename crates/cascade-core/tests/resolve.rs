@@ -1,8 +1,7 @@
 //! Definition → Model resolution: structure, reverse indexes, statechart
 //! semantics, stable keys and every reference diagnostic.
 
-use cascade_core::definition::FieldClause;
-use cascade_core::definition::ValueExpr;
+use cascade_core::expr::{CmpOp, Expr, FieldDecl, Operand};
 use cascade_core::model::{StateKind, Target};
 use cascade_core::{DiagnosticKind, ElementKey, ElementRef, LoadError, Model, PaletteColor, load_str};
 
@@ -54,7 +53,11 @@ fn spec_example_resolves() {
     assert_eq!(
         model.rule(rule).target,
         Target::One {
-            predicates: vec![FieldClause { field: "orderId".into(), value: ValueExpr::EventField("orderId".into()) }]
+            filter: Some(Expr::Cmp {
+                left: Operand::SelfField("orderId".into()),
+                op: CmpOp::Eq,
+                right: Operand::Event("orderId".into())
+            })
         }
     );
 
@@ -232,7 +235,7 @@ fn declared_payloads_are_recorded() {
     );
     let went = model.event_by_name("Went").expect("Went");
     assert!(model.event(went).declared);
-    assert_eq!(model.event(went).payload, ["id", "amount"]);
+    assert_eq!(model.event(went).payload, [FieldDecl::untyped("id"), FieldDecl::untyped("amount")]);
 }
 
 #[test]
@@ -320,7 +323,7 @@ controllers:
 "#;
     let model = load(text);
     let targets: Vec<&Target> = model.rules().map(|(_, r)| &r.target).collect();
-    assert!(matches!(targets[0], Target::All { predicates } if predicates.len() == 1));
+    assert!(matches!(targets[0], Target::All { filter: Some(Expr::Cmp { .. }) }));
     assert!(matches!(targets[1], Target::Spawn { assignments } if assignments.len() == 1));
 }
 

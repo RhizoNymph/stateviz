@@ -43,11 +43,13 @@ fn one_unguarded_candidate_is_enough() {
 }
 
 #[test]
-fn blank_guards_count_as_missing() {
-    let (_, findings) = nondeterminism(&with_transitions(
+fn blank_guards_are_load_errors() {
+    // Guards are expressions or `?choices` now; a blank guard does not load.
+    let text = with_transitions(
         "      - { from: a, to: b, on: go, guard: \"x > 0\" }\n      - { from: a, to: c, on: go, guard: \"   \" }",
-    ));
-    assert_eq!(findings.len(), 1, "{findings:#?}");
+    );
+    let err = crate::load_str(&text).err().map(|e| e.diagnostics.into_iter().map(|d| d.kind).collect::<Vec<_>>());
+    assert!(matches!(err.as_deref(), Some([crate::DiagnosticKind::InvalidExpression { .. }])), "{err:#?}");
 }
 
 #[test]

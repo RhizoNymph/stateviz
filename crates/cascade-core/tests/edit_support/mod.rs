@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use cascade_core::definition::{
-    ControllerDef, Definition, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef,
-    TargetMode, TargetSpec, TransitionDef, TriggerRef,
+    ControllerDef, Definition, EmitDef, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef,
+    StateKindDef, TargetMode, TargetSpec, TransitionDef, TriggerRef, TriggerSpec,
 };
 use cascade_core::edit::{Applied, EditError, EditOp, apply, without_spans};
 use cascade_core::{Spanned, parse_definition, resolve};
@@ -193,7 +193,7 @@ pub fn transitions(def: &Definition, machine_name: &str) -> Vec<String> {
         .iter()
         .map(|t| {
             let from: Vec<&str> = t.from.iter().map(|f| f.value.as_str()).collect();
-            format!("{} -> {} @ {}", from.join("|"), t.to.value, t.on.value)
+            format!("{} -> {} @ {}", from.join("|"), t.to.value, t.trigger.name())
         })
         .collect()
 }
@@ -255,8 +255,9 @@ pub fn transition(from: &[&str], to: &str, on: &str) -> TransitionDef {
     TransitionDef {
         from: from.iter().map(|f| s(f)).collect(),
         to: s(to),
-        on: s(on),
+        trigger: TriggerSpec::Command(s(on)),
         guard: None,
+        sets: Vec::new(),
         emits: Vec::new(),
         bounded: false,
         span: cascade_core::SourceSpan::unknown(),
@@ -264,7 +265,7 @@ pub fn transition(from: &[&str], to: &str, on: &str) -> TransitionDef {
 }
 
 pub fn emitting(mut t: TransitionDef, events: &[&str]) -> TransitionDef {
-    t.emits = events.iter().map(|e| s(e)).collect();
+    t.emits = events.iter().map(|e| EmitDef::plain(*e)).collect();
     t
 }
 
@@ -297,7 +298,12 @@ pub fn rule(machine_name: &str, trigger: &str) -> RuleDef {
 
 pub fn targeted(mut r: RuleDef, mode: TargetMode) -> RuleDef {
     let machine_name = r.fire.value.machine.clone();
-    r.target = Some(Spanned::synthetic(TargetSpec { mode, machine: machine_name, clauses: Vec::new() }));
+    let spec = match mode {
+        TargetMode::One => TargetSpec::One { machine: machine_name, filter: None },
+        TargetMode::All => TargetSpec::All { machine: machine_name, filter: None },
+        TargetMode::Spawn => TargetSpec::Spawn { machine: machine_name, assignments: Vec::new() },
+    };
+    r.target = Some(Spanned::synthetic(spec));
     r
 }
 
@@ -320,7 +326,7 @@ pub fn external_def(name: &str, triggers: &[(&str, &str)]) -> ExternalDef {
 pub fn event_def(name: &str, payload: &[&str]) -> EventDef {
     EventDef {
         name: s(name),
-        payload: payload.iter().map(|p| s(p)).collect(),
+        payload: payload.iter().map(|p| FieldDef::untyped(*p)).collect(),
         span: cascade_core::SourceSpan::unknown(),
     }
 }

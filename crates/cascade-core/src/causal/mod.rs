@@ -5,12 +5,14 @@
 //!
 //! ```text
 //! External ──Trigger──▶ Transition ──Emit──▶ Event ──Subscribe──▶ Handler ──Fire──▶ Transition
+//!                                              └──────Notify──────────────────────────▶ Transition
+//! Transition ──Delay──▶ Transition (a timer armed by entering its source state)
 //! ```
 //!
-//! A `Trigger` or `Fire` edge goes to *every* transition that accepts the
-//! trigger, since which one is taken depends on the target's current state.
-//! Transition T1 causes T2 exactly when there is a path
-//! `T1 → Event → Handler → T2`.
+//! A `Trigger`, `Fire` or `Notify` edge goes to *every* transition that
+//! accepts the trigger, since which one is taken depends on the target's
+//! current state. Transition T1 causes T2 exactly when there is a path
+//! `T1 → Event → Handler → T2` or `T1 → Event → T2` (a subscription).
 
 mod cone;
 
@@ -18,9 +20,9 @@ use std::collections::HashMap;
 
 pub use cone::{Cone, Direction};
 
-use crate::ids::{EventId, ExternalId, HandlerId, RuleId, TransitionId, TriggerId};
+use crate::ids::{EventId, ExternalId, HandlerId, RuleId, StateId, TransitionId, TriggerId};
 use crate::key::ElementRef;
-use crate::model::Model;
+use crate::model::{Model, StateKind, TriggerKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CausalNode {
@@ -99,6 +101,11 @@ pub enum CausalEdgeKind {
     Subscribe,
     /// Handler → a transition that accepts the trigger one of its rules fires.
     Fire { rule: RuleId },
+    /// Event → a transition that accepts a subscription `trigger` on it.
+    Notify { trigger: TriggerId },
+    /// Transition → a timer transition (on `trigger`) whose source state the
+    /// first transition enters, arming the timer.
+    Delay { trigger: TriggerId },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -153,8 +160,8 @@ impl CausalGraph {
             }
         }
         for (tid, transition) in model.transitions() {
-            for &event in &transition.emits {
-                graph.add_edge(CausalNode::Transition(tid), CausalNode::Event(event), CausalEdgeKind::Emit);
+            for emit in &transition.emits {
+                graph.add_edge(CausalNode::Transition(tid), CausalNode::Event(emit.event), CausalEdgeKind::Emit);
             }
         }
         for (hid, handler) in model.handlers() {
@@ -162,6 +169,32 @@ impl CausalGraph {
             for &rule in &handler.rules {
                 for &t in &model.trigger(model.rule(rule).trigger).accepted_by {
                     graph.add_edge(CausalNode::Handler(hid), CausalNode::Transition(t), CausalEdgeKind::Fire { rule });
+                }
+            }
+        }
+        for (eid, event) in model.events() {
+            for &trigger in &event.subscribers {
+                for &t in &model.trigger(trigger).accepted_by {
+                    graph.add_edge(
+                        CausalNode::Event(eid),
+                        CausalNode::Transition(t),
+                        CausalEdgeKind::Notify { trigger },
+                    );
+                }
+            }
+        }
+        for (timer, transition) in model.transitions() {
+            let trigger = transition.trigger;
+            if !matches!(model.trigger(trigger).kind, TriggerKind::Timer(_)) {
+                continue;
+            }
+            for &tid in &model.machine(transition.machine).transitions {
+                if enters(model, model.transition(tid).to, transition.from) {
+                    graph.add_edge(
+                        CausalNode::Transition(tid),
+                        CausalNode::Transition(timer),
+                        CausalEdgeKind::Delay { trigger },
+                    );
                 }
             }
         }
@@ -230,23 +263,34 @@ impl CausalGraph {
     }
 
     /// Transitions directly caused by `transition`, each with the rule that
-    /// fires it: `transition → event → handler → rule → successor`.
-    pub fn transition_successors(&self, transition: TransitionId) -> Vec<(TransitionId, RuleId)> {
+    /// fires it (`transition → event → handler → rule → successor`) or
+    /// `None` for a subscription (`transition → event → successor`). Timer
+    /// (`Delay`) links are not successors: a timer is not a cascade.
+    pub fn transition_successors(&self, transition: TransitionId) -> Vec<(TransitionId, Option<RuleId>)> {
         let mut out = Vec::new();
         let Some(start) = self.ix_of(CausalNode::Transition(transition)) else {
             return out;
         };
         for &emit in self.outgoing(start) {
+            if self.edge(emit).kind != CausalEdgeKind::Emit {
+                continue;
+            }
             let event = self.edge(emit).to;
             for &sub in self.outgoing(event) {
-                let handler = self.edge(sub).to;
-                for &fire in self.outgoing(handler) {
-                    let edge = self.edge(fire);
-                    if let (CausalEdgeKind::Fire { rule }, CausalNode::Transition(next)) =
-                        (edge.kind, self.node(edge.to))
-                    {
-                        out.push((next, rule));
+                let edge = self.edge(sub);
+                match (edge.kind, self.node(edge.to)) {
+                    (CausalEdgeKind::Notify { .. }, CausalNode::Transition(next)) => out.push((next, None)),
+                    (CausalEdgeKind::Subscribe, _) => {
+                        for &fire in self.outgoing(edge.to) {
+                            let edge = self.edge(fire);
+                            if let (CausalEdgeKind::Fire { rule }, CausalNode::Transition(next)) =
+                                (edge.kind, self.node(edge.to))
+                            {
+                                out.push((next, Some(rule)));
+                            }
+                        }
                     }
+                    _ => {}
                 }
             }
         }
@@ -276,5 +320,28 @@ impl CausalGraph {
             }
         }
         depth
+    }
+}
+
+/// Whether taking a transition into `target` enters `state`: `state` is the
+/// target or one of its ancestors-to-be (the target is inside `state`), or
+/// `state` is entered by default entry below the target, or the target is a
+/// history pseudo-state whose parent contains `state` (history may restore
+/// any configuration inside it).
+fn enters(model: &Model, target: StateId, state: StateId) -> bool {
+    if model.is_ancestor_or_self(state, target) {
+        return true;
+    }
+    let mut current = target;
+    while let StateKind::Compound { initial, .. } = &model.state(current).kind {
+        current = *initial;
+        if current == state {
+            return true;
+        }
+    }
+    match (&model.state(target).kind, model.state(target).parent) {
+        (StateKind::History { .. }, Some(parent)) => model.is_ancestor_or_self(parent, state),
+        (StateKind::History { .. }, None) => true,
+        _ => false,
     }
 }

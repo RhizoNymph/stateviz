@@ -4,12 +4,16 @@ use saphyr::{LoadableYamlNode, MarkedYamlOwned};
 
 use crate::color::PaletteColor;
 use crate::definition::{
-    ControllerDef, Definition, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef,
-    TransitionDef,
+    ControllerDef, Definition, EmitDef, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef,
+    StateKindDef, TransitionDef, TriggerSpec,
 };
 use crate::error::{DiagnosticKind, Expected, LoadError};
+use crate::expr::{
+    Assignment, ExprContext, ExprError, FieldType, parse_condition, parse_duration, parse_expr, parse_field_type,
+    parse_guard, parse_operand,
+};
 use crate::parse::grammar::{parse_target, parse_trigger_ref};
-use crate::parse::node::{Diags, as_mapping, as_sequence, is_null, pos_of, span_of};
+use crate::parse::node::{Diags, as_mapping, as_sequence, is_null, pos_of, scalar_text, span_of};
 use crate::span::{SourceSpan, Spanned};
 
 pub fn parse(text: &str) -> Result<Definition, LoadError> {
@@ -122,7 +126,7 @@ fn parse_machine(name: Spanned<String>, body: &MarkedYamlOwned, diags: &mut Diag
     let domain = fields.get("domain").and_then(|n| diags.string(n, &format!("{context} domain")));
     let initial = fields.get("initial").and_then(|n| diags.path(n, &format!("{context} initial")));
     let machine_fields =
-        fields.get("fields").map(|n| diags.name_or_list(n, &format!("{context} fields"))).unwrap_or_default();
+        fields.get("fields").map(|n| parse_field_defs(n, &format!("{context} fields"), diags)).unwrap_or_default();
 
     let states = match fields.require("states", diags, &context, name.span) {
         Some(node) => parse_states(node, &context, diags),
@@ -214,25 +218,176 @@ fn parse_state(
     Some(StateDef { span: name.span, name, kind, initial, states })
 }
 
+/// Parse embedded text, reporting a failure as `diagnostic(text, message)`
+/// at the text's span.
+fn embedded<T>(
+    text: Spanned<String>,
+    diags: &mut Diags,
+    parse: impl FnOnce(&str) -> Result<T, ExprError>,
+    diagnostic: fn(String, String) -> DiagnosticKind,
+) -> Option<Spanned<T>> {
+    match parse(&text.value) {
+        Ok(value) => Some(Spanned::new(value, text.span)),
+        Err(err) => {
+            diags.push(diagnostic(text.value, err.to_string()), text.span);
+            None
+        }
+    }
+}
+
+fn invalid_expression(text: String, message: String) -> DiagnosticKind {
+    DiagnosticKind::InvalidExpression { text, message }
+}
+
+/// `fields:` / `payload:`: a list (or one name) of untyped fields, or a
+/// mapping of name → type (a null type is `any`).
+fn parse_field_defs(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Vec<FieldDef> {
+    if is_null(node) {
+        return Vec::new();
+    }
+    let Some(mapping) = as_mapping(node) else {
+        return diags.name_or_list(node, context).into_iter().map(|name| FieldDef { name, ty: None }).collect();
+    };
+    let mut out = Vec::new();
+    for (name, value) in diags.named_entries(mapping, context) {
+        let ty = if is_null(value) {
+            Some(Spanned::new(FieldType::Any, span_of(value)))
+        } else {
+            match diags.string(value, &format!("{context} `{}` type", name.value)) {
+                Some(text) => embedded(text, diags, parse_field_type, |text, message| {
+                    DiagnosticKind::InvalidFieldType { text, message }
+                }),
+                None => None,
+            }
+        };
+        if let Some(ty) = ty {
+            out.push(FieldDef { name, ty: Some(ty) });
+        }
+    }
+    out
+}
+
+/// `{ f: v, … }`: field names to operands (`event.x`, `self.x`, literals).
+fn parse_assignments(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Vec<Spanned<Assignment>> {
+    if is_null(node) {
+        return Vec::new();
+    }
+    let Some(mapping) = diags.mapping(node, context) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (field, value) in diags.named_entries(mapping, context) {
+        let Some(text) = diags.string(value, &format!("{context} `{}`", field.value)) else {
+            continue;
+        };
+        if let Some(operand) = embedded(text, diags, parse_operand, invalid_expression) {
+            out.push(operand.map(|value| Assignment { field: field.value.clone(), value }));
+        }
+    }
+    out
+}
+
+/// `on:` is a trigger name or `{ event: E, where: "…" }`.
+fn parse_on(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Option<TriggerSpec> {
+    let Some(mapping) = as_mapping(node) else {
+        if scalar_text(node).is_none() {
+            diags.wrong_type(node, &format!("{context} trigger"), Expected::StringOrMapping);
+            return None;
+        }
+        return diags.name(node, &format!("{context} trigger")).map(TriggerSpec::Command);
+    };
+    let context = format!("{context} subscription");
+    let fields = diags.fields(mapping, &context, &["event", "where"]);
+    let event = fields.require("event", diags, &context, span_of(node)).and_then(|n| diags.name(n, &context));
+    let filter = match fields.get("where").filter(|n| !is_null(n)) {
+        Some(n) => {
+            let text = diags.string(n, &format!("{context} where"));
+            let parsed = text.map(|t| embedded(t, diags, |t| parse_expr(t, ExprContext::Filter), invalid_expression));
+            Some(parsed.flatten()?)
+        }
+        None => None,
+    };
+    Some(TriggerSpec::Event { event: event?, filter })
+}
+
+fn parse_after(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Option<TriggerSpec> {
+    let text = diags.string(node, &format!("{context} after"))?;
+    let invalid = |text, message| DiagnosticKind::InvalidDuration { text, message };
+    embedded(text, diags, parse_duration, invalid).map(TriggerSpec::After)
+}
+
+/// `emits:`: one entry or a list; an entry is an event name or
+/// `{ event: E, with: { k: v } }`.
+fn parse_emits(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Vec<EmitDef> {
+    let context = format!("{context} emits");
+    if is_null(node) {
+        return Vec::new();
+    }
+    let items: Vec<&MarkedYamlOwned> = match as_sequence(node) {
+        Some(items) => items.iter().collect(),
+        None => vec![node],
+    };
+    let mut out = Vec::new();
+    for item in items {
+        if let Some(mapping) = as_mapping(item) {
+            let fields = diags.fields(mapping, &context, &["event", "with"]);
+            let event = fields.require("event", diags, &context, span_of(item)).and_then(|n| diags.name(n, &context));
+            let with = fields.get("with").map(|n| parse_assignments(n, &format!("{context} with"), diags));
+            if let Some(event) = event {
+                out.push(EmitDef { event, with: with.unwrap_or_default() });
+            }
+        } else if scalar_text(item).is_some() {
+            if let Some(event) = diags.name(item, &context) {
+                out.push(EmitDef { event, with: Vec::new() });
+            }
+        } else {
+            diags.wrong_type(item, &context, Expected::StringOrMapping);
+        }
+    }
+    out
+}
+
 fn parse_transition(item: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Option<TransitionDef> {
     let context = format!("{context} transition");
     let span = span_of(item);
     let mapping = diags.mapping(item, &context)?;
-    let fields = diags.fields(mapping, &context, &["from", "to", "on", "guard", "emits", "bounded"]);
+    let fields = diags.fields(mapping, &context, &["from", "to", "on", "after", "guard", "sets", "emits", "bounded"]);
 
     let from = fields.require("from", diags, &context, span).map(|n| diags.path_or_list(n, &format!("{context} from")));
     let to = fields.require("to", diags, &context, span).and_then(|n| diags.path(n, &format!("{context} to")));
-    let on = fields.require("on", diags, &context, span).and_then(|n| diags.name(n, &format!("{context} trigger")));
-    let guard = fields.get("guard").and_then(|n| diags.string(n, &format!("{context} guard")));
-    let emits = fields
-        .get("emits")
-        .filter(|n| !is_null(n))
-        .map(|n| diags.name_or_list(n, &format!("{context} emits")))
-        .unwrap_or_default();
+    let trigger = match (fields.get("on"), fields.get("after")) {
+        (Some(on), None) => parse_on(on, &context, diags),
+        (None, Some(after)) => parse_after(after, &context, diags),
+        (Some(_), Some(after)) => {
+            diags.push(
+                DiagnosticKind::ConflictingKeys {
+                    context: context.clone(),
+                    first: "on".to_owned(),
+                    second: "after".to_owned(),
+                },
+                span_of(after),
+            );
+            None
+        }
+        (None, None) => {
+            diags.push(DiagnosticKind::MissingKey { context: context.clone(), key: "on".to_owned() }, span);
+            None
+        }
+    };
+    let guard = fields
+        .get("guard")
+        .and_then(|n| diags.string(n, &format!("{context} guard")))
+        .map(|text| embedded(text, diags, parse_guard, invalid_expression));
+    let sets = fields.get("sets").map(|n| parse_assignments(n, &format!("{context} sets"), diags)).unwrap_or_default();
+    let emits = fields.get("emits").map(|n| parse_emits(n, &context, diags)).unwrap_or_default();
     let bounded = fields.get("bounded").and_then(|n| diags.bool(n, &format!("{context} bounded"))).unwrap_or(false);
 
     let from = from.filter(|f| !f.is_empty())?;
-    Some(TransitionDef { from, to: to?, on: on?, guard, emits, bounded, span })
+    let guard = match guard {
+        Some(parsed) => Some(parsed?),
+        None => None,
+    };
+    Some(TransitionDef { from, to: to?, trigger: trigger?, guard, sets, emits, bounded, span })
 }
 
 fn parse_events(node: &MarkedYamlOwned, diags: &mut Diags) -> Vec<EventDef> {
@@ -254,8 +409,8 @@ fn parse_events(node: &MarkedYamlOwned, diags: &mut Diags) -> Vec<EventDef> {
                 && let Some(body_map) = diags.mapping(body, &context)
             {
                 let fields = diags.fields(body_map, &context, &["payload"]);
-                if let Some(p) = fields.get("payload").filter(|n| !is_null(n)) {
-                    payload = diags.name_or_list(p, &format!("{context} payload"));
+                if let Some(p) = fields.get("payload") {
+                    payload = parse_field_defs(p, &format!("{context} payload"), diags);
                 }
             }
             events.push(EventDef { span: name.span, name, payload });
@@ -310,9 +465,16 @@ fn parse_rule(node: &MarkedYamlOwned, context: &str, diags: &mut Diags) -> Optio
             }
         }
     });
-    let when = fields.get("when").and_then(|n| diags.string(n, &format!("{context} when")));
+    let when = fields
+        .get("when")
+        .and_then(|n| diags.string(n, &format!("{context} when")))
+        .map(|text| embedded(text, diags, parse_condition, invalid_expression));
     let bounded = fields.get("bounded").and_then(|n| diags.bool(n, &format!("{context} bounded"))).unwrap_or(false);
 
+    let when = match when {
+        Some(parsed) => Some(parsed?),
+        None => None,
+    };
     Some(RuleDef { fire: fire?, target, when, bounded, span })
 }
 
@@ -371,14 +533,14 @@ external:
         assert_eq!(names, ["draft", "pending", "paid", "cancelled"]);
         assert_eq!(order.transitions.len(), 3);
         let paid = &order.transitions[1];
-        assert_eq!(paid.on.value, "capture_ok");
-        assert_eq!(paid.emits[0].value, "OrderPaid");
+        assert_eq!(paid.trigger.name(), "capture_ok");
+        assert_eq!(paid.emits[0].event.value, "OrderPaid");
         assert_eq!(paid.span.start.line, 9);
 
         let rule = &def.controllers[0].on[0].rules[0];
         assert_eq!(rule.fire.value, TriggerRef { machine: "Shipment".into(), trigger: "start".into() });
         let target = rule.target.as_ref().expect("target");
-        assert_eq!(target.value.mode, TargetMode::One);
+        assert_eq!(target.value.mode(), TargetMode::One);
 
         let externals: Vec<_> = def.external.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(externals, ["Customer", "PaymentGateway", "Clock"]);
@@ -421,18 +583,20 @@ machines:
     fn single_rule_mapping_and_scalar_external() {
         let text = r#"
 machines:
-  A: { states: [x, y], transitions: [{ from: [x, y], to: y, on: go, guard: n > 0, bounded: true }] }
+  A: { states: [x, y], transitions: [{ from: [x, y], to: y, on: go, guard: self.n > 0, bounded: true }] }
 controllers:
   C:
     on:
-      E: { fire: A.go, when: "flag set" }
+      E: { fire: A.go, when: "?flag set" }
 external:
   User: A.go
 "#;
         let def = parse(text).expect("parses");
         let t = &def.machines[0].transitions[0];
         assert_eq!(t.from.len(), 2);
-        assert_eq!(t.guard.as_ref().map(|g| g.as_str()), Some("n > 0"));
+        assert_eq!(t.guard.as_ref().map(|g| g.value.to_string()).as_deref(), Some("self.n > 0"));
+        let when = def.controllers[0].on[0].rules[0].when.as_ref().map(|w| w.value.clone());
+        assert_eq!(when, Some(crate::expr::Condition::Choice("flag set".into())));
         assert!(t.bounded);
         assert_eq!(def.controllers[0].on[0].rules.len(), 1);
         assert_eq!(def.external[0].triggers.len(), 1);

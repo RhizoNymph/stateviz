@@ -18,6 +18,7 @@ pub mod definition;
 pub mod diff;
 pub mod edit;
 pub mod error;
+pub mod expr;
 pub mod ids;
 pub mod key;
 mod load;

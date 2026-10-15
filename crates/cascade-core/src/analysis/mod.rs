@@ -123,11 +123,12 @@ impl fmt::Display for Check {
 }
 
 /// One link of a cascade cycle: `transition` is taken, and (through an
-/// event and a handler) `rule` fires the next step's transition.
+/// event and a handler) `rule` fires the next step's transition, or with
+/// `rule: None` the next step is a machine subscribed to the event.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CycleStep {
     pub transition: TransitionId,
-    pub rule: RuleId,
+    pub rule: Option<RuleId>,
 }
 
 /// The elements a finding is about. Which variant appears determines the
@@ -236,7 +237,9 @@ impl FindingDetail {
                 .collect(),
             FindingDetail::CascadeCycle { first, rest } => std::iter::once(first)
                 .chain(rest)
-                .flat_map(|step| [ElementRef::Transition(step.transition), ElementRef::Rule(step.rule)])
+                .flat_map(|step| {
+                    std::iter::once(ElementRef::Transition(step.transition)).chain(step.rule.map(ElementRef::Rule))
+                })
                 .collect(),
             FindingDetail::UnhandledEvent { event } => vec![ElementRef::Event(*event)],
             FindingDetail::OrphanController { handler } => vec![ElementRef::Handler(*handler)],
