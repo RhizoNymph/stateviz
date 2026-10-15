@@ -177,6 +177,25 @@ fn every_example_still_round_trips_with_the_new_keys() {
     }
 }
 
+#[test]
+fn example_field_types_survive_the_round_trip() {
+    let fields = |model: &Model| -> Vec<(String, Vec<cascade_core::expr::FieldDecl>)> {
+        model.machines().map(|(_, m)| (m.name.clone(), m.fields.clone())).collect()
+    };
+    let mut typed = 0;
+    for (path, text) in common::example_definitions() {
+        let model = load(&text);
+        let reloaded = resolve_ok(imported(&scxml(&model)).definition);
+        assert_eq!(fields(&model), fields(&reloaded), "{}", path.display());
+        typed += model
+            .machines()
+            .flat_map(|(_, m)| &m.fields)
+            .filter(|f| f.ty != cascade_core::expr::FieldType::Any)
+            .count();
+    }
+    assert!(typed >= 9, "the checkout saga types its fields ({typed} typed fields across the examples)");
+}
+
 // --- Foreign documents -------------------------------------------------------------------
 
 #[test]

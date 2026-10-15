@@ -2,12 +2,13 @@
 # and stock events of its order, records what it learns with `sets`, reports
 # back with emits that `Order` subscribes to, and gives up after 30 minutes.
 # The bank's answer is a choice the data doesn't carry (`?approved`).
+# Fields are typed, so `event.amount >= self.amount` compares numbers.
 system: Checkout saga
 
 machines:
   Order:
     color: blue
-    fields: [orderId, amount]
+    fields: { orderId: string, amount: number }
     initial: draft
     states: [draft, placed, confirmed, cancelled]
     transitions:
@@ -21,7 +22,7 @@ machines:
 
   Payment:
     color: green
-    fields: [orderId, amount]
+    fields: { orderId: string, amount: number }
     initial: idle
     states: [idle, authorizing, captured, declined]
     transitions:
@@ -31,7 +32,7 @@ machines:
 
   Stock:
     color: yellow
-    fields: [orderId]
+    fields: { orderId: string }
     initial: idle
     states: [idle, reserved]
     transitions:
@@ -39,7 +40,11 @@ machines:
 
   Checkout:
     color: purple
-    fields: [orderId, amount, paid, reason]
+    fields:
+      orderId: string
+      amount: number
+      paid: number
+      reason: enum [underpaid, declined, timeout]
     initial: opening
     states: [opening, waiting, paid, done, failed, expired]
     transitions:

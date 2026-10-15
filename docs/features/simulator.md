@@ -555,7 +555,7 @@ play goes on.
 | `crates/cascade-cli/src/commands/simulate/play.rs` | `cascade simulate --interactive` | `run` |
 | `crates/cascade-cli/tests/simulate.rs`, `simulate_play.rs`, `simulate_semantics.rs` | CLI output end to end; manual steps and the prompt; timers, choices, notifies, sets, unused choices, the prompt's `wait`/`choose`/`step n to c`/`timers`/`now` | — |
 | `examples/order-fulfillment/scenarios/` | `happy-path`, `timeout-race` (immediate clock), `timeout-first`, `second-order-first` (a manual `{ step: 1 }`) | — |
-| `examples/checkout-saga/` | A saga machine with subscriptions, `sets`, `with`, a `?choice` and a 30m timeout; scenarios `happy-path`, `declined`, `timeout` | — |
+| `examples/checkout-saga/` | A saga machine with typed fields, subscriptions, `sets`, `with`, a `?choice` and a 30m timeout; scenarios `happy-path`, `declined`, `timeout` | — |
 
 ## Invariants and constraints
 
