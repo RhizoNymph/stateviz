@@ -95,7 +95,10 @@ fn step_lifelines_point_at_the_right_participants() {
             }
             TraceStepKind::Transition { instance, .. }
             | TraceStepKind::Dropped { instance, .. }
-            | TraceStepKind::Emit { instance, .. } => {
+            | TraceStepKind::Emit { instance, .. }
+            | TraceStepKind::Notify { instance, .. }
+            | TraceStepKind::TimerExpired { instance, .. }
+            | TraceStepKind::SetFields { instance, .. } => {
                 matches!(trace.lifelines[instance.index()], Lifeline::Instance { .. })
             }
             TraceStepKind::Deliver { controller, .. } | TraceStepKind::NoTarget { controller, .. } => {
@@ -110,6 +113,10 @@ fn step_lifelines_point_at_the_right_participants() {
                 matches!(trace.lifelines[controller.index()], Lifeline::Controller { .. })
                     && candidates.iter().all(|c| matches!(trace.lifelines[c.index()], Lifeline::Instance { .. }))
             }
+            TraceStepKind::Choice { at, .. } => {
+                matches!(trace.lifelines[at.index()], Lifeline::Instance { .. } | Lifeline::Controller { .. })
+            }
+            TraceStepKind::Wait { .. } => true,
         };
         assert!(ok, "{step:?}");
     }

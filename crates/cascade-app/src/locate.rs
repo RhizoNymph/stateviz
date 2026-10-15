@@ -9,19 +9,21 @@ use cascade_layout::{Point, Rect};
 use cascade_scene::{HitTarget, Overlay, Scene, SceneNode};
 use cascade_sim::{Lifeline, Trace, TraceStepKind};
 
-/// The element a trace step is about.
-pub fn step_element(kind: &TraceStepKind) -> ElementRef {
+/// The element a trace step is about; `None` for steps that are about no
+/// single element (a wait, a choice, field assignments).
+pub fn step_element(kind: &TraceStepKind) -> Option<ElementRef> {
     match kind {
-        TraceStepKind::ExternalFire { trigger, .. } | TraceStepKind::Dropped { trigger, .. } => {
-            ElementRef::Trigger(*trigger)
-        }
-        TraceStepKind::Transition { transition, .. } => ElementRef::Transition(*transition),
-        TraceStepKind::Emit { event, .. } => ElementRef::Event(*event),
-        TraceStepKind::Deliver { handler, .. } => ElementRef::Handler(*handler),
+        TraceStepKind::ExternalFire { trigger, .. }
+        | TraceStepKind::Dropped { trigger, .. }
+        | TraceStepKind::TimerExpired { trigger, .. } => Some(ElementRef::Trigger(*trigger)),
+        TraceStepKind::Transition { transition, .. } => Some(ElementRef::Transition(*transition)),
+        TraceStepKind::Emit { event, .. } | TraceStepKind::Notify { event, .. } => Some(ElementRef::Event(*event)),
+        TraceStepKind::Deliver { handler, .. } => Some(ElementRef::Handler(*handler)),
         TraceStepKind::Fire { rule, .. }
         | TraceStepKind::Spawn { rule, .. }
         | TraceStepKind::NoTarget { rule, .. }
-        | TraceStepKind::Ambiguous { rule, .. } => ElementRef::Rule(*rule),
+        | TraceStepKind::Ambiguous { rule, .. } => Some(ElementRef::Rule(*rule)),
+        TraceStepKind::Wait { .. } | TraceStepKind::Choice { .. } | TraceStepKind::SetFields { .. } => None,
     }
 }
 
@@ -45,7 +47,7 @@ pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option
         HitTarget::TraceStep { ordering, step } => {
             let trace = traces.get(usize::from(*ordering))?;
             let step = trace.steps.get(usize::try_from(*step).ok()?)?;
-            Some(model.key_of(step_element(&step.kind)))
+            step_element(&step.kind).map(|element| model.key_of(element))
         }
         HitTarget::Lifeline { ordering, lifeline } => {
             let trace = traces.get(usize::from(*ordering))?;

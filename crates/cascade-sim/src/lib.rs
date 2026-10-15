@@ -74,8 +74,8 @@ pub use scenario::{
     validate,
 };
 pub use session::{
-    ActionOutcome, AvailableFire, Branch, InstanceState, PendingId, PendingItem, PendingKind, PlayAction, PlaySession,
-    Timeline, scenario_to_yaml,
+    ActionOutcome, ArmedTimer, AvailableFire, Branch, ChoicePoint, InstanceState, PendingId, PendingItem, PendingKind,
+    PlayAction, PlaySession, StateKey, Timeline, scenario_to_yaml,
 };
 pub use trace::{Lifeline, LifelineIx, StepIx, Trace, TraceStep, TraceStepKind};
 

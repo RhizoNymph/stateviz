@@ -79,6 +79,18 @@ pub fn step_text(model: &Model, trace: &Trace, step: &TraceStep, payload: Option
             candidates.iter().map(|&c| who(c)).collect::<Vec<_>>().join(", "),
             selector_text(model, *rule)
         ),
+        TraceStepKind::Notify { instance, event } => {
+            format!("{} receives {}", who(*instance), model.event(*event).name)
+        }
+        TraceStepKind::Wait { by, now } => format!("waited {by} (now {now})"),
+        TraceStepKind::TimerExpired { instance, trigger } => {
+            format!("{} {}: timer {} expired", machine_of(*instance), who(*instance), model.trigger(*trigger).name)
+        }
+        TraceStepKind::Choice { at, chosen, defaulted, .. } => {
+            let default = if *defaulted { " (default)" } else { "" };
+            format!("{} chose {chosen}{default}", who(*at))
+        }
+        TraceStepKind::SetFields { instance, fields } => format!("{} sets {}", who(*instance), payload_text(fields)),
     }
 }
 

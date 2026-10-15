@@ -54,7 +54,7 @@ pub(crate) fn drive(model: &Model, scenario: &ResolvedScenario, player: &mut imp
                 at(step.span, player.act(model, action))?;
             }
             ResolvedEntry::Deliver { choice, span } => {
-                at(*span, player.act(model, PlayAction::Step { choice: *choice }))?;
+                at(*span, player.act(model, PlayAction::Step { choice: *choice, consumer: None }))?;
             }
             ResolvedEntry::Run { span } => at(*span, player.act(model, PlayAction::RunUntilQuiet))?,
             ResolvedEntry::Create { instance, span } => at(*span, player.act(model, add_action(model, instance)))?,

@@ -311,6 +311,7 @@ creating row. Rows run down in step order:
 | `Spawn` | "new s2" message to the created header |
 | `Dropped` | red-outlined "✕ trigger dropped in state" note |
 | `NoTarget` / `Ambiguous` | dashed neutral note on the controller |
+| `Notify` / `Wait` / `TimerExpired` / `Choice` / `SetFields` | nothing yet (an empty row; wave 2 draws them) |
 
 Final states sit at the bottom of each instance's lifeline. Lifelines are
 dashed `Overlay::Line`s under everything. Steps are `HitTarget::TraceStep`,

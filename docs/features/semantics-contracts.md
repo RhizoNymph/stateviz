@@ -613,6 +613,43 @@ Names and details the Rust blocks above leave open, as implemented on
   parses guard/`when` text on commit and shows parse errors inline; field
   and payload lists keep the types of names that stay.
 
+### Simulator contract types (wave 1 follow-up)
+
+Added on `feat/lang-contracts` so wave 2 branches compile against them; no
+semantics yet:
+
+- `cascade_sim::{ChoicePoint, ArmedTimer, StateKey}` (lib root).
+  `ChoicePoint { at: String, options: Vec<String> }`; `ArmedTimer {
+  instance: String, trigger: TriggerId, deadline: Duration }`; `StateKey` is
+  an opaque newtype (`Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash`)
+  over a canonical string (instances, fields, leaves, sorted history,
+  removed names, queue in order with consumers left). Wave 2 extends it
+  with timers relative to now and pending decisions.
+- `PlayAction::Step { choice, consumer }`, `Advance { by }`, `Choose {
+  option }`; `exec` rejects `Advance`, `Choose` and `consumer: Some(_)` with
+  `SimError::Action(ScenarioErrorKind::Unsupported { what })`.
+- New `ScenarioErrorKind`s: `Unsupported { what }`, `NoTimerArmed`,
+  `InvalidDuration { text, message }` (scenario `wait:` text).
+- `PendingKind::Timer { trigger, target }`; `PendingItem::consumers_left`
+  is filled (event: controller names in handler order, deduplicated; fire:
+  the target's name).
+- `Directive::Deliver { choice, consumer: Option<Spanned<String>>, span }`,
+  `Directive::Wait { by: Option<Spanned<Duration>>, timing: StepTiming,
+  span }` (`- wait`, `- { wait: 30s }`, `- { wait: ~, timing: immediate }`),
+  `Directive::Choose { option: Spanned<String>, span }`. The parser accepts
+  them; `validate` rejects them as `Unsupported` at their span.
+  `scenario_to_yaml` writes them; there is no file spelling for "the head,
+  one consumer", so `Step { choice: None, consumer: Some(c) }` saves as `{
+  step: 0, consumer: c }` (wave 2 may record it as `choice: Some(0)` so the
+  round trip is exact).
+- `TraceStepKind::{Notify, Wait, TimerExpired, Choice, SetFields}` as in §5;
+  `step_text` covers them. The trace view draws nothing for them yet (an
+  empty row); the app's `step_element` became `Option<ElementRef>` (`None`
+  for `Wait`, `Choice`, `SetFields`); `cascade simulate --format json`
+  writes them as `notify`, `wait`, `timer-expired`, `choice`, `set-fields`.
+- `PlaySession::{now, timers, pending_decisions, choice_points}` return
+  zero / empty / `Ok(vec![])`; `state_key` is real.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /

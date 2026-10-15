@@ -12,9 +12,15 @@ pub fn action_label(action: &PlayAction) -> String {
         },
         PlayAction::RemoveInstance { name } => format!("− {name}"),
         PlayAction::Fire { source, trigger, target, .. } => format!("{source}: {} → {target}", trigger.trigger),
-        PlayAction::Step { choice: None } => "step".to_owned(),
-        PlayAction::Step { choice: Some(n) } => format!("deliver #{}", n + 1),
+        PlayAction::Step { choice: None, consumer: None } => "step".to_owned(),
+        PlayAction::Step { choice: Some(n), consumer: None } => format!("deliver #{}", n + 1),
+        PlayAction::Step { choice, consumer: Some(consumer) } => {
+            format!("deliver #{} to {consumer}", choice.unwrap_or(0) + 1)
+        }
         PlayAction::RunUntilQuiet => "run until quiet".to_owned(),
+        PlayAction::Advance { by: Some(by) } => format!("wait {by}"),
+        PlayAction::Advance { by: None } => "wait for next timer".to_owned(),
+        PlayAction::Choose { option } => format!("choose {option}"),
     }
 }
 
@@ -104,8 +110,8 @@ mod tests {
         );
         assert_eq!(action_label(&PlayAction::RemoveInstance { name: "o1".into() }), "− o1");
         assert_eq!(action_label(&fire()), "User: pay → o1");
-        assert_eq!(action_label(&PlayAction::Step { choice: None }), "step");
-        assert_eq!(action_label(&PlayAction::Step { choice: Some(2) }), "deliver #3");
+        assert_eq!(action_label(&PlayAction::Step { choice: None, consumer: None }), "step");
+        assert_eq!(action_label(&PlayAction::Step { choice: Some(2), consumer: None }), "deliver #3");
         assert_eq!(action_label(&PlayAction::RunUntilQuiet), "run until quiet");
     }
 

@@ -130,7 +130,10 @@ Features Index:
       spawn, history and payloads, traces with cause links and stable
       lifelines, race candidates replayed in both orders, and the play
       session (actions, pending queue, available fires, seek, branches,
-      replay, to_scenario) on the same engine.
+      replay, to_scenario) on the same engine. Contract types for timers,
+      choices and per-consumer delivery (new trace step kinds, Advance /
+      Choose / Step consumer, wait / choose directives, state keys) exist
+      but are rejected as unsupported until wave 2.
     entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::PlaySession, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md

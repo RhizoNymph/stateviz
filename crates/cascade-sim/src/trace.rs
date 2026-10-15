@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use cascade_core::expr::Duration;
 use cascade_core::ids::{
     ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId,
 };
@@ -61,6 +62,22 @@ pub enum TraceStepKind {
     NoTarget { controller: LifelineIx, rule: RuleId },
     /// A one-instance selector matched several instances.
     Ambiguous { controller: LifelineIx, rule: RuleId, candidates: Vec<LifelineIx> },
+    /// A delivered event is offered to a subscribing instance, which takes
+    /// it (an instance that ignores the event records nothing). Cause: the
+    /// `Emit`; the `Transition` that follows names this step as its cause.
+    Notify { instance: LifelineIx, event: EventId },
+    /// The clock advanced by `by` to `now` (a scenario `wait` or
+    /// `PlayAction::Advance`; no cause).
+    Wait { by: Duration, now: Duration },
+    /// An armed timer came due and joined the queue. Cause: the `Wait`; the
+    /// delivery (`Transition` or `Dropped`) names this step as its cause.
+    TimerExpired { instance: LifelineIx, trigger: TriggerId },
+    /// A choice point: `chosen` is one of `options`, taken from a pending
+    /// decision or, when `defaulted`, the first option. `at` is the
+    /// instance or controller deciding.
+    Choice { at: LifelineIx, options: Vec<String>, chosen: String, defaulted: bool },
+    /// A transition's `sets` assigned fields (after its `Transition` step).
+    SetFields { instance: LifelineIx, fields: BTreeMap<String, String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -24,7 +24,9 @@ the interactive play session built on the same engine.
 ## Non-scope
 
 - Deciding `?choice` guards and conditions, `sets`, emit `with`,
-  subscriptions and timers (semantics phase, wave 2).
+  subscriptions, timers and the clock, per-consumer delivery (semantics
+  phase, wave 2). Their contract types exist already (see *Contract types
+  not run yet*).
 - Drawing the sequence diagram (view-scenes.md) or the app's trace panel
   (native-app.md).
 - Finding race candidates (static-analysis.md); the simulator only replays
@@ -73,6 +75,9 @@ sessions use them to reproduce exactly what the player did:
 | `- { create: name, machine: M, fields: {…}, state: s }` | An instance appears here, as in `instances:` (same checks); it takes part from this point on. |
 | `- { remove: name }` | The instance leaves play (see below). |
 | `end: pause` (top level) | After the last entry, stop with whatever is still queued instead of draining. |
+| `- wait` / `- { wait: 30s, timing: immediate }` | Advance the clock to the next deadline / by a duration (`{ wait: ~ }` is the bare form with a timing). Parsed and written; validation rejects it as `Unsupported` for now. |
+| `- { choose: "card declined" }` | Push a pending decision. Parsed and written; `Unsupported` for now. |
+| `- { step: n, consumer: Fulfillment }` | Deliver item `n` to one consumer. Parsed and written (a head delivery to one consumer writes `step: 0`); `Unsupported` for now. |
 
 - Directives interleave with external fires in file order. A fire's
   `timing` applies when the fire is reached, after the directives before
@@ -105,8 +110,8 @@ parsing and validation keep going after the first one:
 
 | Stage | Diagnostics (`ScenarioErrorKind`) |
 | --- | --- |
-| Parse | `YamlSyntax`, `EmptyDocument`, `MultipleDocuments`, `WrongType`, `UnknownKey`, `MissingKey`, `InvalidName`, `InvalidTriggerRef`, `UnknownTiming`, `InvalidQueuePosition`, `UnknownEnd` |
-| Validate | `DuplicateInstance`, `UnknownMachine`, `UnknownField`, `UnknownState`, `AmbiguousState`, `HistoryStart`, `UnknownSource`, `UnknownTrigger`, `SourceCannotFire`, `UnknownInstance`, `TargetMachineMismatch`, `NoInstance`, `AmbiguousInstance` |
+| Parse | `YamlSyntax`, `EmptyDocument`, `MultipleDocuments`, `WrongType`, `UnknownKey`, `MissingKey`, `InvalidName`, `InvalidTriggerRef`, `UnknownTiming`, `InvalidQueuePosition`, `UnknownEnd`, `InvalidDuration` |
+| Validate | `Unsupported` (`wait`, `choose`, `consumer:`), `DuplicateInstance`, `UnknownMachine`, `UnknownField`, `UnknownState`, `AmbiguousState`, `HistoryStart`, `UnknownSource`, `UnknownTrigger`, `SourceCannotFire`, `UnknownInstance`, `TargetMachineMismatch`, `NoInstance`, `AmbiguousInstance` |
 | Run (step targets and directives) | `UnknownInstance`, `TargetMachineMismatch`, `NoInstance`, `AmbiguousInstance`, `NameTaken` (a spawn took the name), `QueueEmpty`, `NoPendingItem` |
 
 ## Semantics
@@ -256,8 +261,10 @@ reloads:
 | `AddInstance { name, machine, fields, state }` | New instance. `name: None` picks `<machine-lowercase><n>` with the smallest `n` never used; the timeline records the name it got. `state: None` is the initial state. |
 | `RemoveInstance { name }` | See *Removing instances*. |
 | `Fire { source, trigger, target, payload }` | An external fire, delivered at once; emitted events join the queue. Firing a trigger the state does not accept records a drop. |
-| `Step { choice }` | Deliver the head (`None`) or the item at position `choice` of `pending()`. |
+| `Step { choice, consumer }` | Deliver the head (`None`) or the item at position `choice` of `pending()`. `consumer: Some(_)` (one consumer only) is rejected as `Unsupported` for now. |
 | `RunUntilQuiet` | Deliver heads until the queue is empty (recorded even when it was already empty). |
+| `Advance { by }` | Advance the clock (contract only: rejected as `Unsupported`). |
+| `Choose { option }` | Push a pending decision (contract only: rejected as `Unsupported`). |
 
 ```text
 host ──PlayAction──▶ PlaySession::apply
@@ -299,6 +306,32 @@ scenario ──validate──▶ drive ──PlayActions──▶ the same exec 
   `StepLimit` as above. Problems in a scenario given to `from_scenario` or
   `simulate` carry the entry's source span (`SimError::Scenario`).
 
+### Contract types not run yet
+
+Wave 2 (`feat/sim-semantics`) gives these their semantics; until then they
+exist so hosts compile against them (`docs/features/semantics-contracts.md`
+§3–5):
+
+- `TraceStepKind::{Notify, Wait, TimerExpired, Choice, SetFields}`: never
+  recorded yet; `step_text` describes them (`o1 receives PaymentCaptured`,
+  `waited 30s (now 90s)`, `Order o1: timer after-30m expired`, `o1 chose
+  card declined (default)`, `o1 sets {orderId: 2}`).
+- `PendingKind::Timer { trigger, target }`: never queued yet.
+- `PendingItem::consumers_left`: real. An event lists the controllers whose
+  handlers receive it, in delivery order (deduplicated; subscribing
+  instances will come first once subscriptions run); a fire lists its
+  target instance. Fixed when the item is queued (`Queued::consumers_left`).
+- `PlaySession::now()` is `Duration::ZERO`, `timers()` and
+  `pending_decisions()` are empty, `choice_points(..)` is `Ok(vec![])`.
+- `PlaySession::state_key()` → `StateKey` (opaque; `Eq + Ord + Hash +
+  Clone + Debug`): a canonical string of each instance in creation order
+  (name, machine, leaf, fields, sorted history; removed ones by name only)
+  and each queue item in order (kind, event or rule, target name, payload,
+  consumers left). Pending ids, labels, cause steps and the trace are left
+  out.
+- `ScenarioErrorKind::{Unsupported { what }, NoTimerArmed, InvalidDuration
+  { text, message }}`.
+
 ### Timeline, rewind and branches
 
 - `Timeline { actions, position, branches }`: `actions[..position]` are
@@ -328,7 +361,10 @@ scenario ──validate──▶ drive ──PlayActions──▶ the same exec 
 `AddInstance`s become `instances:`; later ones `create`; `RemoveInstance`
 `remove`; a `Fire` into an empty queue a plain step and one while items are
 queued `timing: immediate`; `Step` `- step` / `- { step: n }`;
-`RunUntilQuiet` `- run`; and a non-empty queue at the end `end: pause`.
+`RunUntilQuiet` `- run`; `Advance` `- wait` / `- { wait: d }` (with
+`timing: immediate` while items are queued); `Choose` `- { choose: o }`;
+`Step { consumer: Some(c) }` `- { step: n, consumer: c }`; and a non-empty
+queue at the end `end: pause`.
 `scenario_to_yaml` writes one flow-style line per entry (values always
 double-quoted, names quoted only when YAML would misread them), and parses
 back to the same scenario. `from_scenario(parse_scenario(scenario_to_yaml(
@@ -426,13 +462,14 @@ on.
 | `crates/cascade-sim/src/engine/select.rs` | Selector predicates and spawn assignments | crate-private |
 | `crates/cascade-sim/src/engine/record.rs` | Raw steps → `Trace` with ordered lifelines (and each instance's lifeline) | crate-private `Recorder`, `Finished` |
 | `crates/cascade-sim/src/engine/schedule.rs` | FIFO with one swap (pull ahead / hold / release) | crate-private `next_swapped` |
-| `crates/cascade-sim/src/session/mod.rs` | The play session: apply, seek, branches, replay, from a scenario | `PlaySession`, `PlayAction`, `ActionOutcome`, `Timeline`, `Branch`, `PendingId`, `PendingItem`, `PendingKind`, `InstanceState`, `AvailableFire`, `scenario_to_yaml` |
+| `crates/cascade-sim/src/session/mod.rs` | The play session: apply, seek, branches, replay, from a scenario | `PlaySession`, `PlayAction`, `ActionOutcome`, `Timeline`, `Branch`, `PendingId`, `PendingItem`, `PendingKind`, `InstanceState`, `AvailableFire`, `ChoicePoint`, `ArmedTimer`, `StateKey`, `scenario_to_yaml` |
+| `crates/cascade-sim/src/session/clock.rs` | Clock, timers, decisions, choice points (stubs) and the state key | `PlaySession::{now, timers, pending_decisions, choice_points, state_key}` |
 | `crates/cascade-sim/src/session/view.rs` | Instances, pending items, available fires | `PlaySession::{instances, pending, is_pending, available_fires}` |
 | `crates/cascade-sim/src/session/save.rs` | Timeline → scenario | `PlaySession::to_scenario` |
 | `crates/cascade-sim/src/race.rs` | Contested pair detection, swapped replay, labels | crate-private |
 | `crates/cascade-sim/src/describe.rs` | Plain-text labels for hosts that list traces | `step_text`, `lifeline_label`, `payload_text`, `selector_text`, `causal_depths` |
 | `crates/cascade-sim/src/trace.rs` | The trace contract (unchanged shapes) | `Trace`, `TraceStep`, `TraceStepKind`, `Lifeline`, `LifelineIx`, `StepIx` |
-| `crates/cascade-sim/tests/` | Parsing, validation, FIFO/timing, selectors, history, lifelines, races, discovery, examples; `scenario_steps` (directives), `session` (actions, queue, removal, limit), `session_timeline` (seek, branches, replay), `session_scenario` (batch equivalence, saving round trips); `fixtures/race/` holds a two-controller race | — |
+| `crates/cascade-sim/tests/` | Parsing, validation, FIFO/timing, selectors, history, lifelines, races, discovery, examples; `scenario_steps` (directives), `session` (actions, queue, removal, limit), `session_timeline` (seek, branches, replay), `session_scenario` (batch equivalence, saving round trips), `contracts` (new directives and actions, `consumers_left`, state keys, step text); `fixtures/race/` holds a two-controller race | — |
 | `crates/cascade-cli/src/commands/simulate.rs` | `cascade simulate` | `run` |
 | `crates/cascade-cli/src/commands/simulate/play.rs` | `cascade simulate --interactive` | `run` |
 | `crates/cascade-cli/tests/simulate.rs`, `simulate_play.rs` | CLI output end to end; manual steps and the prompt | — |

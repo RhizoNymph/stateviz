@@ -50,6 +50,7 @@ impl PlaySession {
                 },
                 cause: StepIx(u32::try_from(queued.item.cause()).unwrap_or(u32::MAX)),
                 label: queued.label.clone(),
+                consumers_left: queued.consumers_left.clone(),
             })
             .collect()
     }

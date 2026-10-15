@@ -48,6 +48,10 @@ fn problem(kind: ScenarioErrorKind) -> SimError {
     SimError::Action(kind)
 }
 
+fn unsupported(what: &str) -> SimError {
+    problem(ScenarioErrorKind::Unsupported { what: what.to_owned() })
+}
+
 /// Perform `action`. Returns the action as it should be recorded: an
 /// `AddInstance` without a name gets the name it was given. On error nothing
 /// has changed, except that a `RunUntilQuiet` hitting the step limit has
@@ -92,7 +96,10 @@ pub(crate) fn exec(
             core.external_fire(model, source_id, target_ix, trigger_id, payload);
             Ok(action.clone())
         }
-        PlayAction::Step { choice } => {
+        PlayAction::Step { consumer: Some(_), .. } => Err(unsupported("delivering to one consumer")),
+        PlayAction::Advance { .. } => Err(unsupported("advancing the clock")),
+        PlayAction::Choose { .. } => Err(unsupported("choosing")),
+        PlayAction::Step { choice, consumer: None } => {
             let pending = core.queue().len();
             if pending == 0 {
                 return Err(problem(ScenarioErrorKind::QueueEmpty));

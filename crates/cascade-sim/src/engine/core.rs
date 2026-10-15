@@ -27,6 +27,9 @@ pub(crate) struct Queued {
     pub id: PendingId,
     /// `OrderPaid from o1` or `Fulfillment → s1: start`, fixed when queued.
     pub label: String,
+    /// Who still has to receive it, in delivery order (see
+    /// `PendingItem::consumers_left`).
+    pub consumers_left: Vec<String>,
     pub item: QueueItem,
 }
 
@@ -238,7 +241,8 @@ impl Core {
             let emitted = self.recorder.push(Some(step), RawKind::Emit { instance: target, event });
             self.recorder.set_payload(emitted, payload.clone());
             let label = format!("{} from {label_from}", model.event(event).name);
-            self.enqueue(label, QueueItem::Event { event, payload: payload.clone(), emitted });
+            let consumers = event_consumers(model, event);
+            self.enqueue(label, consumers, QueueItem::Event { event, payload: payload.clone(), emitted });
         }
     }
 
@@ -337,13 +341,14 @@ impl Core {
             self.instances[target.0].name,
             model.trigger(model.rule(rule).trigger).name
         );
-        self.enqueue(label, QueueItem::Fire { rule, target, payload: payload.clone(), fired, occurrence });
+        let consumers = vec![self.instances[target.0].name.clone()];
+        self.enqueue(label, consumers, QueueItem::Fire { rule, target, payload: payload.clone(), fired, occurrence });
     }
 
-    fn enqueue(&mut self, label: String, item: QueueItem) {
+    fn enqueue(&mut self, label: String, consumers_left: Vec<String>, item: QueueItem) {
         let id = PendingId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
-        self.queue.push_back(Queued { id, label, item });
+        self.queue.push_back(Queued { id, label, consumers_left, item });
     }
 
     /// `<machine-lowercase><n>` with the smallest unused `n`, counting up
@@ -359,6 +364,20 @@ impl Core {
             }
         }
     }
+}
+
+/// An event's consumers in delivery order: the controllers whose handlers
+/// receive it, in definition order. (Subscribing instances come first once
+/// subscriptions run.)
+fn event_consumers(model: &Model, event: EventId) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for &handler in &model.event(event).handlers {
+        let name = &model.controller(model.handler(handler).controller).name;
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names
 }
 
 fn step_limit() -> SimError {
