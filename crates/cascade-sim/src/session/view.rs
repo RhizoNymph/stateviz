@@ -47,10 +47,13 @@ impl PlaySession {
                     QueueItem::Fire { rule, target, .. } => {
                         PendingKind::Fire { rule: *rule, target: self.lifeline_of(*target) }
                     }
+                    QueueItem::Timer { trigger, target, .. } => {
+                        PendingKind::Timer { trigger: *trigger, target: self.lifeline_of(*target) }
+                    }
                 },
                 cause: StepIx(u32::try_from(queued.item.cause()).unwrap_or(u32::MAX)),
                 label: queued.label.clone(),
-                consumers_left: queued.consumers_left.clone(),
+                consumers_left: queued.consumers_left.iter().map(|c| c.name.clone()).collect(),
             })
             .collect()
     }

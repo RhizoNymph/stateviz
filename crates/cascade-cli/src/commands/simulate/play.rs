@@ -1,5 +1,7 @@
 //! `cascade simulate <file> [scenario] --interactive`: a small prompt for
-//! playing a system one action at a time with a [`PlaySession`].
+//! playing a system one action at a time with a [`PlaySession`]: instances,
+//! fires, queue steps (to all consumers or one), the clock (`wait`, `now`,
+//! `timers`) and decisions (`choose`).
 //!
 //! Commands are read line by line from standard input (a prompt is shown
 //! only on a terminal). A mistake prints `error: …` to standard error and
@@ -12,8 +14,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use cascade_core::Model;
+use cascade_core::expr::parse_duration;
 use cascade_core::parse::grammar::parse_trigger_ref;
-use cascade_sim::{PlayAction, PlaySession, Scenario, SimError, SimRun, scenario_to_yaml};
+use cascade_sim::{PendingKind, PlayAction, PlaySession, Scenario, SimError, SimRun, scenario_to_yaml};
 
 use super::{report, step_lines, trace_text};
 
@@ -23,9 +26,13 @@ Commands:
   remove <name>                                     take an instance out of play
   fire <Source> <Machine.trigger> <target> [key=value ...]
                                                     an external source fires a trigger
-  step [n]                                          deliver the queue head, or pending item n
+  step [n] [to <consumer>]                          deliver the queue head, or pending item n
+                                                    (to one consumer of an event only)
   run                                               deliver until the queue is empty
+  wait [duration]                                   advance the clock (to the next deadline)
+  choose <option>                                   decide the next choice point offering it
   instances | pending | fires                       show instances, the queue, what can fire
+  timers | now                                      show armed timers and pending decisions, the clock
   trace | timeline | branches                       show the trace, the actions, saved branches
   seek <n>                                          move to timeline position n (0 = start)
   branch <i>                                        switch to saved branch i
@@ -97,7 +104,28 @@ fn command(model: &Model, session: &mut PlaySession, words: &[&str]) -> anyhow::
         }
         ["pending"] => {
             for (i, item) in session.pending().iter().enumerate() {
-                println!("  {i}  {}", item.label);
+                match item.kind {
+                    PendingKind::Event { .. } => {
+                        println!("  {i}  {}  (to {})", item.label, item.consumers_left.join(", "));
+                    }
+                    PendingKind::Fire { .. } | PendingKind::Timer { .. } => println!("  {i}  {}", item.label),
+                }
+            }
+        }
+        ["now"] => println!("  now {}", session.now()),
+        ["timers"] => {
+            let now = session.now();
+            for timer in session.timers() {
+                println!(
+                    "  {}  {}  at {} (in {})",
+                    timer.instance,
+                    model.trigger(timer.trigger).name,
+                    timer.deadline,
+                    timer.deadline.saturating_sub(now)
+                );
+            }
+            for decision in session.pending_decisions() {
+                println!("  decision: {decision}");
             }
         }
         ["fires"] => {
@@ -140,6 +168,7 @@ fn command(model: &Model, session: &mut PlaySession, words: &[&str]) -> anyhow::
             match session.timeline().actions.get(session.timeline().position.saturating_sub(1)) {
                 Some(PlayAction::AddInstance { name: Some(name), .. }) => println!("  added {name}"),
                 Some(PlayAction::RemoveInstance { name }) => println!("  removed {name}"),
+                Some(PlayAction::Choose { option }) => println!("  decision pending: {option}"),
                 _ => print!("{}", step_lines(model, &run_of(session), outcome.steps)),
             }
             print_pending_count(session);
@@ -172,17 +201,30 @@ fn parse_action(words: &[&str]) -> anyhow::Result<PlayAction> {
             }
         }
         ["step"] => PlayAction::Step { choice: None, consumer: None },
-        ["step", n] => PlayAction::Step {
-            choice: Some(n.parse().with_context(|| format!("`{n}` is not a queue position"))?),
-            consumer: None,
-        },
+        ["step", "to", consumer] => PlayAction::Step { choice: None, consumer: Some((*consumer).to_owned()) },
+        ["step", n] => PlayAction::Step { choice: Some(position(n)?), consumer: None },
+        ["step", n, "to", consumer] => {
+            PlayAction::Step { choice: Some(position(n)?), consumer: Some((*consumer).to_owned()) }
+        }
         ["run"] => PlayAction::RunUntilQuiet,
-        [word, ..] if ["add", "remove", "fire", "step", "seek", "rewind", "branch", "save"].contains(word) => {
+        ["wait"] => PlayAction::Advance { by: None },
+        ["wait", by] => PlayAction::Advance {
+            by: Some(parse_duration(by).map_err(|err| anyhow::anyhow!("`{by}` is not a duration: {}", err.message))?),
+        },
+        ["choose", option @ ..] if !option.is_empty() => PlayAction::Choose { option: option.join(" ") },
+        [word, ..]
+            if ["add", "remove", "fire", "step", "seek", "rewind", "branch", "save", "wait", "choose"]
+                .contains(word) =>
+        {
             bail!("wrong arguments for `{word}`; type `help` for the commands")
         }
         [word, ..] => bail!("unknown command `{word}`; type `help` for the commands"),
         [] => bail!("no command"),
     })
+}
+
+fn position(text: &str) -> anyhow::Result<u32> {
+    text.parse().with_context(|| format!("`{text}` is not a queue position"))
 }
 
 /// `key=value` words.

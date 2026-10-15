@@ -318,8 +318,9 @@ external:
     assert!(matches!(trace.steps[1].kind, TraceStepKind::Dropped { .. }));
 }
 
-/// Choices and `else` do not rule a candidate out: without a decision the
-/// first candidate is taken, as before.
+/// Choices and `else` do not rule a candidate out: they form a choice point,
+/// and without a decision the first option is taken (recorded as a defaulted
+/// `Choice` step before the transition).
 #[test]
 fn choice_guards_take_the_first_candidate() {
     let model = model(
@@ -336,7 +337,7 @@ external:
     );
     let trace =
         run(&model, "scenario: g\ninstances:\n  p: Payment\nsteps:\n  - { source: Api, fire: Payment.check }\n");
-    assert_eq!(lines(&model, &trace)[1], "p new -> review");
+    assert_eq!(lines(&model, &trace)[1..], strs(&["p choice [flagged, else] flagged default", "p new -> review"]));
 }
 
 /// A rule whose `when:` expression is false does not fire; a `?choice`

@@ -69,17 +69,16 @@ pub enum PlayAction {
     /// `consumer: None` delivers it to all of its remaining consumers;
     /// `Some(name)` only to that one (a controller, or an instance for a
     /// subscription), the item staying queued until every consumer has had
-    /// it. Not run yet: `Some(_)` is rejected as unsupported.
+    /// it; it is recorded with `choice: Some(position)`.
     Step { choice: Option<u32>, consumer: Option<String> },
     /// Deliver queue heads until the queue is empty. The session as a whole
     /// delivers at most [`crate::STEP_LIMIT`] items, like a batch run.
     RunUntilQuiet,
     /// Advance the clock: by a duration, or to the next deadline (`None`).
     /// Due timers join the queue. Nothing armed and `by: None` is an error
-    /// (`NoTimerArmed`). Not run yet: rejected as unsupported.
+    /// (`NoTimerArmed`).
     Advance { by: Option<Duration> },
     /// Push a pending decision for the next choice point that offers it.
-    /// Not run yet: rejected as unsupported.
     Choose { option: String },
 }
 
@@ -136,7 +135,8 @@ pub struct ArmedTimer {
 
 /// A canonical key of everything in a session that affects its future
 /// (instances, fields, leaves, history, the queue in order with consumers
-/// left, removed names); ids, labels and the trace are left out. Two
+/// left, armed timers relative to now, pending decisions, removed names);
+/// ids, labels, the absolute clock and the trace are left out. Two
 /// sessions with equal keys behave the same under the same future actions.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StateKey(String);
@@ -247,6 +247,7 @@ impl PlaySession {
     pub fn from_scenario(model: &Model, scenario: &Scenario) -> Result<Self, SimError> {
         let resolved = validate(model, scenario)?;
         let mut session = Self::named(scenario.name.clone());
+        // Decisions no choice point took stay pending in a session.
         drive::drive(model, &resolved, &mut Recording(&mut session))?;
         session.refresh();
         tracing::debug!(

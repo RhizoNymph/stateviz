@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 
 use cascade_core::Model;
+use cascade_core::expr::Duration;
 use cascade_core::ids::{ExternalId, MachineId, StateId, TriggerId};
 use cascade_core::model::Target;
 use cascade_core::span::{SourceSpan, Spanned};
@@ -68,7 +69,9 @@ pub(crate) struct ResolvedStep {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ResolvedEntry {
     Fire(ResolvedStep),
-    Deliver { choice: Option<u32>, span: SourceSpan },
+    Deliver { choice: Option<u32>, consumer: Option<String>, span: SourceSpan },
+    Wait { by: Option<Duration>, timing: StepTiming, span: SourceSpan },
+    Choose { option: String, span: SourceSpan },
     Run { span: SourceSpan },
     Create { instance: ResolvedInstance, span: SourceSpan },
     Remove { name: String, span: SourceSpan },
@@ -104,9 +107,10 @@ impl<'s> Known<'s> {
     }
 }
 
-/// Check `scenario` against `model`: machines, fields, starting states,
-/// sources, triggers, whether each source may fire its trigger, step
-/// targets, and created and removed instances. Every problem is reported,
+/// Check `scenario` against `model`: machines, fields and their values'
+/// declared types, starting states, sources, triggers, whether each source
+/// may fire its trigger, step targets and payload values, and created and
+/// removed instances. Every problem is reported,
 /// sorted by position.
 ///
 /// A step target that is not declared is accepted when a spawn rule could
@@ -136,14 +140,17 @@ pub fn validate(model: &Model, scenario: &Scenario) -> Result<ResolvedScenario, 
     for entry in scenario.entries() {
         let resolved = match entry {
             ScenarioEntry::Fire(step) => resolve_step(model, step, &known, &spawnable).map(ResolvedEntry::Fire),
-            ScenarioEntry::Directive(Directive::Deliver { consumer: Some(consumer), .. }) => {
-                Err(vec![(unsupported("`consumer:` on `step`"), consumer.span)])
+            ScenarioEntry::Directive(Directive::Deliver { choice, consumer, span }) => Ok(ResolvedEntry::Deliver {
+                choice: *choice,
+                consumer: consumer.as_ref().map(|c| c.value.clone()),
+                span: *span,
+            }),
+            ScenarioEntry::Directive(Directive::Wait { by, timing, span }) => {
+                Ok(ResolvedEntry::Wait { by: by.as_ref().map(|b| b.value), timing: *timing, span: *span })
             }
-            ScenarioEntry::Directive(Directive::Deliver { choice, consumer: None, span }) => {
-                Ok(ResolvedEntry::Deliver { choice: *choice, span: *span })
+            ScenarioEntry::Directive(Directive::Choose { option, span }) => {
+                Ok(ResolvedEntry::Choose { option: option.value.clone(), span: *span })
             }
-            ScenarioEntry::Directive(Directive::Wait { span, .. }) => Err(vec![(unsupported("`wait`"), *span)]),
-            ScenarioEntry::Directive(Directive::Choose { span, .. }) => Err(vec![(unsupported("`choose`"), *span)]),
             ScenarioEntry::Directive(Directive::Run { span }) => Ok(ResolvedEntry::Run { span: *span }),
             ScenarioEntry::Directive(Directive::Create(decl)) => {
                 declare(model, decl, &mut known).map(|instance| ResolvedEntry::Create { instance, span: decl.span })
@@ -164,11 +171,6 @@ pub fn validate(model: &Model, scenario: &Scenario) -> Result<ResolvedScenario, 
 }
 
 type Problems = Vec<(ScenarioErrorKind, SourceSpan)>;
-
-/// Directives the simulator does not run yet.
-fn unsupported(what: &str) -> ScenarioErrorKind {
-    ScenarioErrorKind::Unsupported { what: what.to_owned() }
-}
 
 /// A declared or created instance: its name must be new, its machine known.
 fn declare<'s>(model: &Model, decl: &'s InstanceDecl, known: &mut Known<'s>) -> Result<ResolvedInstance, Problems> {
@@ -213,6 +215,11 @@ fn resolve_instance(model: &Model, machine: MachineId, decl: &InstanceDecl) -> R
                 };
                 problems.push((kind, entry.key_span));
             }
+        }
+    }
+    for (field, entry) in decl.fields.iter() {
+        if let Some(kind) = super::check_field_value(model, machine, field, entry.value.as_str()) {
+            problems.push((kind, entry.value.span));
         }
     }
 
@@ -344,6 +351,14 @@ fn resolve_step(
         }
         (None, None) => None,
     };
+
+    if let Some(t) = trigger {
+        for (key, entry) in step.payload.iter() {
+            if let Some(kind) = super::check_payload_value(model, t, key, entry.value.as_str()) {
+                problems.push((kind, entry.value.span));
+            }
+        }
+    }
 
     match (source, trigger, target) {
         (Some(source), Some(trigger), Some(target)) if problems.is_empty() => Ok(ResolvedStep {
