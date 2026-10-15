@@ -755,6 +755,45 @@ On `feat/guard-analysis` (static-analysis.md has the details):
   unreachable-state still says "through external triggers or controller
   fires". The shop and order-fulfillment findings are unchanged.
 
+### Scene semantics as landed (wave 2, `feat/scene-semantics`)
+
+- **Scene types.** `Label::style: FontStyle { Normal, Italic }` (choices
+  and `else` italic; a label carrying a choice is italic as a whole);
+  `EdgeKind::{Notify, Delay}`; `CLOCK_GLYPH` = `◷` (U+25F7: DejaVu Sans
+  Mono and the other monospace faces carry it at one advance; `⏱` does
+  not). Backends must render `FontStyle::Italic` (SVG writes
+  `font-style="italic"`; the GPUI painter needs `.italic()`).
+- **Labels.** Pills: `from → to` over `capture` / `on Event` (+ a `where
+  …` line in filter-context canonical text) / `◷ 30s`; the pill's way out
+  carries `sets a, b`. Arrow mode: `trigger [where …] [guard] / sets a, b`.
+  Causal `Delay` edges: `◷ 30s [guard]`.
+- **Links.** Structure view (view mode): subscription links emitter pill →
+  subscriber pill as `Notify` edges labelled with the event; edit mode:
+  `Notify` wires event tag → subscribing pill. Timers get no wire. The
+  matrix counts subscription links like rule links (timers never).
+- **Cycles.** Cycles through `Notify`/`Delay` edges are drawn as back edges
+  (red) like cascade cycles; a timer that re-arms itself is a red
+  self-loop. Causal lanes keep "no leftward arrows" except back edges.
+- **Subscribe affordance.** A new `HitTarget::SubscribeHandle { event:
+  String }` (not `ConnectHandle { element: Event }`, because existing
+  scene tests pin connect handles to states, transitions, controllers and
+  sources): an `Overlay::Rect` circle (radius 4.5) on every event tag's
+  point in `SceneMode::Edit`; `Scene::hit_test`/`hit_test_arrows` return it
+  before nodes (`HitTarget::is_handle`). Drop on a transition pill
+  (`Element(Transition)`) or, in arrow mode, the arrow
+  (`ConnectHandle { element: Transition }`). The app maps it to the drag
+  source `ElementKey::Event { event }` in `build::pick::connect_source`
+  and handles `(Event, Transition)` drops; on this branch `locate.rs` only
+  got the match arms needed to compile (selects the event, not a drop
+  key). Subscribe handles are exported (connect handles are not).
+- **Play.** `PlayOverlay::timers: Vec<PlayTimer { instance, trigger:
+  ElementKey, remaining: Duration }>`, drawn as `◷ 25s` / `◷ due` chips
+  after the instance marker; the app fills it from `PlaySession::timers`
+  minus `now` (this branch sets `timers: Vec::new()` in the app).
+- **Trace.** `Notify` delivery arrow, `Wait` full-width divider
+  `◷ +30s · now 1m`, `TimerExpired` clock self-message, `Choice` note
+  `◇ chosen (default)` over `of a | b`, `SetFields` note `set f = v`.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /

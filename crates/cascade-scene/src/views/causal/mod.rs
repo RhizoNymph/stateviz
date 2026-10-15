@@ -2,9 +2,13 @@
 //! cause it?
 //!
 //! Draws the causal graph: external sources (rectangles, pinned to the
-//! first layer), transition pills with an input port West (triggers and
-//! fires arrive) and an output port East (emits leave), event tags and one
-//! controller hexagon per handler. States are hidden; pills carry both
+//! first layer), transition pills with an input port West (triggers, fires,
+//! subscriptions and timers arrive) and an output port East (emits and
+//! timer arming leave), event tags and one controller hexagon per handler.
+//! Pills say what triggers them (`capture`, `on PaymentCaptured` with its
+//! `where` filter, `◷ 30s`); `Notify` edges (event → subscribed pill) are
+//! solid in the subscriber's hue, `Delay` edges (pill → the timer pill its
+//! target state arms) short-dashed in the machine's hue with the clock. States are hidden; pills carry both
 //! endpoints. Layers run left to right from the external sources, and edges
 //! the layout reverses to break a causal cycle are drawn red.
 //!
@@ -25,15 +29,16 @@ use cascade_layout::{LayerConstraint, LayoutOptions, Port, PortSide};
 
 use crate::color::machine_styles;
 use crate::emphasis::{Anchor, Interaction};
-use crate::scene::{Arrow, EdgeKind, HitTarget, Scene, Stroke};
+use crate::scene::{Arrow, EdgeKind, FontStyle, HitTarget, Scene, Stroke};
 use crate::view_state::ViewKind;
 use crate::views::cache::LayoutCache;
 use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{DraftEdge, DraftGraph, DraftNode, EdgeText, Meta, RealizeCtx, realize};
 use crate::views::filters::{apply_hide, hidden_machines, machine_pair, pair_nodes};
+use crate::views::labels;
 use crate::views::links::cycle_edges;
 use crate::views::overlays::{Placement, PlayDecor};
-use crate::views::style::{Painter, bracketed};
+use crate::views::style::Painter;
 use crate::views::{SceneError, SceneInput};
 use lanes::{LaneGroups, LaneOf, LaneRules};
 
@@ -116,6 +121,11 @@ pub(super) fn build(
     for (e, edge) in graph.edges() {
         let (Some(from), Some(to)) = (slot[edge.from.index()], slot[edge.to.index()]) else { continue };
         let (kind, stroke, target, elements, label) = link_style(input, &painter, edge.kind, edge.to);
+        // A link inside a hidden machine (a timer's `Delay` between two of
+        // its transitions) stays hidden with it.
+        if from == to && stub_slots.contains(&from) {
+            continue;
+        }
         if stub_slots.contains(&from) || stub_slots.contains(&to) {
             let at = *stub_link_at.entry((from, to, kind)).or_insert_with(|| {
                 stub_links.push(StubLink {
@@ -139,13 +149,19 @@ pub(super) fn build(
         }
         draft.edges.push(DraftEdge {
             from,
-            from_port: (kind == EdgeKind::Emit).then_some(PORT_OUT),
+            from_port: matches!(kind, EdgeKind::Emit | EdgeKind::Delay).then_some(PORT_OUT),
             to,
-            to_port: matches!(kind, EdgeKind::Trigger | EdgeKind::Fire).then_some(PORT_IN),
+            to_port: matches!(kind, EdgeKind::Trigger | EdgeKind::Fire | EdgeKind::Notify | EdgeKind::Delay)
+                .then_some(PORT_IN),
             kind,
             stroke,
             arrow: Arrow::End,
-            label: label.map(|text| EdgeText { text, font_size: theme.small_font_size, color: theme.text }),
+            label: label.map(|(text, style)| EdgeText {
+                text,
+                font_size: theme.small_font_size,
+                color: theme.text,
+                style,
+            }),
             target,
             meta: Meta::new(elements, Anchor::Chains(vec![vec![e]])),
             on_cycle: on_cycle[e.index()],
@@ -176,6 +192,7 @@ pub(super) fn build(
                 text: format!("×{count}"),
                 font_size: theme.small_font_size,
                 color: theme.text_muted,
+                style: FontStyle::Normal,
             }),
             target: link.target,
             meta: Meta::new(link.elements, Anchor::Chains(link.edges.into_iter().map(|e| vec![e]).collect())),
@@ -252,8 +269,10 @@ fn causal_node(
             } else {
                 model.transition_label(t)
             };
+            let details =
+                std::iter::once(labels::trigger_line(model, tr.trigger)).chain(labels::filter_line(tr)).collect();
             (
-                painter.pill(label, model.trigger(tr.trigger).name.clone(), painter.machine(tr.machine)),
+                painter.pill_lines(label, details, painter.machine(tr.machine)),
                 LayerConstraint::Free,
                 vec![Port { side: PortSide::West }, Port { side: PortSide::East }],
                 Meta::new(vec![element], Anchor::Nodes(vec![ix])),
@@ -297,18 +316,20 @@ fn stub_node(input: &SceneInput<'_>, painter: &Painter<'_>, machine: MachineId) 
     }
 }
 
-/// Kind, stroke, hit target, elements and label of one causal edge.
+/// Kind, stroke, hit target, elements and label (with its style) of one
+/// causal edge.
 fn link_style(
     input: &SceneInput<'_>,
     painter: &Painter<'_>,
     kind: CausalEdgeKind,
     to: NodeIx,
-) -> (EdgeKind, Stroke, HitTarget, Vec<ElementRef>, Option<String>) {
+) -> (EdgeKind, Stroke, HitTarget, Vec<ElementRef>, Option<(String, FontStyle)>) {
     let model = input.model;
     let guard_of = |node: NodeIx| match input.graph.node(node) {
-        CausalNode::Transition(t) => model.transition(t).guard.as_ref().map(ToString::to_string),
+        CausalNode::Transition(t) => model.transition(t).guard.as_ref(),
         _ => None,
     };
+    let machine_of = |trigger| painter.machine(model.trigger(trigger).machine);
     match kind {
         CausalEdgeKind::Trigger { trigger } => {
             let el = ElementRef::Trigger(trigger);
@@ -317,52 +338,54 @@ fn link_style(
                 painter.trigger_stroke(),
                 HitTarget::Element(model.key_of(el)),
                 vec![el],
-                bracketed(guard_of(to).as_deref()),
+                labels::guard_label(guard_of(to)),
             )
         }
         CausalEdgeKind::Emit => (EdgeKind::Emit, painter.emit_stroke(), HitTarget::None, Vec::new(), None),
         CausalEdgeKind::Subscribe => {
             (EdgeKind::Subscribe, painter.subscribe_stroke(), HitTarget::None, Vec::new(), None)
         }
-        // Subscriptions and timers get their own look in a later change;
-        // until then they draw like subscribe and trigger links.
         CausalEdgeKind::Notify { trigger } => {
             let el = ElementRef::Trigger(trigger);
             (
-                EdgeKind::Subscribe,
-                painter.subscribe_stroke(),
+                EdgeKind::Notify,
+                painter.notify_stroke(machine_of(trigger)),
                 HitTarget::Element(model.key_of(el)),
                 vec![el],
-                bracketed(guard_of(to).as_deref()),
+                labels::guard_label(guard_of(to)),
             )
         }
         CausalEdgeKind::Delay { trigger } => {
             let el = ElementRef::Trigger(trigger);
+            let clock = labels::trigger_line(model, trigger);
+            let label = match labels::guard_label(guard_of(to)) {
+                Some((guard, style)) => (format!("{clock} {guard}"), style),
+                None => (clock, FontStyle::Normal),
+            };
             (
-                EdgeKind::Trigger,
-                painter.trigger_stroke(),
+                EdgeKind::Delay,
+                painter.delay_stroke(machine_of(trigger)),
                 HitTarget::Element(model.key_of(el)),
                 vec![el],
-                Some(model.trigger(trigger).name.clone()),
+                Some(label),
             )
         }
         CausalEdgeKind::Fire { rule } => {
             let el = ElementRef::Rule(rule);
             let r = model.rule(rule);
             let target_machine = model.trigger(r.trigger).machine;
-            let parts: Vec<String> = [
-                bracketed(r.condition.as_ref().map(ToString::to_string).as_deref()),
-                bracketed(guard_of(to).as_deref()),
-            ]
-            .into_iter()
-            .flatten()
-            .collect();
+            let condition = r.condition.as_ref();
+            let guard = guard_of(to);
+            let parts: Vec<String> =
+                [condition.map(|c| format!("[{c}]")), guard.map(|g| format!("[{g}]"))].into_iter().flatten().collect();
+            let choice =
+                condition.is_some_and(labels::condition_is_choice) || guard.is_some_and(labels::guard_is_choice);
             (
                 EdgeKind::Fire,
                 painter.fire_stroke(painter.machine(target_machine)),
                 HitTarget::Element(model.key_of(el)),
                 vec![el],
-                (!parts.is_empty()).then(|| parts.join(" ")),
+                (!parts.is_empty()).then(|| (parts.join(" "), labels::style_for(choice))),
             )
         }
     }

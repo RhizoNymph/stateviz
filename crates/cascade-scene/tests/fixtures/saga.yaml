@@ -1,0 +1,34 @@
+# A small checkout saga: Order and Payment talk through machine
+# subscriptions and timers; one controller sends the receipt.
+machines:
+  Order:
+    fields: { orderId: string, paidBy: string }
+    states: [cart, placed, confirmed, cancelled]
+    transitions:
+      - { from: cart, to: placed, on: checkout, emits: [OrderPlaced] }
+      - from: placed
+        to: confirmed
+        on: { event: PaymentCaptured, where: "orderId == event.orderId" }
+        sets: { paidBy: event.method }
+        emits: [OrderConfirmed]
+      - { from: placed, to: cancelled, on: { event: PaymentFailed, where: "orderId == event.orderId" } }
+      - { from: placed, to: cancelled, after: 30m }
+  Payment:
+    fields: { orderId: string, method: string }
+    states: [idle, charging, captured, failed]
+    transitions:
+      - { from: idle, to: charging, on: { event: OrderPlaced }, sets: { orderId: event.orderId } }
+      - { from: charging, to: captured, on: settle, guard: "?card accepted", emits: [PaymentCaptured] }
+      - { from: charging, to: failed, on: settle, guard: else, emits: [PaymentFailed] }
+      - { from: charging, to: charging, after: 10s, guard: "self.method == card" }
+  Receipt:
+    states: [none, sent]
+    transitions:
+      - { from: none, to: sent, on: send }
+controllers:
+  Mailer:
+    on:
+      OrderConfirmed: [{ fire: Receipt.send }]
+external:
+  Shopper: [Order.checkout]
+  Bank: [Payment.settle]

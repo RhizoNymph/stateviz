@@ -5,6 +5,7 @@
 //! not depend on which `Model` instance the host holds.
 
 use cascade_core::ElementKey;
+use cascade_core::expr::Duration;
 
 /// What the canvas is for.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -39,4 +40,19 @@ pub struct PlayOverlay {
     /// Elements waiting in the queue (events and the rules of queued fires),
     /// in queue order: drawn as pending; the head is marked.
     pub pending: Vec<ElementKey>,
+    /// Armed timers, drawn as a clock chip with the time left next to their
+    /// instance's marker (an instance without a marker shows none).
+    pub timers: Vec<PlayTimer>,
+}
+
+/// One armed timer of a play session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlayTimer {
+    /// Instance name, matching a [`PlayMarker::instance`].
+    pub instance: String,
+    /// `ElementKey::Trigger` of the timer trigger (`after-30s`).
+    pub trigger: ElementKey,
+    /// Time left until the deadline (deadline minus the session's `now`);
+    /// zero when due.
+    pub remaining: Duration,
 }

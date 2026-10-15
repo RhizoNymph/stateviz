@@ -180,10 +180,14 @@ fn no_path_note(model: &Model, a: ElementRef, b: ElementRef) -> String {
     let head = format!("No causal path between {} and {}", model.label_of(a), model.label_of(b));
     match (model.machine_of(a), model.machine_of(b)) {
         (Some(x), Some(y)) if x == y => format!(
-            "{head}: transitions within one machine don't cause each other. A transition causes another only by \
-             emitting an event that a controller handles by firing the next one."
+            "{head}: within one machine, a transition causes another only by entering the state that arms its \
+             timer, or by emitting an event that the machine subscribes to or that a controller handles by firing \
+             the next one."
         ),
-        _ => format!("{head}: causality runs from a transition's emitted event through a controller's fire."),
+        _ => format!(
+            "{head}: causality runs from a transition's emitted event through a controller's fire or a machine \
+             that subscribes to it."
+        ),
     }
 }
 

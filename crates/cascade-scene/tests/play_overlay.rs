@@ -52,6 +52,7 @@ fn overlay(markers: Vec<cascade_scene::PlayMarker>, active: &[&str], pending: &[
         markers,
         active: active.iter().map(|s| k(s)).collect(),
         pending: pending.iter().map(|s| k(s)).collect(),
+        timers: Vec::new(),
     }
 }
 

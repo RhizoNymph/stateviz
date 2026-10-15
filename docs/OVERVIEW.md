@@ -37,7 +37,8 @@ Overview:
       Model + view state → Scene, a backend-neutral display list with hit
       targets, for all four views. Owns the visual encoding (Okabe-Ito hues,
       shapes, dashes, emphasis/dimming, badges, diff decorations, edit-mode
-      wiring and connect handles, play markers and highlights), the
+      wiring, connect and subscribe handles, play markers, timers and
+      highlights; trigger kinds, choices in italics, Notify/Delay edges), the
       cascade:// view link format, the pins sidecar, and SVG/PNG export.
     cascade-interop: >
       XState v5 and SCXML import through a shared statechart IR (names
@@ -160,8 +161,8 @@ Features Index:
     depends_on: [simulator, definition_format, expressions]
     doc: docs/features/timers-and-subscriptions.md
   view_scenes:
-    description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles); arrow mode (`pills=0`: the structure view draws each transition as one labelled state → state arrow through an invisible layout junction, wires attaching to the arrow with a dot) and play overlays (instance markers, active and pending items).
-    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::ViewState::transition_pills, cascade_scene::Scene::hit_test_arrows, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
+    description: Scene builders for the causal, structure, trace and matrix views; causal lanes (group by machine, `lanes=1`: one lane per machine on shared causal columns, every forward arrow pointing right); the interaction model (selection, cones, path queries, search, hide stubs); layout caching; view links; pins sidecar; SVG/PNG export; build-mode drawing (the structure view's wiring in gutters between the lanes, and connect handles); arrow mode (`pills=0`: the structure view draws each transition as one labelled state → state arrow through an invisible layout junction, wires attaching to the arrow with a dot) and play overlays (instance markers, armed timers, active and pending items). Subscriptions, timers, choices and `sets` are drawn in every view: pills/arrows say what triggers them (`capture`, `on Event` + `where`, `◷ 30s`), choice guards are italic, `Notify` (event → subscribed transition) and `Delay` (transition → timer it arms) edges, subscription links across lanes and as build-canvas wires with a subscribe handle on every event tag, the five new trace step kinds, and the matrix counting subscriptions as links.
+    entry_points: [cascade_scene::SceneBuilder::build, cascade_scene::HitTarget::SubscribeHandle, cascade_scene::PlayTimer, cascade_scene::emphasis::Interaction, cascade_scene::ViewState::to_link, cascade_scene::ViewState::group_by_machine, cascade_scene::ViewState::transition_pills, cascade_scene::Scene::hit_test_arrows, cascade_scene::to_svg, cascade_scene::to_png, cascade render]
     depends_on: [definition_format, causal_graph, static_analysis, layered_layout, simulator]
     doc: docs/features/view-scenes.md
   interop_and_diff:

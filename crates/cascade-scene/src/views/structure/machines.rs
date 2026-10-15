@@ -8,8 +8,9 @@ use cascade_core::{CausalGraph, ElementKey, ElementRef, MachineId, Model, StateI
 use cascade_layout::{Insets, LayerConstraint, Port, PortSide};
 
 use crate::emphasis::Anchor;
-use crate::scene::{Arrow, EdgeKind, HitTarget};
+use crate::scene::{Arrow, EdgeKind, FontStyle, HitTarget};
 use crate::views::draft::{DraftEdge, DraftGraph, DraftGroup, DraftNode, EdgeText, Meta, standard_ports};
+use crate::views::labels;
 use crate::views::style::{Painter, StateMark, bracketed};
 
 /// Pill ports (see `draft::standard_ports`): state → pill enters West,
@@ -264,15 +265,18 @@ impl Drafter<'_> {
             let group = common_scope(model, rf, rt).and_then(|p| band_of.get(&p).copied()).unwrap_or(top);
             let key = model.key_of(ElementRef::Transition(t));
             let meta = Meta::new(vec![ElementRef::Transition(t)], Anchor::Nodes(causal));
-            let trigger = model.trigger(tr.trigger).name.clone();
-            // A pill reads `from → to` over the trigger and its arrow in
-            // carries the guard; an arrow carries both on its way in, and
-            // its junction stands where the pill would be.
-            let (look, label_in) = if self.pills {
+            // A pill reads `from → to` over what triggers it (and a
+            // subscription's filter); its way in carries the guard and its
+            // way out the `sets`. An arrow carries everything on its way in,
+            // and its junction stands where the pill would be.
+            let (look, label_in, label_out) = if self.pills {
                 let label = format!("{} → {}", model.state(tr.from).path, model.state(tr.to).path);
-                (painter.pill(label, trigger, style), bracketed(tr.guard.as_ref().map(ToString::to_string).as_deref()))
+                let details =
+                    std::iter::once(labels::trigger_line(model, tr.trigger)).chain(labels::filter_line(tr)).collect();
+                let sets = labels::sets_label(&tr.sets).map(|text| (text, FontStyle::Normal));
+                (painter.pill_lines(label, details, style), labels::guard_label(tr.guard.as_ref()), sets)
             } else {
-                (painter.junction(), Some(arrow_label(&trigger, tr.guard.as_ref().map(ToString::to_string).as_deref())))
+                (painter.junction(), Some(arrow_text(model, tr)), None)
             };
             let pill = draft.add_node(DraftNode {
                 key: key.to_string(),
@@ -283,7 +287,7 @@ impl Drafter<'_> {
                 target: HitTarget::Element(key.clone()),
                 meta: meta.clone(),
             });
-            let arrow = |from, from_port, to, to_port, arrow, label: Option<String>| DraftEdge {
+            let arrow = |from, from_port, to, to_port, arrow, label: Option<(String, FontStyle)>| DraftEdge {
                 from,
                 from_port,
                 to,
@@ -291,13 +295,18 @@ impl Drafter<'_> {
                 kind: EdgeKind::Transition,
                 stroke: painter.transition_stroke(style),
                 arrow,
-                label: label.map(|text| EdgeText { text, font_size: theme.small_font_size, color: theme.text }),
+                label: label.map(|(text, style)| EdgeText {
+                    text,
+                    font_size: theme.small_font_size,
+                    color: theme.text,
+                    style,
+                }),
                 target: HitTarget::Element(key.clone()),
                 meta: meta.clone(),
                 on_cycle: false,
             };
             draft.edges.push(arrow(a, None, pill, Some(PORT_WEST), Arrow::None, label_in));
-            draft.edges.push(arrow(pill, Some(PORT_EAST), b, None, Arrow::End, None));
+            draft.edges.push(arrow(pill, Some(PORT_EAST), b, None, Arrow::End, label_out));
             let column = columns.pill(model, rf, group);
             endpoints[t.index()] = Some(Endpoint { node: pill, kind: EndKind::Pill, column });
         }
@@ -380,6 +389,24 @@ impl Columns {
 fn common_scope(model: &Model, a: StateId, b: StateId) -> Option<StateId> {
     let above_b: Vec<StateId> = model.ancestors(b).collect();
     model.ancestors(a).find(|s| above_b.contains(s))
+}
+
+/// An arrow-mode transition's one label: what triggers it (with a
+/// subscription's filter), its guard, then `/ sets …`
+/// (`on PaymentCaptured where orderId == event.orderId / sets paidBy`,
+/// `settle [?card accepted]`), italic when the guard is a choice.
+fn arrow_text(model: &Model, tr: &cascade_core::model::Transition) -> (String, FontStyle) {
+    let mut head = labels::trigger_line(model, tr.trigger);
+    if let Some(filter) = labels::filter_line(tr) {
+        head.push(' ');
+        head.push_str(&filter);
+    }
+    let mut text = arrow_label(&head, tr.guard.as_ref().map(ToString::to_string).as_deref());
+    if let Some(sets) = labels::sets_label(&tr.sets) {
+        text.push_str(" / ");
+        text.push_str(&sets);
+    }
+    (text, labels::style_for(tr.guard.as_ref().is_some_and(labels::guard_is_choice)))
 }
 
 /// An arrow's label: the trigger, then ` [guard]` when there is one.

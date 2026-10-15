@@ -42,6 +42,7 @@ pub fn target_key(target: &HitTarget, model: &Model, traces: &[Trace]) -> Option
     match target {
         HitTarget::None | HitTarget::MatrixCell { .. } => None,
         HitTarget::ConnectHandle { element } => Some(element.clone()),
+        HitTarget::SubscribeHandle { event } => Some(ElementKey::Event { event: event.clone() }),
         HitTarget::Element(key) => Some(key.clone()),
         HitTarget::MachineStub { machine, .. } => Some(ElementKey::Machine { machine: machine.clone() }),
         HitTarget::TraceStep { ordering, step } => {
@@ -63,6 +64,7 @@ pub fn drop_key(target: &HitTarget) -> Option<&ElementKey> {
     match target {
         HitTarget::Element(key) | HitTarget::ConnectHandle { element: key } => Some(key),
         HitTarget::None
+        | HitTarget::SubscribeHandle { .. }
         | HitTarget::MachineStub { .. }
         | HitTarget::MatrixCell { .. }
         | HitTarget::TraceStep { .. }
