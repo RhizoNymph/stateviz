@@ -105,10 +105,13 @@ Features Index:
   static_analysis:
     description: >
       The seven checks (dead external triggers count as invalid fires) plus
-      state-dependent fire notes, sorted deterministically; `cascade check`
-      for CI with text/JSON reports and exit codes; the pinned shop example.
+      state-dependent fire and uncovered-guard notes, sorted
+      deterministically. Guards, filters and rule conditions are compared
+      with the expression solver (overlap/coverage); subscriptions and timers
+      take part in races, reachability and cycles. `cascade check` for CI
+      with text/JSON reports and exit codes; the pinned shop example.
     entry_points: [cascade_core::analyze, cascade_core::analysis::has_errors, cascade check]
-    depends_on: [definition_format, causal_graph]
+    depends_on: [definition_format, causal_graph, expressions]
     doc: docs/features/static-analysis.md
   layered_layout:
     description: >

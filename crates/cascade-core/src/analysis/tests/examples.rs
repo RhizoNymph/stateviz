@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::analysis::Check::{
-    CascadeCycle, InvalidFire, Nondeterminism, OrphanController, RaceCandidate, StateDependentFire, UnhandledEvent,
-    UnreachableState,
+    CascadeCycle, InvalidFire, Nondeterminism, OrphanController, RaceCandidate, StateDependentFire, UncoveredGuard,
+    UnhandledEvent, UnreachableState,
 };
 use crate::analysis::Severity::{Error, Info, Warning};
 
@@ -62,7 +62,10 @@ fn shop_findings_are_exactly_the_planted_ones() {
 #[test]
 fn shop_exercises_every_check() {
     let (_, findings) = run(SHOP);
-    for check in Check::ALL {
+    // The shop has no expression guards (its guards are `?choices`), so the
+    // semantics-phase uncovered-guard note cannot fire there; its own tests
+    // (`tests/uncovered.rs`) exercise it.
+    for check in Check::ALL.into_iter().filter(|&c| c != UncoveredGuard) {
         assert!(findings.iter().any(|f| f.check() == check), "no {check} finding in the shop example");
     }
     assert!(findings.iter().any(|f| matches!(f.detail, FindingDetail::DeadExternalTrigger { .. })));
