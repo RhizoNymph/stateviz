@@ -60,17 +60,19 @@ pub fn hit(scene: &Scene, p: Point, zoom: f32, picking: Picking) -> Option<HitTa
 }
 
 /// The element a press on `target` starts a connect drag from: a connect
-/// handle of a drag source, pressed in Build mode without modifiers.
-/// Anything else is an ordinary press (click, pin drag or pan).
+/// handle of a drag source, or an event tag's subscribe handle (the event),
+/// pressed in Build mode without modifiers. Anything else is an ordinary
+/// press (click, pin drag or pan).
 pub fn connect_source(target: Option<&HitTarget>, mode: AppMode, mods: Mods) -> Option<ElementKey> {
-    match target {
-        Some(HitTarget::ConnectHandle { element })
-            if mode == AppMode::Build && connect::is_source(element) && !mods.any() =>
-        {
-            Some(element.clone())
-        }
-        _ => None,
+    if mode != AppMode::Build || mods.any() {
+        return None;
     }
+    let element = match target? {
+        HitTarget::ConnectHandle { element } => element.clone(),
+        HitTarget::SubscribeHandle { event } => ElementKey::Event { event: event.clone() },
+        _ => return None,
+    };
+    connect::is_source(&element).then_some(element)
 }
 
 #[cfg(test)]
@@ -261,5 +263,72 @@ external:
             if external == "Clock" && triggers.len() == 2));
         // Beyond the arrow pick: nothing to drop on.
         assert_eq!(hit(&scene, Point::new(150.0, 180.0), 1.0, Picking::Arrows), None);
+    }
+    /// An event tag's subscribe handle, as the scene draws it in Build mode.
+    fn subscribe_handle(event: &str, rect: Rect) -> cascade_scene::Overlay {
+        cascade_scene::Overlay::Rect {
+            rect,
+            fill: None,
+            stroke: None,
+            radius: rect.size.width / 2.0,
+            opacity: 1.0,
+            layer: cascade_scene::Layer::Over,
+            target: HitTarget::SubscribeHandle { event: event.into() },
+        }
+    }
+
+    #[test]
+    fn pressing_a_subscribe_handle_starts_a_connect_drag_from_its_event() {
+        let handle = HitTarget::SubscribeHandle { event: "PayDone".into() };
+        let event = key("event:PayDone");
+        assert_eq!(connect_source(Some(&handle), AppMode::Build, Mods::default()), Some(event));
+        assert_eq!(connect_source(Some(&handle), AppMode::View, Mods::default()), None);
+        assert_eq!(connect_source(Some(&handle), AppMode::Play, Mods::default()), None);
+        let shift = Mods { shift: true, ..Mods::default() };
+        assert_eq!(connect_source(Some(&handle), AppMode::Build, shift), None, "modifiers never connect");
+    }
+
+    #[test]
+    fn dragging_an_event_tag_onto_an_arrow_offers_to_subscribe_its_transition() {
+        let mut scene = canvas();
+        scene.nodes.push(node(key("event:PayDone"), Rect::new(220.0, 90.0, 60.0, 20.0)));
+        scene.overlays.push(subscribe_handle("PayDone", Rect::new(276.0, 96.0, 8.0, 8.0)));
+        // The handle wins over the tag it sits on.
+        let target = hit(&scene, Point::new(280.0, 100.0), 1.0, Picking::Arrows);
+        assert_eq!(target, Some(HitTarget::SubscribeHandle { event: "PayDone".into() }));
+        let from = connect_source(target.as_ref(), AppMode::Build, Mods::default()).expect("a connect source");
+
+        let mut gesture = Gesture::press_handle(at(280.0, 100.0), from, Mods::default(), 1);
+        gesture.moved(at(150.0, 195.0), 1.0);
+        let ReleaseOutcome::Connect { from, .. } = gesture.release() else { panic!("a connect drag") };
+        assert_eq!(from, key("event:PayDone"));
+        // Dropped on Shipment's `start` arrow: the transition subscribes,
+        // and Fulfil (which handles PayDone) could fire it instead.
+        let dropped = hit(&scene, Point::new(150.0, 195.0), 1.0, Picking::Arrows);
+        let to = dropped.as_ref().and_then(drop_key).expect("a drop target");
+        assert_eq!(to, start());
+        assert!(connect::can_connect(&from, &to));
+        let offers = connect::offers(&def(), &from, &to).expect("plans");
+        assert_eq!(offers.len(), 2);
+        assert!(matches!(&offers[0].op, EditOp::UpdateTransition { machine, transition, .. }
+            if machine == "Shipment"
+                && matches!(&transition.trigger, cascade_core::definition::TriggerSpec::Event { event, filter: None }
+                    if event.value == "PayDone")));
+        assert!(matches!(&offers[1].op, EditOp::AddRule { controller, .. } if controller == "Fulfil"));
+    }
+
+    #[test]
+    fn a_drop_on_an_event_tag_or_its_handle_targets_the_event() {
+        let mut scene = canvas();
+        scene.nodes.push(node(key("event:PayDone"), Rect::new(220.0, 90.0, 60.0, 20.0)));
+        scene.overlays.push(subscribe_handle("PayDone", Rect::new(276.0, 96.0, 8.0, 8.0)));
+        for p in [Point::new(240.0, 100.0), Point::new(280.0, 100.0)] {
+            let dropped = hit(&scene, p, 1.0, Picking::Arrows);
+            assert_eq!(dropped.as_ref().and_then(drop_key), Some(key("event:PayDone")), "at {p:?}");
+        }
+        // Order's `pay` transition → the event: it also emits PayDone.
+        let planned = connect::connect(&def(), &pay(), &key("event:PayDone")).expect("plans");
+        assert!(matches!(planned.op, EditOp::UpdateTransition { ref transition, .. }
+            if transition.emits.iter().any(|e| e.event.value == "PayDone")));
     }
 }

@@ -298,6 +298,13 @@ Gestures (`gesture::Gesture::press_handle`, `build::connect`):
 | event handle | transition | offers: subscribe (`UpdateTransition`, trigger `on: { event }`), then a rule from each controller handling the event (command triggers only) |
 | transition handle | transition of another machine | the same offers for each event the first transition emits; emitting nothing, one `Batch`: declare `<Trigger>Done` (strict files), emit it, subscribe to it |
 
+An event tag's handle is the scene's `HitTarget::SubscribeHandle { event }`
+(not a `ConnectHandle`): `build::pick::connect_source` maps a press on it
+to `ElementKey::Event { event }`, and `locate::drop_key` maps a drop on it
+to the same key, so a drag from a tag onto a transition pill (or, with
+arrows, onto a transition arrow's `ConnectHandle`) reaches the
+`(event, transition)` subscribe offers above.
+
 Most drops make one edit and commit at once. A drop that can make several
 (`build::connect::offers`, `build::subscribe`) lists them in a row under
 the build bar, the preferred one (subscribe) highlighted; clicking one
