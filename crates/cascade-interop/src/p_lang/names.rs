@@ -14,6 +14,8 @@ use std::collections::HashSet;
 use cascade_core::model::StateKind;
 use cascade_core::{ControllerId, EventId, MachineId, Model, StateId, TriggerId};
 
+use super::fields::{PField, PKind, kinds};
+
 pub(super) const REGISTRY_TYPE: &str = "tRegistry";
 pub(super) const WIRE_EVENT: &str = "eWire";
 pub(super) const DRIVER: &str = "TestDriver";
@@ -147,11 +149,14 @@ pub(super) struct Names {
     events: Vec<String>,
     /// The named-tuple payload type, for events with a declared payload.
     payload_types: Vec<Option<String>>,
-    payload_fields: Vec<Vec<String>>,
     /// The P event that delivers each trigger: `e<Machine>_<trigger>`.
     triggers: Vec<String>,
     /// Only atomic and final states become P states.
     states: Vec<Option<String>>,
+    /// Declared payload fields with their P kinds, per event.
+    payload_kinds: Vec<Vec<PField>>,
+    /// Declared instance fields as P machine variables, per machine.
+    machine_fields: Vec<Vec<PField>>,
 }
 
 impl Names {
@@ -174,7 +179,7 @@ impl Names {
             } else {
                 payload_types.push(Some(global.allocate(&format!("t{name}"))));
                 let mut fields = Idents::default();
-                payload_fields.push(event.payload.iter().map(|f| fields.allocate(&f.name)).collect());
+                payload_fields.push(event.payload.iter().map(|f| fields.allocate(&f.name)).collect::<Vec<_>>());
             }
             events.push(name);
         }
@@ -187,8 +192,16 @@ impl Names {
             })
             .collect();
 
+        let payload_kinds = model
+            .events()
+            .zip(&payload_fields)
+            .zip(&events)
+            .map(|(((_, event), idents), name)| kinds(&event.payload, idents, name, &mut global))
+            .collect();
+
         let mut states = vec![None; model.state_count()];
-        for (_, machine) in model.machines() {
+        let mut machine_fields = Vec::with_capacity(model.machine_count());
+        for (mid, machine) in model.machines() {
             let mut local = Idents::default();
             // States share the machine scope with its `registry` variable.
             local.reserve(WIRING_STATE);
@@ -199,9 +212,13 @@ impl Names {
                     states[s.index()] = Some(local.allocate(&state.path.replace('.', "_")));
                 }
             }
+            // Variables after the states, so state names never change.
+            let idents: Vec<String> = machine.fields.iter().map(|f| local.allocate(&f.name)).collect();
+            let owner = machines.get(mid.index()).cloned().unwrap_or_default();
+            machine_fields.push(kinds(&machine.fields, &idents, &owner, &mut global));
         }
 
-        Self { machines, controllers, events, payload_types, payload_fields, triggers, states }
+        Self { machines, controllers, events, payload_types, triggers, states, payload_kinds, machine_fields }
     }
 
     pub(super) fn machine(&self, id: MachineId) -> &str {
@@ -220,12 +237,33 @@ impl Names {
         self.payload_types.get(id.index()).and_then(|t| t.as_deref())
     }
 
-    pub(super) fn payload_fields(&self, id: EventId) -> &[String] {
-        self.payload_fields.get(id.index()).map_or(&[], Vec::as_slice)
-    }
-
     pub(super) fn trigger(&self, id: TriggerId) -> &str {
         self.triggers.get(id.index()).map_or("", String::as_str)
+    }
+
+    /// An event's payload fields with their P kinds (empty when undeclared).
+    pub(super) fn payload_kinds(&self, id: EventId) -> &[PField] {
+        self.payload_kinds.get(id.index()).map_or(&[], Vec::as_slice)
+    }
+
+    /// A machine's declared fields as P variables.
+    pub(super) fn machine_fields(&self, id: MachineId) -> &[PField] {
+        self.machine_fields.get(id.index()).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every enum type: its name and member identifiers, machines first.
+    pub(super) fn enums(&self) -> Vec<(&str, Vec<&str>)> {
+        self.machine_fields
+            .iter()
+            .chain(&self.payload_kinds)
+            .flatten()
+            .filter_map(|f| match &f.kind {
+                PKind::Enum { name, members } => {
+                    Some((name.as_str(), members.iter().map(|(_, i)| i.as_str()).collect()))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The P state for an atomic or final state; `None` for compound and
