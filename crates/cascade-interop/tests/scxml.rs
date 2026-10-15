@@ -49,7 +49,7 @@ fn transition<'m>(model: &'m Model, key: &str) -> &'m cascade_core::model::Trans
 }
 
 fn emits(model: &Model, key: &str) -> Vec<String> {
-    transition(model, key).emits.iter().map(|&e| model.event(e).name.clone()).collect()
+    transition(model, key).emits.iter().map(|e| model.event(e.event).name.clone()).collect()
 }
 
 /// Export, import, and check the model survived.
@@ -85,10 +85,10 @@ machines:
       - paid: { kind: final }
       - cancelled
     transitions:
-      - { from: draft, to: pending, on: submit, guard: "amount > 0 && x < \"y\"", emits: [OrderSubmitted] }
+      - { from: draft, to: pending, on: submit, guard: "?amount > 0 && x < \"y\"", emits: [OrderSubmitted] }
       - { from: [draft, pending.waiting], to: cancelled, on: cancel }
       - { from: pending, to: paid, on: capture_ok, emits: [OrderPaid, Audit], bounded: true }
-      - { from: pending, to: paid, on: capture_ok, guard: "line one\nline two" }
+      - { from: pending, to: paid, on: capture_ok, guard: "?line one\nline two" }
       - { from: pending.authorizing, to: pending.hist, on: interrupt }
       - { from: cancelled, to: cancelled, on: poke }
   Shipment:
@@ -110,7 +110,7 @@ controllers:
       OrderPaid:
         - fire: Shipment.start
           target: Shipment where orderId == event.orderId
-          when: not a <gift> card
+          when: "?not a <gift> card"
         - fire: Shipment.start
           target: all Shipment where orderId == "A, B"
           bounded: true
@@ -146,13 +146,13 @@ fn export_uses_a_parallel_region_per_machine_and_controller() {
         r#"<final id="Order.paid"/>"#,
         r#"<transition event="Order.capture_ok" target="Order.paid" cascade:bounded="true">"#,
         r#"<send event="OrderPaid"/>"#,
-        r#"cond="amount &gt; 0 &amp;&amp; x &lt; &quot;y&quot;""#,
-        r#"cond="line one&#10;line two""#,
+        r#"cond="?amount &gt; 0 &amp;&amp; x &lt; &quot;y&quot;""#,
+        r#"cond="?line one&#10;line two""#,
         r#"<cascade:event name="OrderPaid" payload="orderId amount"/>"#,
         r#"<cascade:source name="Nobody" fires=""/>"#,
         r#"<cascade:source name="Customer" fires="Order.submit Order.cancel"/>"#,
         r#"<state id="Fulfillment" cascade:controller="Fulfillment">"#,
-        r#"<if cond="not a &lt;gift&gt; card">"#,
+        r#"<if cond="?not a &lt;gift&gt; card">"#,
         r#"<send event="Shipment.start" cascade:target="all Shipment where orderId == &quot;A, B&quot;" cascade:bounded="true"/>"#,
         r#"<transition event="Audit"/>"#,
         // A controller named like a machine gets a distinct region id.
@@ -243,8 +243,12 @@ fn microwave_fixture_maps_generic_scxml() {
     // Dotted event names become valid trigger names.
     assert!(has(&model, "transition:microwave:off->on@turn_on"));
     assert_eq!(
-        transition(&model, "transition:microwave:on.idle->on.cooking@door_close").guard.as_deref(),
-        Some("timer < cook_time")
+        transition(&model, "transition:microwave:on.idle->on.cooking@door_close")
+            .guard
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("?timer < cook_time")
     );
     // onentry/onexit sends and raises are attributed in execution order.
     assert_eq!(emits(&model, "transition:microwave:off->on@turn_on"), ["display_on"]);

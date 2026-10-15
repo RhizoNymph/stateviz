@@ -4,8 +4,9 @@
 mod common;
 
 use cascade_core::definition::{
-    Definition, EventDef, MachineDef, StateDef, StateKindDef, TargetMode, TargetSpec, TransitionDef, ValueExpr,
+    Definition, EventDef, FieldDef, MachineDef, StateDef, StateKindDef, TargetSpec, TransitionDef, TriggerSpec,
 };
+use cascade_core::expr::{CmpOp, Expr, Guard, Literal, Operand};
 use cascade_core::{Spanned, load_str, parse_definition};
 use cascade_interop::{ExportFormat, export, to_yaml};
 
@@ -31,10 +32,10 @@ machines:
       - paid: { kind: final }
       - cancelled
     transitions:
-      - { from: draft, to: pending, on: submit, guard: "amount > 0", emits: [OrderSubmitted] }
+      - { from: draft, to: pending, on: submit, guard: "event.amount > 0", emits: [OrderSubmitted] }
       - { from: [draft, pending.waiting], to: cancelled, on: cancel }
       - { from: pending, to: paid, on: capture_ok, emits: [OrderPaid, Audit], bounded: true }
-      - { from: pending, to: paid, on: capture_ok, guard: "retry: #2" }
+      - { from: pending, to: paid, on: capture_ok, guard: "?retry: #2" }
       - { from: pending.authorizing, to: pending.hist, on: interrupt }
   Shipment:
     color: sky-blue
@@ -54,7 +55,7 @@ controllers:
       OrderPaid:
         - fire: Shipment.start
           target: Shipment where orderId == event.orderId
-          when: not a gift card
+          when: "?not a gift card"
         - fire: Shipment.start
           target: all Shipment where orderId == "A, B"
           bounded: true
@@ -153,9 +154,10 @@ fn quotes_only_when_needed() {
     let model = load(KITCHEN_SINK);
     let yaml = to_yaml(model.definition());
     assert!(yaml.contains("system: Kitchen Sink\n"), "{yaml}");
-    assert!(yaml.contains("guard: amount > 0,"), "{yaml}");
-    assert!(yaml.contains(r#"guard: "retry: #2" }"#), "{yaml}");
-    assert!(yaml.contains("when: not a gift card\n"), "{yaml}");
+    assert!(yaml.contains("guard: event.amount > 0,"), "{yaml}");
+    // A choice starts with `?`, so it is always quoted.
+    assert!(yaml.contains(r#"guard: "?retry: #2" }"#), "{yaml}");
+    assert!(yaml.contains("when: \"?not a gift card\"\n"), "{yaml}");
     assert!(yaml.contains("target: Shipment where orderId == event.orderId\n"), "{yaml}");
     // Block context allows commas; the selector's own quotes survive.
     assert!(yaml.contains(r#"target: all Shipment where orderId == "A, B""#), "{yaml}");
@@ -187,21 +189,24 @@ fn machine(name: &str, states: Vec<StateDef>, transitions: Vec<TransitionDef>) -
     }
 }
 
-fn transition(from: &str, to: &str, on: &str, guard: Option<&str>) -> TransitionDef {
+fn transition(from: &str, to: &str, on: &str, guard: Option<Guard>) -> TransitionDef {
     TransitionDef {
         from: vec![Spanned::synthetic(from.to_owned())],
         to: Spanned::synthetic(to.to_owned()),
-        on: Spanned::synthetic(on.to_owned()),
-        guard: guard.map(|g| Spanned::synthetic(g.to_owned())),
+        trigger: TriggerSpec::Command(Spanned::synthetic(on.to_owned())),
+        guard: guard.map(Spanned::synthetic),
+        sets: Vec::new(),
         emits: Vec::new(),
         bounded: false,
         span: Default::default(),
     }
 }
 
-/// Guards and other free text survive whatever characters they contain.
+/// Choice labels and quoted literals survive whatever characters they
+/// contain. (Guards used to be free text; the same strings are now used as
+/// `?labels`, trimmed and non-empty, and as quoted literals.)
 #[test]
-fn tricky_free_text_round_trips() {
+fn tricky_labels_and_literals_round_trip() {
     let guards = [
         "true",
         "false",
@@ -274,8 +279,21 @@ fn tricky_free_text_round_trips() {
         "trailing:",
         "http://example.com/x?y=1#z",
     ];
+    let labels: Vec<Guard> =
+        guards.iter().map(|g| g.trim()).filter(|g| !g.is_empty()).map(|g| Guard::Choice(g.to_owned())).collect();
+    let literals: Vec<Guard> = guards
+        .iter()
+        .map(|g| {
+            Guard::Expr(Expr::Cmp {
+                left: Operand::SelfField("x".into()),
+                op: CmpOp::Eq,
+                right: Operand::Lit(Literal::quoted(*g)),
+            })
+        })
+        .collect();
+    let all: Vec<Guard> = labels.into_iter().chain(literals).collect();
     let transitions: Vec<TransitionDef> =
-        guards.iter().enumerate().map(|(i, g)| transition("a", "b", &format!("t{i}"), Some(g))).collect();
+        all.iter().enumerate().map(|(i, g)| transition("a", "b", &format!("t{i}"), Some(g.clone()))).collect();
     let definition = Definition {
         system: Some(Spanned::synthetic("Weird: #system, [1]".to_owned())),
         machines: vec![machine("M", vec![state("a"), state("b")], transitions)],
@@ -287,9 +305,9 @@ fn tricky_free_text_round_trips() {
         Err(err) => panic!("{err}\n---\n{yaml}"),
     };
     assert_eq!(parsed.system.map(|s| s.value).as_deref(), Some("Weird: #system, [1]"));
-    let back: Vec<Option<String>> =
+    let back: Vec<Option<Guard>> =
         parsed.machines[0].transitions.iter().map(|t| t.guard.as_ref().map(|g| g.value.clone())).collect();
-    let expected: Vec<Option<String>> = guards.iter().map(|g| Some((*g).to_owned())).collect();
+    let expected: Vec<Option<Guard>> = all.into_iter().map(Some).collect();
     assert_eq!(back, expected, "\n{yaml}");
 }
 
@@ -327,13 +345,13 @@ fn empty_definition_emits_an_empty_machines_map() {
 
 #[test]
 fn selector_literals_are_quoted_when_the_tokenizer_needs_it() {
-    let spec = |value: &str| TargetSpec {
-        mode: TargetMode::One,
+    let spec = |value: &str| TargetSpec::One {
         machine: "Shipment".to_owned(),
-        clauses: vec![cascade_core::definition::FieldClause {
-            field: "orderId".to_owned(),
-            value: ValueExpr::Literal(value.to_owned()),
-        }],
+        filter: Some(Expr::Cmp {
+            left: Operand::SelfField("orderId".to_owned()),
+            op: CmpOp::Eq,
+            right: Operand::Lit(Literal::new(value)),
+        }),
     };
     for literal in ["plain", "event.orderId", "two words", "", "quote\"d", "a,b", "x==y"] {
         let text = "machines:\n  Shipment:\n    fields: [orderId]\n    states: [idle]\n    transitions:\n      - { from: idle, to: idle, on: go }\ncontrollers:\n  C:\n    on:\n      E:\n        - fire: Shipment.go\n          target: PLACEHOLDER\n";
@@ -357,7 +375,7 @@ fn declared_events_keep_strict_mode() {
         machines: vec![machine("M", vec![state("a")], vec![])],
         events: vec![EventDef {
             name: Spanned::synthetic("Unused".to_owned()),
-            payload: vec![Spanned::synthetic("id".to_owned())],
+            payload: vec![FieldDef::untyped("id")],
             span: Default::default(),
         }],
         ..Definition::default()

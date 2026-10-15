@@ -8,8 +8,7 @@
 //! spawn (`new`) selectors get TODOs, since the skeleton has one instance
 //! per machine.
 
-use cascade_core::definition::{TargetMode, TargetSpec};
-use cascade_core::model::Target;
+use cascade_core::definition::TargetMode;
 use cascade_core::{ControllerId, Model, RuleId};
 
 use super::names::{Names, REGISTRY_TYPE, RUNNING_STATE, WIRE_EVENT, WIRING_STATE};
@@ -63,12 +62,8 @@ fn write_rule(w: &mut Writer, model: &Model, names: &Names, r: RuleId) {
     let machine = model.machine(trigger.machine);
 
     w.comment(&format!("rule {}: fire {}.{}", rule.ordinal, machine.name, trigger.name));
-    let (mode, clauses) = match &rule.target {
-        Target::One { predicates } => (TargetMode::One, predicates),
-        Target::All { predicates } => (TargetMode::All, predicates),
-        Target::Spawn { assignments } => (TargetMode::Spawn, assignments),
-    };
-    let spec = TargetSpec { mode, machine: machine.name.clone(), clauses: clauses.clone() };
+    let spec = crate::yaml::target_spec(&machine.name, &rule.target);
+    let mode = spec.mode();
     w.comment(&format!("target: {spec}"));
     if let Some(condition) = &rule.condition {
         w.comment(&format!("when: {condition}"));

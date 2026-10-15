@@ -20,11 +20,13 @@ pub(crate) mod quote;
 
 use std::fmt::Write as _;
 
+use cascade_core::Definition;
+use cascade_core::Spanned;
 use cascade_core::definition::{
-    ControllerDef, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef, TargetMode,
-    TargetSpec, TransitionDef, ValueExpr,
+    ControllerDef, EmitDef, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef,
+    TargetSpec, TransitionDef, TriggerSpec, fields_are_typed,
 };
-use cascade_core::{Definition, Spanned};
+use cascade_core::expr::{Assignment, Condition, Guard};
 
 use quote::{Ctx, scalar};
 
@@ -96,7 +98,7 @@ fn write_machine(out: &mut String, machine: &MachineDef) {
         line(out, 4, &format!("initial: {}", scalar(&initial.value, Ctx::Block)));
     }
     if !machine.fields.is_empty() {
-        line(out, 4, &format!("fields: {}", flow_list(values(&machine.fields))));
+        line(out, 4, &format!("fields: {}", fields_text(&machine.fields)));
     }
     write_states(out, 4, &machine.states);
     if !machine.transitions.is_empty() {
@@ -163,10 +165,13 @@ fn align_transitions(transitions: &[TransitionDef]) -> Vec<String> {
             };
             let mut rest = Vec::new();
             if let Some(guard) = &t.guard {
-                rest.push(format!("guard: {}", scalar(&guard.value, Ctx::Flow)));
+                rest.push(format!("guard: {}", guard_text(&guard.value)));
+            }
+            if !t.sets.is_empty() {
+                rest.push(format!("sets: {}", assignments_text(&t.sets)));
             }
             if !t.emits.is_empty() {
-                rest.push(format!("emits: {}", flow_list(values(&t.emits))));
+                rest.push(format!("emits: {}", emits_text(&t.emits)));
             }
             if t.bounded {
                 rest.push("bounded: true".to_owned());
@@ -174,7 +179,7 @@ fn align_transitions(transitions: &[TransitionDef]) -> Vec<String> {
             Row {
                 from: format!("from: {from},"),
                 to: format!("to: {},", scalar(&t.to.value, Ctx::Flow)),
-                on: format!("on: {}", scalar(&t.on.value, Ctx::Flow)),
+                on: trigger_text(&t.trigger),
                 rest,
             }
         })
@@ -206,7 +211,7 @@ fn write_events(out: &mut String, events: &[EventDef]) {
         let body = if event.payload.is_empty() {
             "{}".to_owned()
         } else {
-            format!("{{ payload: {} }}", flow_list(values(&event.payload)))
+            format!("{{ payload: {} }}", fields_text(&event.payload))
         };
         line(out, 2, &format!("{}: {body}", scalar(&event.name.value, Ctx::Block)));
     }
@@ -250,51 +255,104 @@ fn write_rule(out: &mut String, rule: &RuleDef) {
         line(out, 10, &format!("target: {}", scalar(&selector(&target.value), Ctx::Block)));
     }
     if let Some(when) = &rule.when {
-        line(out, 10, &format!("when: {}", scalar(&when.value, Ctx::Block)));
+        line(out, 10, &format!("when: {}", condition_text(&when.value)));
     }
     if rule.bounded {
         line(out, 10, "bounded: true");
     }
 }
 
-/// A target selector in the syntax `parse_target` reads. Unlike the core
-/// `Display`, literals are quoted whenever the selector tokenizer would read
-/// them differently (e.g. a literal that starts with `event.`).
+/// A target selector in the syntax `parse_target` reads: the core's
+/// canonical text (filters in filter context, literals quoted as needed).
 pub(crate) fn selector(spec: &TargetSpec) -> String {
-    let mut text = String::new();
-    match spec.mode {
-        TargetMode::One => {}
-        TargetMode::All => text.push_str("all "),
-        TargetMode::Spawn => text.push_str("new "),
-    }
-    text.push_str(&spec.machine);
-    let (lead, joiner, op) = match spec.mode {
-        TargetMode::Spawn => (" with ", ", ", "="),
-        TargetMode::One | TargetMode::All => (" where ", " and ", "=="),
-    };
-    for (i, clause) in spec.clauses.iter().enumerate() {
-        text.push_str(if i == 0 { lead } else { joiner });
-        let _ = write!(text, "{} {op} {}", clause.field, selector_value(&clause.value));
-    }
-    text
+    spec.to_string()
 }
 
-fn selector_value(value: &ValueExpr) -> String {
-    match value {
-        ValueExpr::EventField(field) => format!("event.{field}"),
-        ValueExpr::Literal(lit) => {
-            let word = !lit.is_empty()
-                && lit.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.'))
-                && !lit.starts_with("event.");
-            if word {
-                lit.clone()
-            } else if lit.contains('"') {
-                format!("'{lit}'")
-            } else {
-                format!("\"{lit}\"")
-            }
-        }
+/// The selector a resolved rule target was written as.
+pub(crate) fn target_spec(machine: &str, target: &cascade_core::model::Target) -> TargetSpec {
+    use cascade_core::model::Target;
+    let machine = machine.to_owned();
+    match target {
+        Target::One { filter } => TargetSpec::One { machine, filter: filter.clone() },
+        Target::All { filter } => TargetSpec::All { machine, filter: filter.clone() },
+        Target::Spawn { assignments } => TargetSpec::Spawn { machine, assignments: assignments.clone() },
     }
+}
+
+// --- Embedded languages -------------------------------------------------------
+
+/// A field list: the flow list `[a, b]` when no field has a type, else the
+/// flow mapping `{ a: string, b: "enum [x, y]" }` (untyped entries `any`).
+pub(crate) fn fields_text(fields: &[FieldDef]) -> String {
+    if !fields_are_typed(fields) {
+        return flow_list(fields.iter().map(|f| f.name.value.as_str()));
+    }
+    let entries: Vec<String> = fields
+        .iter()
+        .map(|f| {
+            let ty = f.ty.as_ref().map(|t| t.value.to_string()).unwrap_or_else(|| "any".to_owned());
+            format!("{}: {}", scalar(&f.name.value, Ctx::Flow), scalar(&ty, Ctx::Flow))
+        })
+        .collect();
+    format!("{{ {} }}", entries.join(", "))
+}
+
+/// `on: name`, `on: { event: E, where: "…" }` or `after: 30m`.
+pub(crate) fn trigger_text(trigger: &TriggerSpec) -> String {
+    let (key, value) = trigger_entry(trigger);
+    format!("{key}: {value}")
+}
+
+/// The key (`on` or `after`) and value text of a transition's trigger.
+pub(crate) fn trigger_entry(trigger: &TriggerSpec) -> (&'static str, String) {
+    match trigger {
+        TriggerSpec::Command(name) => ("on", scalar(&name.value, Ctx::Flow).into_owned()),
+        TriggerSpec::Event { event, filter: None } => {
+            ("on", format!("{{ event: {} }}", scalar(&event.value, Ctx::Flow)))
+        }
+        TriggerSpec::Event { event, filter: Some(filter) } => (
+            "on",
+            format!(
+                "{{ event: {}, where: {} }}",
+                scalar(&event.value, Ctx::Flow),
+                scalar(&filter.value.display_filter().to_string(), Ctx::Flow)
+            ),
+        ),
+        TriggerSpec::After(delay) => ("after", delay.value.to_string()),
+    }
+}
+
+/// A guard's canonical text in a flow mapping, quoted when YAML needs it
+/// (a `?choice` always is).
+pub(crate) fn guard_text(guard: &Guard) -> String {
+    scalar(&guard.to_string(), Ctx::Flow).into_owned()
+}
+
+/// A rule condition's canonical text as a block value, quoted when YAML
+/// needs it.
+pub(crate) fn condition_text(condition: &Condition) -> String {
+    scalar(&condition.to_string(), Ctx::Block).into_owned()
+}
+
+/// `{ f: v, … }` with each value's canonical operand text.
+pub(crate) fn assignments_text(assignments: &[Spanned<Assignment>]) -> String {
+    let entries: Vec<String> = assignments
+        .iter()
+        .map(|a| format!("{}: {}", scalar(&a.value.field, Ctx::Flow), scalar(&a.value.value.to_string(), Ctx::Flow)))
+        .collect();
+    format!("{{ {} }}", entries.join(", "))
+}
+
+/// `[E, { event: F, with: { k: v } }]`.
+pub(crate) fn emits_text(emits: &[EmitDef]) -> String {
+    let items: Vec<String> = emits
+        .iter()
+        .map(|e| {
+            let event = scalar(&e.event.value, Ctx::Flow).into_owned();
+            if e.with.is_empty() { event } else { format!("{{ event: {event}, with: {} }}", assignments_text(&e.with)) }
+        })
+        .collect();
+    format!("[{}]", items.join(", "))
 }
 
 // --- External sources -------------------------------------------------------------

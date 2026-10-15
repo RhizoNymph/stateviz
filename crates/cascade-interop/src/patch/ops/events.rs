@@ -2,14 +2,16 @@
 //! entries (`Name: { payload: [a] }`, `Name: [Machine.trigger]`).
 
 use cascade_core::Spanned;
-use cascade_core::definition::{Definition, EventDef, ExternalDef, TriggerRef};
+use cascade_core::definition::{
+    Definition, EventDef, ExternalDef, FieldDef, TriggerRef, TriggerSpec, fields_are_typed,
+};
 use cascade_core::span::SourceSpan;
 
 use super::{Child, add_child, add_section, check_new_name, definition, insert_at, nav, remove_section, step};
 use crate::patch::collection::{Value, remove_child, replace_scalar, replace_value, set_key, set_names};
 use crate::patch::doc::{Doc, Entry, Kind, Node};
 use crate::patch::error::{Result, Unsupported, not_found};
-use crate::patch::render::{Block, event_entry, external_entry, flow_list, plain_or_quoted};
+use crate::patch::render::{Block, event_entry, external_entry, plain_or_quoted};
 use crate::patch::splice::Splice;
 
 /// Events emitted or subscribed to, in first-mention order (transitions,
@@ -19,7 +21,15 @@ fn used_events(def: &Definition) -> Vec<String> {
     let mentions = def
         .machines
         .iter()
-        .flat_map(|m| m.transitions.iter().flat_map(|t| t.emits.iter()))
+        .flat_map(|m| {
+            m.transitions.iter().flat_map(|t| {
+                let subscribed = match &t.trigger {
+                    TriggerSpec::Event { event, .. } => Some(event),
+                    TriggerSpec::Command(_) | TriggerSpec::After(_) => None,
+                };
+                subscribed.into_iter().chain(t.emits.iter().map(|e| &e.event))
+            })
+        })
         .chain(def.controllers.iter().flat_map(|c| c.on.iter().map(|h| &h.event)));
     for event in mentions {
         if !used.contains(&event.value) {
@@ -127,7 +137,7 @@ pub(super) fn remove(text: &str, event: &str) -> Result<String> {
 pub(super) fn set_payload(
     text: &str,
     event: &str,
-    payload: &[Spanned<String>],
+    payload: &[FieldDef],
     index: Option<usize>,
 ) -> Result<Option<String>> {
     let doc = Doc::parse(text)?;
@@ -145,7 +155,9 @@ pub(super) fn set_payload(
     if map.entries.len() < 2 || index.unwrap_or(map.entries.len() - 1) != position {
         return Ok(None);
     }
-    let payload: Vec<String> = payload.iter().map(|p| p.value.clone()).collect();
+    let typed = fields_are_typed(payload);
+    let names: Vec<String> = payload.iter().map(|p| p.name.value.clone()).collect();
+    let list = crate::yaml::fields_text(payload);
     let patched = step(text, |doc, _| {
         let section = nav::section(doc, "events")?.ok_or(Unsupported::Shape)?;
         let (_, entry) = nav::named(&section.value, event, "event")?;
@@ -155,14 +167,13 @@ pub(super) fn set_payload(
         match (existing, payload.is_empty()) {
             (Some(_), true) if only_key => replace_value(doc, entry, Value::Inline("{}".to_owned())),
             (Some(_), true) => set_key(doc, body, "payload", None, &["payload"]),
-            (Some(list), false) => set_names(doc, list, &payload),
+            (Some(old), false) if !typed && old.value.as_map().is_none() => set_names(doc, old, &names),
+            (Some(old), false) => replace_value(doc, old, Value::Inline(list.clone())),
             (None, true) => Ok(Vec::new()),
             (None, false) if body.as_map().is_some_and(|m| !m.entries.is_empty()) => {
-                set_key(doc, body, "payload", Some(Value::Inline(flow_list(&payload))), &["payload"])
+                set_key(doc, body, "payload", Some(Value::Inline(list.clone())), &["payload"])
             }
-            (None, false) => {
-                replace_value(doc, entry, Value::Inline(format!("{{ payload: {} }}", flow_list(&payload))))
-            }
+            (None, false) => replace_value(doc, entry, Value::Inline(format!("{{ payload: {list} }}"))),
         }
     })?;
     Ok(Some(patched))
@@ -197,9 +208,17 @@ pub(super) fn rename(text: &str, from: &str, to: &str) -> Result<String> {
             let transitions = machine.value.as_map().and_then(|b| b.value("transitions")).map(Node::items);
             for t in transitions.unwrap_or_default() {
                 if let Some(emits) = t.as_map().and_then(|m| m.value("emits")) {
-                    for node in emits.scalar_items() {
-                        rename(node)?;
+                    for item in emits.items() {
+                        match item.as_map().and_then(|m| m.value("event")) {
+                            Some(event) => rename(event)?,
+                            None => rename(item)?,
+                        }
                     }
+                }
+                if let Some(event) =
+                    t.as_map().and_then(|m| m.value("on")).and_then(|on| on.as_map()).and_then(|m| m.value("event"))
+                {
+                    rename(event)?;
                 }
             }
         }

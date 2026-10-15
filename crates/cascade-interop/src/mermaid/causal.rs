@@ -73,8 +73,8 @@ pub(crate) fn causal(model: &Model) -> String {
         }
     }
     for (tid, transition) in model.transitions() {
-        for &event in &transition.emits {
-            edges.push(format!("t{} -.-> e{}", tid.index(), event.index()), Some(EMIT_STROKE));
+        for emit in &transition.emits {
+            edges.push(format!("t{} -.-> e{}", tid.index(), emit.event.index()), Some(EMIT_STROKE));
         }
     }
     for (_, handler) in model.handlers() {

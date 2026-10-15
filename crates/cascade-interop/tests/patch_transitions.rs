@@ -117,15 +117,15 @@ fn an_update_touches_only_changed_fields_and_keeps_alignment() {
 #[test]
 fn an_update_of_a_block_transition_edits_its_lines() {
     let text = shop();
-    let mut t = guarded(transition(&["authorized"], "captured", "capture"), "amount < limit");
+    let mut t = guarded(transition(&["authorized"], "captured", "capture"), "?amount < limit");
     t.bounded = true;
     let out = check(
         &text,
         &EditOp::UpdateTransition { machine: "Payment".into(), index: 3, transition: t.clone() },
         "@@ 91\n\
-         -        guard: \"amount <= authorized_amount\"\n\
+         -        guard: \"?amount <= authorized_amount\"\n\
          -        emits: [PaymentCaptured]\n\
-         +        guard: \"amount < limit\"\n\
+         +        guard: \"?amount < limit\"\n\
          +        bounded: true",
         |d| machine_mut(d, "Payment").transitions[3] = t,
     );
@@ -180,7 +180,7 @@ fn removing_a_block_transition_takes_all_its_lines() {
          -      - from: authorized\n\
          -        to: captured\n\
          -        on: capture\n\
-         -        guard: \"amount <= authorized_amount\"\n\
+         -        guard: \"?amount <= authorized_amount\"\n\
          -        emits: [PaymentCaptured]",
         |d| {
             machine_mut(d, "Payment").transitions.remove(3);
@@ -195,7 +195,7 @@ fn removing_a_block_transition_takes_all_its_lines() {
          -            - from: closed\n\
          -              to: locked\n\
          -              on: lock\n\
-         -              guard: \"has key\"",
+         -              guard: \"?has key\"",
         |d| {
             machine_mut(d, "Door").transitions.remove(1);
         },
