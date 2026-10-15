@@ -7,7 +7,9 @@
 //! a committed value into one [`EditOp`](cascade_core::edit::EditOp) (renames use the `Rename*` ops, so
 //! references follow). An unchanged value makes no op.
 
+use cascade_core::definition::FieldDef;
 use cascade_core::definition::{StateKindDef, TriggerRef};
+use cascade_core::expr::{parse_condition, parse_guard};
 use cascade_core::parse::grammar::{is_valid_name, is_valid_path, parse_target, parse_trigger_ref};
 use cascade_core::{Definition, ElementKey, PaletteColor, Spanned};
 
@@ -58,7 +60,10 @@ enum Syntax {
     TriggerRef,
     TriggerRefList,
     Target,
-    FreeText,
+    /// `else`, `?label` or an expression; empty for none.
+    Guard,
+    /// `?label` or an expression; empty for none.
+    Condition,
     Choice,
     Toggle,
 }
@@ -105,7 +110,8 @@ impl FieldId {
             FieldId::RuleFire => Syntax::TriggerRef,
             FieldId::SourceTriggers => Syntax::TriggerRefList,
             FieldId::RuleTarget => Syntax::Target,
-            FieldId::TransitionGuard | FieldId::RuleWhen => Syntax::FreeText,
+            FieldId::TransitionGuard => Syntax::Guard,
+            FieldId::RuleWhen => Syntax::Condition,
             FieldId::MachineColor | FieldId::MachineInitial | FieldId::StateKind | FieldId::StateInitial => {
                 Syntax::Choice
             }
@@ -124,7 +130,7 @@ impl FieldId {
             Syntax::TriggerRef => "Machine.trigger",
             Syntax::TriggerRefList => "Machine.trigger, …",
             Syntax::Target => "the one instance",
-            Syntax::FreeText => "(none)",
+            Syntax::Guard | Syntax::Condition => "(none)",
             Syntax::Choice | Syntax::Toggle => "",
         }
     }
@@ -208,6 +214,15 @@ fn names(items: &[Spanned<String>]) -> String {
     join_list(items.iter().map(|s| s.value.as_str()))
 }
 
+/// Canonical text of an optional guard or condition.
+fn shown<T: std::fmt::Display>(value: Option<&Spanned<T>>) -> String {
+    value.map(|v| v.value.to_string()).unwrap_or_default()
+}
+
+fn field_names(fields: &[FieldDef]) -> String {
+    join_list(fields.iter().map(|f| f.name.value.as_str()))
+}
+
 fn kind_options() -> Vec<(String, String)> {
     [StateKindDef::Normal, StateKindDef::Final, StateKindDef::History, StateKindDef::DeepHistory]
         .iter()
@@ -256,7 +271,7 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
                         FieldId::MachineInitial,
                         FieldInput::Choice { value: opt(m.initial.as_ref()), options: initial_options },
                     ),
-                    field(FieldId::MachineFields, text(names(&m.fields))),
+                    field(FieldId::MachineFields, text(field_names(&m.fields))),
                     field(FieldId::MachineDomain, text(opt(m.domain.as_ref()))),
                 ],
                 ..base(format!("Machine {machine}"))
@@ -291,9 +306,12 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
                     fields: vec![
                         field(FieldId::TransitionFrom, text(names(&t.from))),
                         field(FieldId::TransitionTo, text(t.to.value.clone())),
-                        field(FieldId::TransitionTrigger, text(t.on.value.clone())),
-                        field(FieldId::TransitionGuard, text(opt(t.guard.as_ref()))),
-                        field(FieldId::TransitionEmits, text(names(&t.emits))),
+                        field(FieldId::TransitionTrigger, text(t.trigger.name())),
+                        field(FieldId::TransitionGuard, text(shown(t.guard.as_ref()))),
+                        field(
+                            FieldId::TransitionEmits,
+                            text(join_list(t.emits.iter().map(|e| e.event.value.as_str()))),
+                        ),
                         field(FieldId::TransitionBounded, FieldInput::Toggle(t.bounded)),
                     ],
                     ..base(title)
@@ -321,7 +339,7 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
             Inspection {
                 fields: vec![
                     field(FieldId::EventName, text(event.clone())),
-                    field(FieldId::EventPayload, text(declared.map(|e| names(&e.payload)).unwrap_or_default())),
+                    field(FieldId::EventPayload, text(declared.map(|e| field_names(&e.payload)).unwrap_or_default())),
                 ],
                 notes,
                 ..base(format!("Event {event}"))
@@ -380,7 +398,7 @@ pub fn inspect(definition: &Definition, key: &ElementKey) -> Result<Inspection, 
                         FieldId::RuleTarget,
                         text(r.target.as_ref().map(|t| t.value.to_string()).unwrap_or_default()),
                     ),
-                    field(FieldId::RuleWhen, text(opt(r.when.as_ref()))),
+                    field(FieldId::RuleWhen, text(shown(r.when.as_ref()))),
                     field(FieldId::RuleBounded, FieldInput::Toggle(r.bounded)),
                 ],
                 ..base(format!("Rule {controller} on {event} #{ordinal}"))
@@ -452,7 +470,9 @@ pub fn validate(field: FieldId, value: &str) -> Result<(), String> {
                 parse_target(value).map(|_| ())
             }
         }
-        Syntax::FreeText | Syntax::Choice | Syntax::Toggle => Ok(()),
+        Syntax::Guard if !value.is_empty() => parse_guard(value).map(|_| ()).map_err(|e| e.to_string()),
+        Syntax::Condition if !value.is_empty() => parse_condition(value).map(|_| ()).map_err(|e| e.to_string()),
+        Syntax::Guard | Syntax::Condition | Syntax::Choice | Syntax::Toggle => Ok(()),
     }
 }
 

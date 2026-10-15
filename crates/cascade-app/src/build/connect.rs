@@ -11,7 +11,7 @@
 //!
 //! Pure; dropping anywhere else cancels.
 
-use cascade_core::definition::{EventDef, TriggerRef};
+use cascade_core::definition::{EmitDef, EventDef, TriggerRef};
 use cascade_core::edit::{EditOp, fresh_name};
 use cascade_core::{Definition, ElementKey, SourceSpan};
 
@@ -128,30 +128,30 @@ fn wire_emit_to_controller(
     defs::controller(definition, controller)
         .ok_or_else(|| PlanError::NotFound(ElementKey::Controller { controller: controller.into() }))?;
     let (machine, index, entry) = transition_entry(definition, transition)?;
-    let base = format!("{}Done", defs::pascal_case(&entry.on.value));
+    let base = format!("{}Done", defs::pascal_case(&entry.trigger.name()));
     let taken = defs::event_names(definition);
     let event = fresh_name(&base, taken.iter().map(String::as_str));
     let mut updated = entry.clone();
-    updated.emits.push(defs::synthetic(&event));
+    updated.emits.push(EmitDef::plain(event.clone()));
     let mut ops = Vec::new();
     if defs::strict_events(definition) {
         ops.push(declare(&event));
     }
     ops.push(EditOp::UpdateTransition { machine: machine.clone(), index, transition: updated });
     ops.push(EditOp::AddHandler { controller: controller.to_owned(), handler: defs::handler_def(&event), index: None });
-    Ok(Planned::new(EditOp::Batch(ops), format!("Wire {machine}.{} → {controller} via {event}", entry.on.value)))
+    Ok(Planned::new(EditOp::Batch(ops), format!("Wire {machine}.{} → {controller} via {event}", entry.trigger.name())))
 }
 
 fn emit_existing(definition: &Definition, transition: &ElementKey, event: &str) -> Result<Planned, PlanError> {
     let (machine, index, entry) = transition_entry(definition, transition)?;
-    if entry.emits.iter().any(|e| e.value == event) {
+    if entry.emits.iter().any(|e| e.event.value == event) {
         return Err(not_connectable(format!("the transition already emits {event}")));
     }
     let mut updated = entry.clone();
-    updated.emits.push(defs::synthetic(event));
+    updated.emits.push(EmitDef::plain(event));
     Ok(Planned::new(
         EditOp::UpdateTransition { machine: machine.clone(), index, transition: updated },
-        format!("{machine}.{} emits {event}", entry.on.value),
+        format!("{machine}.{} emits {event}", entry.trigger.name()),
     ))
 }
 
@@ -281,7 +281,7 @@ external:
                 assert_eq!(machine, "Order");
                 assert_eq!(transition.from.iter().map(|f| f.value.as_str()).collect::<Vec<_>>(), ["paid"]);
                 assert_eq!(transition.to.value, "paid");
-                assert_eq!(transition.on.value, "go2");
+                assert_eq!(transition.trigger.name(), "go2");
                 assert!(transition.emits.is_empty() && transition.guard.is_none() && !transition.bounded);
             }
             other => panic!("unexpected {other:?}"),
@@ -368,7 +368,7 @@ external:
                 let EditOp::Batch(ops) = planned.op else { panic!("expected a batch") };
                 assert_eq!(ops.len(), 2, "no declaration without an events: list");
                 assert!(matches!(&ops[0], EditOp::UpdateTransition { transition, .. }
-                    if transition.emits.iter().any(|e| e.value == "PayDone2")));
+                    if transition.emits.iter().any(|e| e.event.value == "PayDone2")));
                 assert!(matches!(&ops[1], EditOp::AddHandler { controller, handler, .. }
                     if controller == "Idle" && handler.event.value == "PayDone2"));
             }
