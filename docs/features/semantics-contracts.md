@@ -650,6 +650,31 @@ semantics yet:
 - `PlaySession::{now, timers, pending_decisions, choice_points}` return
   zero / empty / `Ok(vec![])`; `state_key` is real.
 
+## Wave 2 guard analysis as landed
+
+On `feat/guard-analysis` (static-analysis.md has the details):
+
+- **New check** `Check::UncoveredGuard` (`uncovered-guard`, info, last in
+  `Check::ALL`, which now has 9 entries) with `FindingDetail::UncoveredGuard
+  { state, trigger, transitions, gaps }`. Gap examples made only of missing
+  fields are dropped.
+- **Subscription races**: a new `FindingDetail::SubscriptionRace { origin,
+  machine, first: RaceParty, second: RaceParty }` (check `RaceCandidate`)
+  with `pub enum RaceParty { Rule(RuleId), Subscription(TriggerId) }`
+  (`RaceParty::element()`), re-exported from the crate root. Rule-only pairs
+  stay `RaceCandidate` with `RuleId`s, so the simulator's race replay is
+  unchanged; it returns `SimError::NotARace` for a `SubscriptionRace`
+  (cascade-sim may add replay for it later). Code that indexes race findings
+  by `check() == RaceCandidate` sees both variants.
+- **Constant tests**: `DiagnosticKind::ConstantTest { test, what:
+  &'static str, suggestion: Option<String> }`, a load error for a test that
+  reads no field (`x > 0` with a bare `x`, `1 == 1`, a literal `in`). Fixtures
+  and tests with such guards now use `self.x` / `event.x`.
+- Unchanged messages: unhandled-event still says "no controller subscribes
+  to it" (it is only reported when no machine subscribes either), and
+  unreachable-state still says "through external triggers or controller
+  fires". The shop and order-fulfillment findings are unchanged.
+
 ## Invariants
 
 - No free text in guards or conditions: every one parses as `Guard` /
