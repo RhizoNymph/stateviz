@@ -30,6 +30,7 @@ mod key;
 mod moves;
 mod options;
 mod outcome;
+mod progress;
 mod report;
 mod search;
 
@@ -39,6 +40,7 @@ use cascade_core::Model;
 
 pub use options::{DEFAULT_MAX_STATES, ExploreOptions, OrderingModel};
 pub use outcome::{Anomaly, Exploration, Outcome, OutcomeTimer};
+pub use progress::ExploreProgress;
 pub use report::{differing_instances, instance_text, timer_text};
 
 use self::graph::Graph;
@@ -66,7 +68,8 @@ pub fn explore(model: &Model, scenario: &Scenario, options: &ExploreOptions) -> 
     }
     core.forget_trace();
     tracing::debug!(scenario = %scenario.name, inputs = inputs.inputs.len(), "exploring a scenario");
-    run(model, SearchState { core, input: 0, anomalies: BTreeSet::new() }, start, &inputs, options)
+    let progress = ExploreProgress::new();
+    run(model, SearchState { core, input: 0, anomalies: BTreeSet::new() }, start, &inputs, options, &progress)
 }
 
 /// Explore from a play session's current position: every ordering of what
@@ -74,9 +77,22 @@ pub fn explore(model: &Model, scenario: &Scenario, options: &ExploreOptions) -> 
 /// actions to apply to `session` from where it is (e.g. as a branch of its
 /// timeline, with [`replay_witness`]).
 pub fn explore_from(session: &PlaySession, model: &Model, options: &ExploreOptions) -> Result<Exploration, SimError> {
+    explore_from_watched(session, model, options, &ExploreProgress::new())
+}
+
+/// [`explore_from`], publishing the number of states visited to `progress`
+/// and stopping with [`SimError::ExploreCancelled`] once it is cancelled
+/// (for hosts that explore off their UI thread).
+pub fn explore_from_watched(
+    session: &PlaySession,
+    model: &Model,
+    options: &ExploreOptions,
+    progress: &ExploreProgress,
+) -> Result<Exploration, SimError> {
     let mut core = session.core().clone();
     core.forget_trace();
-    run(model, SearchState { core, input: 0, anomalies: BTreeSet::new() }, Vec::new(), &Inputs::default(), options)
+    let root = SearchState { core, input: 0, anomalies: BTreeSet::new() };
+    run(model, root, Vec::new(), &Inputs::default(), options, progress)
 }
 
 /// `start` with `witness` applied: for [`explore`], start from
@@ -95,8 +111,9 @@ fn run(
     start: Vec<PlayAction>,
     inputs: &Inputs,
     options: &ExploreOptions,
+    progress: &ExploreProgress,
 ) -> Result<Exploration, SimError> {
-    let searched = search::search(model, root.clone(), inputs, options)?;
+    let searched = search::search(model, root.clone(), inputs, options, progress)?;
     let shortest = searched.graph.shortest();
     let counts = searched.graph.path_counts();
     let mut outcomes = Vec::with_capacity(searched.found.len());

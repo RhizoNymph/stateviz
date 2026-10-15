@@ -185,4 +185,8 @@ pub enum SimError {
     /// in exploration, never expected).
     #[error("exploration could not rebuild the witness of an outcome at move {at}")]
     WitnessLost { at: usize },
+    /// The host cancelled a watched exploration
+    /// ([`ExploreProgress::cancel`](crate::ExploreProgress::cancel)).
+    #[error("exploration cancelled after {states} states")]
+    ExploreCancelled { states: usize },
 }

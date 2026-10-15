@@ -87,8 +87,8 @@ pub use describe::{causal_depths, lifeline_label, payload_text, selector_text, s
 pub use engine::STEP_LIMIT;
 pub use error::{ScenarioDiagnostic, ScenarioError, ScenarioErrorKind, SimError};
 pub use explore::{
-    Anomaly, Exploration, ExploreOptions, OrderingModel, Outcome, OutcomeTimer, differing_instances, explore,
-    explore_from, instance_text, replay_witness, timer_text,
+    Anomaly, Exploration, ExploreOptions, ExploreProgress, OrderingModel, Outcome, OutcomeTimer, differing_instances,
+    explore, explore_from, explore_from_watched, instance_text, replay_witness, timer_text,
 };
 pub use scenario::{
     Directive, DiscoverError, InstanceDecl, Payload, ResolvedScenario, Scenario, ScenarioEnd, ScenarioEntry,

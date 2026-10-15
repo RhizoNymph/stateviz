@@ -26,6 +26,7 @@ use super::key::{item_text, search_key};
 use super::moves::{Base, Footprint, LineId, MoveDesc, SearchState, Step, enabled, independent, perform};
 use super::options::ExploreOptions;
 use super::outcome::{Anomaly, OutcomeTimer};
+use super::progress::ExploreProgress;
 use crate::error::SimError;
 
 /// A terminal state's identity and the nodes that end in it.
@@ -84,6 +85,7 @@ pub(crate) fn search(
     root: SearchState,
     inputs: &Inputs,
     options: &ExploreOptions,
+    progress: &ExploreProgress,
 ) -> Result<Searched, SimError> {
     let mut s = Searcher {
         model,
@@ -108,6 +110,11 @@ pub(crate) fn search(
     }
 
     while let Some(top) = stack.last_mut() {
+        progress.set_states(s.graph.nodes.len());
+        if progress.is_cancelled() {
+            tracing::info!(states = s.graph.nodes.len(), "exploration cancelled");
+            return Err(SimError::ExploreCancelled { states: s.graph.nodes.len() });
+        }
         let Some(&ci) = top.todo.get(top.next) else {
             stack.pop();
             continue;
@@ -182,6 +189,7 @@ pub(crate) fn search(
         }
     }
 
+    progress.set_states(s.graph.nodes.len());
     Ok(Searched { graph: s.graph, descs: s.descs, found: s.found, complete })
 }
 
