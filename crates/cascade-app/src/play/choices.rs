@@ -140,11 +140,7 @@ pub fn first_undecided(points: &[ChoicePoint], pending: &[String]) -> Option<(us
     None
 }
 
-fn next<R: Request>(
-    oracle: &dyn ChoiceOracle<R>,
-    request: R,
-    answers: Vec<String>,
-) -> Result<PromptStep<R>, String> {
+fn next<R: Request>(oracle: &dyn ChoiceOracle<R>, request: R, answers: Vec<String>) -> Result<PromptStep<R>, String> {
     let (points, pending) = oracle.after(&answers, &request)?;
     match first_undecided(&points, &pending) {
         Some((index, point)) => {
@@ -500,7 +496,10 @@ external:
         // Delivering the fire hits p's choice.
         let oracle = SessionOracle { session: &session, model: &model };
         let prompt = ask(begin(&oracle, head()));
-        assert_eq!((prompt.point.at.as_str(), prompt.point.options.as_slice()), ("p", &strs(&["approved", "card declined"])[..]));
+        assert_eq!(
+            (prompt.point.at.as_str(), prompt.point.options.as_slice()),
+            ("p", &strs(&["approved", "card declined"])[..])
+        );
         assert_eq!(go(&model, &mut session, head(), Some("approved")), [choose("approved"), step(&head())]);
         assert_eq!(state_of(&model, &session, "p"), "state:Payment:captured");
     }

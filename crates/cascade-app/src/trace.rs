@@ -158,7 +158,8 @@ mod tests {
         let findings = cascade_core::analyze(&model, &graph);
         let race = crate::locate::race_finding(&findings, 0).expect("the saga has a race candidate");
         assert!(matches!(race.detail, FindingDetail::SubscriptionRace { .. }));
-        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/checkout-saga/scenarios/happy-path.yaml"));
+        let path =
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/checkout-saga/scenarios/happy-path.yaml"));
         let traces = run(&model, "happy-path", path, Some(&race.detail)).expect("runs as queued");
         assert_eq!(traces.len(), 1);
         assert_eq!(traces, run(&model, "happy-path", path, None).expect("runs"));

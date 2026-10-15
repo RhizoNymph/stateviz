@@ -3,8 +3,8 @@
 
 use std::ops::Range;
 
-use cascade_core::{ElementKey, ElementRef, Model};
 use cascade_core::expr::Duration;
+use cascade_core::{ElementKey, ElementRef, Model};
 use cascade_scene::{PlayMarker, PlayOverlay, PlayTimer};
 use cascade_sim::{ArmedTimer, InstanceState, PendingItem, PendingKind, Trace, TraceStepKind};
 
