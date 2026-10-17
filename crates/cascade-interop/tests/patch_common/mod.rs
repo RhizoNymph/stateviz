@@ -14,10 +14,11 @@
 use std::path::Path;
 
 use cascade_core::definition::{
-    ControllerDef, Definition, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef,
-    TargetSpec, TransitionDef, TriggerRef,
+    ControllerDef, Definition, EmitDef, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef,
+    StateKindDef, TargetSpec, TransitionDef, TriggerRef, TriggerSpec,
 };
 use cascade_core::edit::EditOp;
+use cascade_core::expr::{parse_condition, parse_guard};
 use cascade_core::parse::grammar::{parse_target, parse_trigger_ref};
 use cascade_core::span::SourceSpan;
 use cascade_core::{Spanned, load_str, parse_definition};
@@ -82,8 +83,9 @@ pub fn transition(from: &[&str], to: &str, on: &str) -> TransitionDef {
     TransitionDef {
         from: from.iter().map(|f| s(f)).collect(),
         to: s(to),
-        on: s(on),
+        trigger: TriggerSpec::Command(s(on)),
         guard: None,
+        sets: Vec::new(),
         emits: Vec::new(),
         bounded: false,
         span: SourceSpan::unknown(),
@@ -91,12 +93,15 @@ pub fn transition(from: &[&str], to: &str, on: &str) -> TransitionDef {
 }
 
 pub fn emitting(mut t: TransitionDef, emits: &[&str]) -> TransitionDef {
-    t.emits = emits.iter().map(|e| s(e)).collect();
+    t.emits = emits.iter().map(|e| EmitDef::plain(*e)).collect();
     t
 }
 
 pub fn guarded(mut t: TransitionDef, guard: &str) -> TransitionDef {
-    t.guard = Some(s(guard));
+    t.guard = match parse_guard(guard) {
+        Ok(g) => Some(Spanned::synthetic(g)),
+        Err(err) => panic!("bad guard {guard}: {err}"),
+    };
     t
 }
 
@@ -118,7 +123,10 @@ pub fn rule(fire: &str, target_text: Option<&str>, when: Option<&str>) -> RuleDe
     RuleDef {
         fire: Spanned::synthetic(trigger(fire)),
         target: target_text.map(target),
-        when: when.map(s),
+        when: when.map(|w| match parse_condition(w) {
+            Ok(c) => Spanned::synthetic(c),
+            Err(err) => panic!("bad condition {w}: {err}"),
+        }),
         bounded: false,
         span: SourceSpan::unknown(),
     }
@@ -133,7 +141,11 @@ pub fn controller(name: &str, handlers: Vec<HandlerDef>) -> ControllerDef {
 }
 
 pub fn event(name: &str, payload: &[&str]) -> EventDef {
-    EventDef { name: s(name), payload: payload.iter().map(|p| s(p)).collect(), span: SourceSpan::unknown() }
+    EventDef {
+        name: s(name),
+        payload: payload.iter().map(|p| FieldDef::untyped(*p)).collect(),
+        span: SourceSpan::unknown(),
+    }
 }
 
 pub fn external(name: &str, triggers: &[&str]) -> ExternalDef {

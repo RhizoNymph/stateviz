@@ -26,7 +26,9 @@
 //!
 //! See [`write`] for the representation. Export then import preserves the
 //! model (every element key and attribute). What other SCXML tools lose:
-//! guards and rule conditions are free text in `cond`, not expressions;
+//! guards and rule conditions are Cascade's canonical guard text in `cond`
+//! (expressions, `?choices`, `else`), not ECMAScript; on import, `cond`
+//! text in Cascade syntax is kept and anything else becomes a `?choice`;
 //! external sources, declared events, colors, domains, fields, target
 //! selectors and `bounded` exist only in the `cascade:` namespace. What the
 //! text loses: multi-source `from` lists become one `<transition>` per

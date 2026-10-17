@@ -20,7 +20,8 @@
 
 use std::collections::HashSet;
 
-use cascade_core::definition::{ControllerDef, EventDef, ExternalDef, HandlerDef, RuleDef, TriggerRef};
+use cascade_core::definition::{ControllerDef, EventDef, ExternalDef, FieldDef, HandlerDef, RuleDef, TriggerRef};
+use cascade_core::expr::{Condition, parse_condition};
 use cascade_core::parse::grammar::parse_target;
 use cascade_core::{SourceSpan, Spanned};
 
@@ -242,7 +243,7 @@ fn annotated(
         .iter()
         .map(|e| EventDef {
             name: synthetic(events.name(&e.name, &e.name, &e.location, warnings)),
-            payload: e.payload.iter().map(|p| synthetic(sanitize(p))).collect(),
+            payload: e.payload.iter().map(|p| FieldDef::untyped(sanitize(p))).collect(),
             span: SourceSpan::unknown(),
         })
         .collect();
@@ -267,7 +268,7 @@ fn annotated(
                 rules.push(RuleDef {
                     fire: resolve_ref(&r.machine, &r.trigger, &r.location)?,
                     target,
-                    when: r.when.clone().map(Spanned::synthetic),
+                    when: r.when.as_deref().and_then(condition).map(Spanned::synthetic),
                     bounded: r.bounded,
                     span: SourceSpan::unknown(),
                 });
@@ -297,4 +298,21 @@ fn annotated(
     }
 
     Ok(Wired { events: declared, controllers, external })
+}
+
+/// An annotated rule condition, read like [`choice_guard`]: Cascade syntax
+/// (`?label`, an expression reading `event.x`) is kept, anything else
+/// becomes a named choice. Blank conditions are dropped.
+///
+/// [`choice_guard`]: crate::import::lower::choice_guard
+fn condition(text: &str) -> Option<Condition> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(match parse_condition(trimmed) {
+        Ok(Condition::Expr(e)) if e.operands().iter().any(|o| !o.is_literal()) => Condition::Expr(e),
+        Ok(choice @ Condition::Choice(_)) => choice,
+        Ok(Condition::Expr(_)) | Err(_) => Condition::Choice(trimmed.to_owned()),
+    })
 }

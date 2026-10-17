@@ -136,9 +136,14 @@ pub fn validate(model: &Model, scenario: &Scenario) -> Result<ResolvedScenario, 
     for entry in scenario.entries() {
         let resolved = match entry {
             ScenarioEntry::Fire(step) => resolve_step(model, step, &known, &spawnable).map(ResolvedEntry::Fire),
-            ScenarioEntry::Directive(Directive::Deliver { choice, span }) => {
+            ScenarioEntry::Directive(Directive::Deliver { consumer: Some(consumer), .. }) => {
+                Err(vec![(unsupported("`consumer:` on `step`"), consumer.span)])
+            }
+            ScenarioEntry::Directive(Directive::Deliver { choice, consumer: None, span }) => {
                 Ok(ResolvedEntry::Deliver { choice: *choice, span: *span })
             }
+            ScenarioEntry::Directive(Directive::Wait { span, .. }) => Err(vec![(unsupported("`wait`"), *span)]),
+            ScenarioEntry::Directive(Directive::Choose { span, .. }) => Err(vec![(unsupported("`choose`"), *span)]),
             ScenarioEntry::Directive(Directive::Run { span }) => Ok(ResolvedEntry::Run { span: *span }),
             ScenarioEntry::Directive(Directive::Create(decl)) => {
                 declare(model, decl, &mut known).map(|instance| ResolvedEntry::Create { instance, span: decl.span })
@@ -159,6 +164,11 @@ pub fn validate(model: &Model, scenario: &Scenario) -> Result<ResolvedScenario, 
 }
 
 type Problems = Vec<(ScenarioErrorKind, SourceSpan)>;
+
+/// Directives the simulator does not run yet.
+fn unsupported(what: &str) -> ScenarioErrorKind {
+    ScenarioErrorKind::Unsupported { what: what.to_owned() }
+}
 
 /// A declared or created instance: its name must be new, its machine known.
 fn declare<'s>(model: &Model, decl: &'s InstanceDecl, known: &mut Known<'s>) -> Result<ResolvedInstance, Problems> {
@@ -195,11 +205,11 @@ fn resolve_instance(model: &Model, machine: MachineId, decl: &InstanceDecl) -> R
     let m = model.machine(machine);
     if !m.fields.is_empty() {
         for (field, entry) in decl.fields.iter() {
-            if !m.fields.iter().any(|f| f == field) {
+            if !m.fields.iter().any(|f| f.name == field) {
                 let kind = ScenarioErrorKind::UnknownField {
                     machine: m.name.clone(),
                     field: field.to_owned(),
-                    declared: m.fields.clone(),
+                    declared: m.fields.iter().map(|f| f.name.clone()).collect(),
                 };
                 problems.push((kind, entry.key_span));
             }

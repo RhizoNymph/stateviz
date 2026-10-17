@@ -23,8 +23,8 @@
 //!
 //! - One instance per machine: target selectors are comments; fan-out and
 //!   spawn are TODOs.
-//! - Guards and `when` conditions are free text, so they become
-//!   nondeterministic choices (`$`) with the text as a comment.
+//! - Guards and `when` conditions are not translated: they become
+//!   nondeterministic choices (`$`) with their canonical text as a comment.
 //! - History states are approximated by their parent's default entry.
 //! - States `ignore` the triggers they do not accept, matching Cascade's
 //!   "the fire is dropped"; remove those lines to have P report them.
@@ -84,7 +84,7 @@ fn write_header(w: &mut Writer, model: &Model) {
         "",
         "Limits (fill these in):",
         "- One instance per machine: target selectors are comments, fan-out and spawn TODOs.",
-        "- Guards and conditions are free text: they are nondeterministic choices ($).",
+        "- Guards and conditions are not translated: they are nondeterministic choices ($).",
         "- History states enter their parent's default state.",
         "- States ignore triggers they do not accept, as Cascade drops them; remove the",
         "  ignore lines to have P report dropped triggers.",

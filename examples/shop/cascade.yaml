@@ -88,7 +88,7 @@ machines:
       - from: authorized
         to: captured
         on: capture
-        guard: "amount <= authorized_amount"
+        guard: "?amount <= authorized_amount"
         emits: [PaymentCaptured]
       - { from: authorized, to: failed, on: capture, guard: else }
       - { from: authorized, to: voided, on: void }
@@ -108,7 +108,7 @@ machines:
       # happy path never got the opposite guard, so with low stock both
       # transitions on `reserve` apply.
       - { from: requested, to: reserved, on: reserve, emits: [StockReserved] }
-      - { from: requested, to: backordered, on: reserve, guard: "stock < quantity" }
+      - { from: requested, to: backordered, on: reserve, guard: "?stock < quantity" }
       - { from: backordered, to: reserved, on: restocked, emits: [StockReserved] }
       - { from: reserved, to: committed, on: commit }
 
@@ -167,7 +167,7 @@ controllers:
       PaymentAuthorized:
         - fire: Payment.void
           target: Payment where orderId == event.orderId
-          when: "risk score above threshold"
+          when: "?risk score above threshold"
 
   Orders:
     on:
@@ -221,7 +221,7 @@ controllers:
       TrackingPolled:
         - fire: Shipment.poll_tracking
           target: Shipment where orderId == event.orderId
-          when: "parcel not yet delivered"
+          when: "?parcel not yet delivered"
           bounded: true
 
   Notifier:

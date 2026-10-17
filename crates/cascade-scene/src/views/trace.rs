@@ -313,6 +313,12 @@ impl Block<'_> {
                     meta: Meta::new(vec![ElementRef::Rule(*rule)], self.causal(ElementRef::Handler(r.handler))),
                 }
             }
+            // Not drawn yet: subscriptions, the clock, choices and `sets`.
+            TraceStepKind::Notify { .. }
+            | TraceStepKind::Wait { .. }
+            | TraceStepKind::TimerExpired { .. }
+            | TraceStepKind::Choice { .. }
+            | TraceStepKind::SetFields { .. } => StepShape::Skip,
         }
     }
 
@@ -339,6 +345,7 @@ impl Block<'_> {
                         spans.push((a.min(b), a.max(b), need));
                     }
                 }
+                StepShape::Skip => {}
             }
         }
         let mut centers: Vec<f32> = Vec::with_capacity(n);
@@ -425,6 +432,7 @@ impl Block<'_> {
                     let label = self.label(text, from_x, to_x, y);
                     out.message(line(from_x, to_x, y), stroke, Some(label), target, meta);
                 }
+                StepShape::Skip => {}
             }
         }
 
@@ -465,6 +473,8 @@ enum StepShape {
     Box { lifeline: LifelineIx, look: NodeLook, meta: Meta },
     /// A horizontal message.
     Message { from: End, to: End, text: String, stroke: Stroke, meta: Meta },
+    /// Nothing drawn; the row stays (step kinds the view does not draw yet).
+    Skip,
 }
 
 /// One end of a message.

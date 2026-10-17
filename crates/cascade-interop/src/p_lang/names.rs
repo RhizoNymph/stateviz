@@ -174,7 +174,7 @@ impl Names {
             } else {
                 payload_types.push(Some(global.allocate(&format!("t{name}"))));
                 let mut fields = Idents::default();
-                payload_fields.push(event.payload.iter().map(|f| fields.allocate(f)).collect());
+                payload_fields.push(event.payload.iter().map(|f| fields.allocate(&f.name)).collect());
             }
             events.push(name);
         }

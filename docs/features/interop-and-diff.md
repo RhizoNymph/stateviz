@@ -19,8 +19,9 @@
   app consume `ModelDiff` and the merged model.
 - SVG/PNG export (`cascade render`, see view-scenes.md).
 - Extracting machines from code (a later experiment in the spec).
-- Executing or verifying anything: guards stay free text, the P output is a
-  skeleton that was never compiled here.
+- Executing or verifying anything: guards and conditions are written as
+  their canonical text (see expressions.md), the P output is a skeleton
+  that was never compiled here.
 
 ## Public interface
 
@@ -149,7 +150,7 @@ A machine is named by its `id`, else its key, else `Machine`.
 | targetless transition | self-transition |
 | root-level `on` | one transition whose `from` lists every top-level normal state |
 | transition to the machine itself | its initial state (warning) |
-| `guard`/`cond`: `"name"`, `{ type, params }`, `and`/`or`/`not` | free-text guard, e.g. `canRetry({"max":3})`, `(a) && (!(b))` |
+| `guard`/`cond`: `"name"`, `{ type, params }`, `and`/`or`/`not` | a `?choice` guard, e.g. `?canRetry({"max":3})`, `?(a) && (!(b))`; text that is already a Cascade expression reading `event.x`/`self.x` (or `else`, `?label`) is kept as such |
 | `after: { 1000: … }`, `after: { NAMED: … }` | trigger `after_1000ms` / `after_NAMED`, fired by `Clock` |
 | `invoke: { id \| src, onDone, onError }` | triggers `<actor>_done` / `<actor>_error`, fired by a source named after the actor |
 | `onDone` on a compound state | trigger `<state>_done`, fired by `Environment` (warning: approximation) |
@@ -334,8 +335,10 @@ plus unit tests in the modules.
 - **YAML round trip:** for every example, every import fixture and a
   kitchen-sink definition, `load_str(to_yaml(def))` resolves to the same
   design (every element key and attribute, in order), and emitting again is
-  a fixed point. Free text with any characters survives (tested over YAML
-  1.1/1.2 lookalikes, indicators, quotes, control characters).
+  a fixed point. Choice labels and quoted literals with any characters
+  survive (tested over YAML 1.1/1.2 lookalikes, indicators, quotes, control
+  characters); typed fields, subscriptions, timers, `sets` and emit `with`
+  round-trip too (`tests/semantics_yaml.rs`).
 - **SCXML round trip:** export then import preserves every element key and
   attribute (machines, states and kinds, initials, transitions with guards,
   emits and `bounded`, declared events, controllers, handlers, rules with
@@ -354,7 +357,9 @@ plus unit tests in the modules.
 
 Documented losses:
 
-- XState/SCXML import: guards and conditions become free text;
+- XState/SCXML import: guards and conditions become `?choices` (unless
+  already Cascade expressions); SCXML export keeps field names but not
+  their types;
   `context`/datamodel, non-emitting actions, invoked actors' behavior,
   history default targets and wildcard transitions are dropped; completion
   (`onDone`) is approximated by an environment trigger; exit actions of

@@ -39,7 +39,7 @@ controllers:
     on:
       Paused:
         - fire: Worker.release
-      Finished: { fire: Worker.release, when: "worker still busy" }
+      Finished: { fire: Worker.release, when: "?worker still busy" }
 
 external:
   Operator: [Job.start, Job.pause, Job.resume]

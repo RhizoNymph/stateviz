@@ -55,6 +55,7 @@ pub enum Expected {
     Bool,
     StringOrSequence,
     SequenceOrMapping,
+    StringOrMapping,
 }
 
 impl fmt::Display for Expected {
@@ -66,6 +67,7 @@ impl fmt::Display for Expected {
             Expected::Bool => "true or false",
             Expected::StringOrSequence => "a string or a sequence of strings",
             Expected::SequenceOrMapping => "a sequence or a mapping",
+            Expected::StringOrMapping => "a string or a mapping",
         })
     }
 }
@@ -103,6 +105,15 @@ pub enum DiagnosticKind {
     InvalidTriggerRef { text: String },
     #[error("invalid target selector `{text}`: {reason}")]
     InvalidSelector { text: String, reason: String },
+    /// A guard, condition, filter or assignment value that does not parse.
+    #[error("invalid expression `{text}`: {message}")]
+    InvalidExpression { text: String, message: String },
+    #[error("invalid field type `{text}`: {message}")]
+    InvalidFieldType { text: String, message: String },
+    #[error("invalid duration `{text}`: {message}")]
+    InvalidDuration { text: String, message: String },
+    #[error("{context}: `{first}` and `{second}` cannot be used together")]
+    ConflictingKeys { context: String, first: String, second: String },
 
     // --- References ---------------------------------------------------------
     #[error("machine `{machine}` has no states")]
@@ -131,4 +142,17 @@ pub enum DiagnosticKind {
     UnknownField { machine: String, field: String, declared: Vec<String> },
     #[error("event `{event}` declares no payload field `{field}` (declared: {})", declared.join(", "))]
     UnknownPayloadField { event: String, field: String, declared: Vec<String> },
+
+    // --- Expression typing ----------------------------------------------------
+    #[error("`{text}`: {left} and {right} cannot be compared")]
+    TypeMismatch { text: String, left: String, right: String },
+    #[error("`{value}` is not a member of `{ty}`")]
+    NotAMember { value: String, ty: String },
+    #[error("`{text}`: `self` is not available in {context}")]
+    SelfNotAllowed { text: String, context: String },
+    #[error(
+        "trigger `{trigger}` of machine `{machine}` is used as a {first} and as a {second}{}",
+        if *second == "command" { " (only command triggers can be fired by rules and external sources)" } else { "" }
+    )]
+    TriggerKindConflict { machine: String, trigger: String, first: &'static str, second: &'static str },
 }

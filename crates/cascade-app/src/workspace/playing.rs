@@ -88,7 +88,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        self.play(PlayAction::Step { choice }, cx);
+        self.play(PlayAction::Step { choice, consumer: None }, cx);
     }
 
     pub(crate) fn play_run(&mut self, cx: &mut Context<Self>) {

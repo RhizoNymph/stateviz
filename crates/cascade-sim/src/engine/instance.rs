@@ -39,6 +39,13 @@ impl Instance {
         self.leaf
     }
 
+    /// The history record sorted by key, for canonical state keys.
+    pub fn history_entries(&self) -> Vec<(Option<StateId>, StateId)> {
+        let mut entries: Vec<_> = self.history.iter().map(|(&k, &v)| (k, v)).collect();
+        entries.sort();
+        entries
+    }
+
     /// Take `transition` and return the new leaf. The leaf being left
     /// becomes the last active leaf under each of its ancestors, then the
     /// target is entered: a history target restores from that record, any

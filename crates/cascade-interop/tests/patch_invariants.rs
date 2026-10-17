@@ -29,7 +29,7 @@ fn common_ops(def: &Definition) -> Vec<(&'static str, EditOp)> {
     let used_events: Vec<String> = def
         .machines
         .iter()
-        .flat_map(|m| m.transitions.iter().flat_map(|t| t.emits.iter().map(|e| e.value.clone())))
+        .flat_map(|m| m.transitions.iter().flat_map(|t| t.emits.iter().map(|e| e.event.value.clone())))
         .collect();
     for m in &def.machines {
         let name = m.name.value.clone();
@@ -45,7 +45,7 @@ fn common_ops(def: &Definition) -> Vec<(&'static str, EditOp)> {
             EditOp::SetMachineInitial { machine: name.clone(), initial: top.first().cloned() },
         ));
         ops.push(("SetMachineInitial", EditOp::SetMachineInitial { machine: name.clone(), initial: None }));
-        let mut fields: Vec<String> = m.fields.iter().map(|f| f.value.clone()).collect();
+        let mut fields = m.fields.clone();
         fields.push("extra".into());
         ops.push(("SetMachineFields", EditOp::SetMachineFields { machine: name.clone(), fields }));
         ops.push((
@@ -115,14 +115,23 @@ fn common_ops(def: &Definition) -> Vec<(&'static str, EditOp)> {
         }
         for (index, t) in m.transitions.iter().enumerate() {
             let mut updated = t.clone();
-            updated.guard = if t.guard.is_some() { None } else { Some(s("n > 0")) };
+            updated.guard = if t.guard.is_some() {
+                None
+            } else {
+                Some(cascade_core::Spanned::synthetic(cascade_core::expr::Guard::Expr(
+                    match cascade_core::expr::parse_expr("event.n > 0", cascade_core::expr::ExprContext::Plain) {
+                        Ok(e) => e,
+                        Err(err) => panic!("{err}"),
+                    },
+                )))
+            };
             updated.bounded = !t.bounded;
             ops.push((
                 "UpdateTransition",
                 EditOp::UpdateTransition { machine: name.clone(), index, transition: updated },
             ));
             let mut retargeted = t.clone();
-            retargeted.on = s("renamed_trigger");
+            retargeted.trigger = cascade_core::definition::TriggerSpec::Command(s("renamed_trigger"));
             ops.push((
                 "UpdateTransition",
                 EditOp::UpdateTransition { machine: name.clone(), index, transition: retargeted },
@@ -171,7 +180,9 @@ fn common_ops(def: &Definition) -> Vec<(&'static str, EditOp)> {
             ops.push(("RemoveHandler", EditOp::RemoveHandler { controller: name.clone(), event: event.clone() }));
             if let Some(first) = h.rules.first() {
                 let mut r = first.clone();
-                r.when = Some(s("also sometimes"));
+                r.when = Some(cascade_core::Spanned::synthetic(cascade_core::expr::Condition::Choice(
+                    "also sometimes".into(),
+                )));
                 ops.push((
                     "AddRule",
                     EditOp::AddRule { controller: name.clone(), event: event.clone(), rule: r.clone(), index: None },
@@ -207,7 +218,7 @@ fn common_ops(def: &Definition) -> Vec<(&'static str, EditOp)> {
     if let Some(m) = def.machines.first()
         && let Some(t) = m.transitions.first()
     {
-        let trigger = format!("{}.{}", m.name.value, t.on.value);
+        let trigger = format!("{}.{}", m.name.value, t.trigger.name());
         ops.push(("AddExternal", EditOp::AddExternal { external: external("FreshSource", &[&trigger]), index: None }));
     }
     ops.push(("SetSystemName", EditOp::SetSystemName { name: Some("Renamed system".into()) }));
@@ -338,7 +349,11 @@ fn adding_then_removing_restores_the_text_byte_for_byte() {
             }
         }
         if let Some(m) = def.machines.first() {
-            let trigger = format!("{}.{}", m.name.value, m.transitions.first().map_or("go", |t| t.on.value.as_str()));
+            let trigger = format!(
+                "{}.{}",
+                m.name.value,
+                m.transitions.first().map_or_else(|| "go".to_owned(), |t| t.trigger.name())
+            );
             pairs.push((
                 EditOp::AddExternal { external: external("FreshSource", &[&trigger]), index: None },
                 EditOp::RemoveExternal { external: "FreshSource".into() },

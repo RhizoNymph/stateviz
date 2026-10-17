@@ -10,7 +10,7 @@ use crate::patch::error::{Result, SurgeryError, Unsupported, not_found};
 pub(crate) const ROOT_ORDER: &[&str] = &["system", "machines", "events", "controllers", "external"];
 pub(crate) const MACHINE_ORDER: &[&str] = &["color", "domain", "initial", "fields", "states", "transitions"];
 pub(crate) const STATE_ORDER: &[&str] = &["kind", "initial", "states"];
-pub(crate) const TRANSITION_ORDER: &[&str] = &["from", "to", "on", "guard", "emits", "bounded"];
+pub(crate) const TRANSITION_ORDER: &[&str] = &["from", "to", "on", "after", "guard", "sets", "emits", "bounded"];
 pub(crate) const RULE_ORDER: &[&str] = &["fire", "target", "when", "bounded"];
 
 /// The root mapping.

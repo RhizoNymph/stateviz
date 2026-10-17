@@ -110,11 +110,11 @@ pub fn fire_with(source: &str, fired: &str, target: &str, payload: &[(&str, &str
 }
 
 pub fn step() -> PlayAction {
-    PlayAction::Step { choice: None }
+    PlayAction::Step { choice: None, consumer: None }
 }
 
 pub fn choose(position: u32) -> PlayAction {
-    PlayAction::Step { choice: Some(position) }
+    PlayAction::Step { choice: Some(position), consumer: None }
 }
 
 pub fn run_all() -> PlayAction {

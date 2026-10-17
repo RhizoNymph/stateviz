@@ -118,7 +118,7 @@ fn rename_machine_propagates_to_fires_targets_and_externals() {
     assert!(has_machine(d, "Parcel") && !has_machine(d, "Shipment"));
     let rule = &handler(d, "Fulfillment", "StockReserved").rules[0];
     assert_eq!(rule.fire.value.machine, "Parcel");
-    assert_eq!(rule.target.as_ref().map(|t| t.value.machine.as_str()), Some("Parcel"));
+    assert_eq!(rule.target.as_ref().map(|t| t.value.machine()), Some("Parcel"));
     assert_eq!(
         external_triggers(d, "Carrier"),
         ["Parcel.handed_over", "Parcel.delivered", "Parcel.lost"].map(String::from)
@@ -172,7 +172,7 @@ fn machine_setters_round_trip() {
 
     let applied =
         ok(&def, EditOp::SetMachineFields { machine: "Order".into(), fields: vec!["orderId".into(), "region".into()] });
-    let fields: Vec<_> = machine(&applied.definition, "Order").fields.iter().map(|f| f.value.as_str()).collect();
+    let fields: Vec<_> = machine(&applied.definition, "Order").fields.iter().map(|f| f.name.value.as_str()).collect();
     assert_eq!(fields, ["orderId", "region"]);
 }
 
@@ -384,7 +384,7 @@ fn declaring_the_first_event_declares_every_used_event() {
     let applied = ok(&def, EditOp::DeclareEvent { event: event_def("OrderPaid", &["orderId", "amount"]), index: None });
     assert_eq!(event_names(&applied.definition), ["OrderCancelled", "Shipped", "OrderPaid"]);
     let paid = &applied.definition.events[2];
-    assert_eq!(paid.payload.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), ["orderId", "amount"]);
+    assert_eq!(paid.payload.iter().map(|p| p.name.value.as_str()).collect::<Vec<_>>(), ["orderId", "amount"]);
     assert!(applied.touched.contains(&ElementKey::Event { event: "OrderPaid".into() }));
     assert!(applied.touched.contains(&ElementKey::Event { event: "Shipped".into() }));
 
@@ -442,7 +442,7 @@ fn rename_event_everywhere() {
     let d = &applied.definition;
     assert!(event_names(d).contains(&"OrderSettled".to_owned()));
     assert!(!event_names(d).contains(&"OrderPaid".to_owned()));
-    assert_eq!(machine(d, "Order").transitions[1].emits[0].value, "OrderSettled");
+    assert_eq!(machine(d, "Order").transitions[1].emits[0].event.value, "OrderSettled");
     assert_eq!(handler(d, "Fulfillment", "OrderSettled").rules.len(), 1);
     assert!(applied.touched.contains(&ElementKey::Event { event: "OrderSettled".into() }));
     assert!(
@@ -454,7 +454,7 @@ fn rename_event_everywhere() {
     // Undeclared events rename the same way.
     let order = parse(ORDER_FULFILLMENT);
     let applied = ok(&order, EditOp::RenameEvent { from: "OrderPaid".into(), to: "Paid".into() });
-    assert_eq!(machine(&applied.definition, "Order").transitions[1].emits[0].value, "Paid");
+    assert_eq!(machine(&applied.definition, "Order").transitions[1].emits[0].event.value, "Paid");
     assert_eq!(controller(&applied.definition, "Fulfillment").on[0].event.value, "Paid");
 
     assert_eq!(
@@ -600,7 +600,7 @@ fn handler_and_rule_rejections() {
     // A target selector must name the fired machine.
     let mut mismatched = targeted(rule("Shipment", "start"), TargetMode::One);
     if let Some(target) = mismatched.target.as_mut() {
-        target.value.machine = "Order".into();
+        *target.value.machine_mut() = "Order".into();
     }
     let err = rejected(
         &def,
@@ -870,11 +870,14 @@ fn batch_changes_an_event_payload_in_strict_mode() {
     assert_eq!(event_names(&applied.definition), event_names(&def));
     let paid = &applied.definition.events[1];
     assert_eq!(paid.name.value, "OrderPaid");
-    assert_eq!(paid.payload.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), ["orderId", "amount"]);
+    assert_eq!(paid.payload.iter().map(|p| p.name.value.as_str()).collect::<Vec<_>>(), ["orderId", "amount"]);
     assert!(applied.touched.contains(&ElementKey::Event { event: "OrderPaid".into() }));
     // The inverse restores the old payload at the same place (also checked by `ok`).
     let undone = apply(&applied.definition, &applied.inverse).expect("undo applies");
-    assert_eq!(undone.definition.events[1].payload.iter().map(|p| p.value.as_str()).collect::<Vec<_>>(), ["orderId"]);
+    assert_eq!(
+        undone.definition.events[1].payload.iter().map(|p| p.name.value.as_str()).collect::<Vec<_>>(),
+        ["orderId"]
+    );
 
     // The only declaration: the list is empty in between (lenient), and the
     // re-declaration makes it strict again with just this event.

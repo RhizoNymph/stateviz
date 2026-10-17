@@ -16,6 +16,9 @@
 //!   - run                                     # deliver until the queue is empty
 //!   - { create: o2, machine: Order, fields: { orderId: "2" } }
 //!   - { remove: o2 }
+//!   - { wait: 30s }                           # advance the clock (not run yet)
+//!   - { choose: "card declined" }             # a pending decision (not run yet)
+//!   - { step: 0, consumer: Fulfillment }      # one consumer only (not run yet)
 //! end: pause                                  # optional: leave the queue as it is
 //! ```
 //!
@@ -33,6 +36,7 @@ mod write;
 use std::collections::BTreeMap;
 
 use cascade_core::definition::TriggerRef;
+use cascade_core::expr::Duration;
 use cascade_core::span::{SourceSpan, Spanned};
 
 pub use file::{DiscoverError, ScenarioFileError, discover_scenarios, load_scenario_file};
@@ -84,7 +88,16 @@ pub enum ScenarioEntry<'a> {
 pub enum Directive {
     /// `- step` delivers the queue's head; `- { step: n }` delivers the item
     /// at position `n` (0 is the head) ahead of the ones before it.
-    Deliver { choice: Option<u32>, span: SourceSpan },
+    /// `- { step: n, consumer: Fulfillment }` delivers an event only to the
+    /// named consumer (a controller, or an instance for a subscription).
+    Deliver { choice: Option<u32>, consumer: Option<Spanned<String>>, span: SourceSpan },
+    /// `- wait` advances the clock to the next timer deadline; `- { wait:
+    /// 30s }` advances it by a duration. Like an external fire, it waits for
+    /// quiet first unless `timing: immediate`.
+    Wait { by: Option<Spanned<Duration>>, timing: StepTiming, span: SourceSpan },
+    /// `- { choose: "card declined" }` pushes a pending decision for the
+    /// next choice point that offers it.
+    Choose { option: Spanned<String>, span: SourceSpan },
     /// `- run`: deliver queue heads until the queue is empty.
     Run { span: SourceSpan },
     /// `- { create: name, machine: M, fields: {…}, state: s }`: an instance
@@ -99,7 +112,11 @@ impl Directive {
     /// The whole entry.
     pub fn span(&self) -> SourceSpan {
         match self {
-            Directive::Deliver { span, .. } | Directive::Run { span } | Directive::Remove { span, .. } => *span,
+            Directive::Deliver { span, .. }
+            | Directive::Run { span }
+            | Directive::Remove { span, .. }
+            | Directive::Wait { span, .. }
+            | Directive::Choose { span, .. } => *span,
             Directive::Create(decl) => decl.span,
         }
     }

@@ -26,7 +26,7 @@ machines:
       - deep: { kind: deep-history }
       - done: { kind: final }
     transitions:
-      - { from: idle, to: running, on: go, guard: "queue not empty", emits: [Started] }
+      - { from: idle, to: running, on: go, guard: "?queue not empty", emits: [Started] }
       - { from: running.fetching, to: running.parsing, on: fetched }
       - { from: running, to: done, on: finish }
       - { from: idle, to: running.parsing, on: resume }
@@ -141,7 +141,7 @@ fn guards_label_the_arrow_into_the_pill() {
         .filter_map(|e| e.label.as_ref())
         .map(|l| l.text.clone())
         .collect();
-    assert_eq!(labels, ["[queue not empty]"]);
+    assert_eq!(labels, ["[?queue not empty]"]);
 }
 
 #[test]

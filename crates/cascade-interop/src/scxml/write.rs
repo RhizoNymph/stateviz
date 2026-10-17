@@ -32,13 +32,12 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cascade_core::definition::{TargetMode, TargetSpec};
 use cascade_core::model::{StateKind, Target};
 use cascade_core::{MachineId, Model, StateId, TransitionId, TriggerId};
 
 use crate::scxml::xml::XmlWriter;
 use crate::scxml::{CASCADE_NS, SCXML_NS};
-use crate::yaml::selector;
+use crate::yaml::{selector, target_spec};
 
 const HEADER: &str = "\
 Exported by Cascade (docs/features/interop-and-diff.md).
@@ -46,14 +45,14 @@ Each machine is a region of the top-level <parallel>; state ids are Machine.path
 triggers are events named Machine.trigger. Emitted events are <send>s. Each controller
 is a region marked cascade:controller: one transition per subscribed event, one <send>
 per rule (inside <if> when the rule has a condition). Guards and conditions are
-Cascade's free text, not expressions. External sources, declared events, colors,
+Cascade's own syntax (expressions, ?choices, else), not ECMAScript. External sources, declared events, colors,
 domains, fields, selectors and bounded flags live in the cascade: namespace.";
 
 const FLAT_HEADER: &str = "\
 Exported by Cascade (docs/features/interop-and-diff.md).
 One machine: its states are the document's states, with ids Machine.path, and its
 triggers are events named Machine.trigger. Emitted events are <send>s. Guards are
-Cascade's free text, not expressions. External sources, declared events, colors,
+Cascade's own syntax (expressions, ?choices, else), not ECMAScript. External sources, declared events, colors,
 domains, fields and bounded flags live in the cascade: namespace.";
 
 /// Unique XML ids across the document.
@@ -157,7 +156,8 @@ impl Writer<'_> {
             attrs.push(("cascade:domain", domain.clone()));
         }
         if !m.fields.is_empty() {
-            attrs.push(("cascade:fields", m.fields.join(" ")));
+            let names: Vec<&str> = m.fields.iter().map(|f| f.name.as_str()).collect();
+            attrs.push(("cascade:fields", names.join(" ")));
         }
         attrs
     }
@@ -167,7 +167,7 @@ impl Writer<'_> {
         let model = self.model;
         if !model.definition().events.is_empty() {
             for (_, event) in model.events().filter(|(_, e)| e.declared) {
-                let payload = event.payload.join(" ");
+                let payload = event.payload.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(" ");
                 let mut attrs = vec![("name", event.name.as_str())];
                 if !payload.is_empty() {
                     attrs.push(("payload", payload.as_str()));
@@ -233,8 +233,9 @@ impl Writer<'_> {
             let t = model.transition(tid);
             let event = self.trigger_event(t.trigger);
             let target = self.state_id(t.to);
+            let guard = t.guard.as_ref().map(ToString::to_string);
             let mut attrs = vec![("event", event.as_str()), ("target", target.as_str())];
-            if let Some(guard) = &t.guard {
+            if let Some(guard) = &guard {
                 attrs.push(("cond", guard.as_str()));
             }
             if t.bounded {
@@ -244,8 +245,8 @@ impl Writer<'_> {
                 self.xml.empty("transition", &attrs);
             } else {
                 self.xml.start("transition", &attrs);
-                for &e in &t.emits {
-                    self.xml.empty("send", &[("event", &model.event(e).name)]);
+                for e in &t.emits {
+                    self.xml.empty("send", &[("event", &model.event(e.event).name)]);
                 }
                 self.xml.end("transition");
             }
@@ -282,7 +283,7 @@ impl Writer<'_> {
                 }
                 match &rule.condition {
                     Some(when) => {
-                        self.xml.start("if", &[("cond", when)]);
+                        self.xml.start("if", &[("cond", &when.to_string())]);
                         self.xml.empty("send", &attrs);
                         self.xml.end("if");
                     }
@@ -297,11 +298,8 @@ impl Writer<'_> {
 
 /// The selector text for a rule target, or `None` for "the one instance".
 fn target_text(machine: &str, target: &Target) -> Option<String> {
-    let (mode, clauses) = match target {
-        Target::One { predicates } if predicates.is_empty() => return None,
-        Target::One { predicates } => (TargetMode::One, predicates),
-        Target::All { predicates } => (TargetMode::All, predicates),
-        Target::Spawn { assignments } => (TargetMode::Spawn, assignments),
-    };
-    Some(selector(&TargetSpec { mode, machine: machine.to_owned(), clauses: clauses.clone() }))
+    if matches!(target, Target::One { filter: None }) {
+        return None;
+    }
+    Some(selector(&target_spec(machine, target)))
 }

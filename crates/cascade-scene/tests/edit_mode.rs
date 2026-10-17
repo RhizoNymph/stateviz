@@ -144,7 +144,7 @@ fn fire_labels_show_selectors_and_conditions_only_when_present() {
         .filter(|e| e.kind == EdgeKind::Fire)
         .filter_map(|e| e.label.as_ref().map(|l| l.text.clone()))
         .collect();
-    assert!(labels.contains(&"by orderId [risk score above threshold]".to_owned()), "{labels:?}");
+    assert!(labels.contains(&"by orderId [?risk score above threshold]".to_owned()), "{labels:?}");
     assert!(labels.contains(&"new with orderId".to_owned()), "{labels:?}");
 }
 
@@ -165,7 +165,7 @@ fn fires_from_one_controller_into_one_pill_merge() {
     assert_eq!(fires.len(), 1);
     assert_eq!(fires[0].target, target("rule:Tracking/ShipmentDispatched#0"));
     let label = fires[0].label.as_ref().map(|l| l.text.clone()).unwrap_or_default();
-    assert_eq!(label, "by orderId [parcel not yet delivered]", "each selector and condition once");
+    assert_eq!(label, "by orderId [?parcel not yet delivered]", "each selector and condition once");
     // Every event appears once, including ones nobody emits or handles.
     for event in ["event:ShipmentLost", "event:ReturnRequested", "event:TrackingPolled"] {
         assert_eq!(node_shape(&scene, event), Shape::Tag);

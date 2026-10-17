@@ -22,8 +22,14 @@ pub(crate) fn causal_links(graph: &CausalGraph) -> Vec<CausalLink> {
     for (ix, node) in graph.nodes() {
         let CausalNode::Transition(from) = node else { continue };
         for &emit in graph.outgoing(ix) {
+            if graph.edge(emit).kind != CausalEdgeKind::Emit {
+                continue;
+            }
             let event = graph.edge(emit).to;
             for &sub in graph.outgoing(event) {
+                if graph.edge(sub).kind != CausalEdgeKind::Subscribe {
+                    continue;
+                }
                 let handler = graph.edge(sub).to;
                 for &fire in graph.outgoing(handler) {
                     let edge = graph.edge(fire);
@@ -122,7 +128,7 @@ mod tests {
             let mut expected = graph.transition_successors(t);
             expected.sort();
             expected.dedup();
-            let mut got: Vec<_> = links.iter().filter(|l| l.from == t).map(|l| (l.to, l.rule)).collect();
+            let mut got: Vec<_> = links.iter().filter(|l| l.from == t).map(|l| (l.to, Some(l.rule))).collect();
             got.sort();
             assert_eq!(got, expected);
         }

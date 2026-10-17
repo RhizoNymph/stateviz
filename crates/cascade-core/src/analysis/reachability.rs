@@ -183,8 +183,8 @@ impl<'m> Solver<'m> {
         }
         self.live[t.index()] = true;
         self.enter(tr.to);
-        for &event in &tr.emits {
-            self.emit(event);
+        for emit in &tr.emits {
+            self.emit(emit.event);
         }
     }
 

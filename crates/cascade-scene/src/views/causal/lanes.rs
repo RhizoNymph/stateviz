@@ -50,7 +50,7 @@ impl LaneRules {
     pub(super) fn new(model: &Model) -> Self {
         let mut emitter: Vec<Option<MachineId>> = vec![None; model.event_count()];
         for (_, t) in model.transitions() {
-            for &ev in &t.emits {
+            for ev in t.emits.iter().map(|e| e.event) {
                 if let Some(slot) = emitter.get_mut(ev.index())
                     && slot.is_none()
                 {

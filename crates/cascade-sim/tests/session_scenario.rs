@@ -151,6 +151,8 @@ fn scenario_steps_become_actions() {
             PlayAction::Fire { .. } => "fire",
             PlayAction::Step { .. } => "step",
             PlayAction::RunUntilQuiet => "run",
+            PlayAction::Advance { .. } => "advance",
+            PlayAction::Choose { .. } => "choose",
         })
         .collect();
     assert_eq!(kinds, ["add", "add", "add", "fire", "fire", "run", "fire", "fire"]);

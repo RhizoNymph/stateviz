@@ -44,7 +44,7 @@ impl InstanceScope {
     fn of(target: &Target) -> Self {
         match target {
             Target::Spawn { .. } => InstanceScope::Fresh,
-            Target::One { predicates } if predicates.is_empty() => InstanceScope::Singleton,
+            Target::One { filter: None } => InstanceScope::Singleton,
             Target::One { .. } | Target::All { .. } => InstanceScope::Selected,
         }
     }

@@ -158,7 +158,7 @@ fn enter<'a>(model: &Model, names: &'a Names, state: StateId) -> (&'a str, Optio
 /// controller subscribed to them.
 fn send_lines(model: &Model, names: &Names, t: TransitionId) -> Vec<String> {
     let mut lines = Vec::new();
-    for &event in &model.transition(t).emits {
+    for event in model.transition(t).emits.iter().map(|e| e.event) {
         let mut controllers = Vec::new();
         for &h in &model.event(event).handlers {
             let controller = model.handler(h).controller;

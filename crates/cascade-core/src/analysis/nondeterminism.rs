@@ -74,7 +74,7 @@ pub(super) fn normalize_guard(guard: &str) -> String {
 fn ambiguity(model: &Model, transitions: &[TransitionId]) -> Option<Ambiguity> {
     let mut guards = Vec::with_capacity(transitions.len());
     for &t in transitions {
-        let guard = model.transition(t).guard.as_deref().map(normalize_guard).unwrap_or_default();
+        let guard = model.transition(t).guard.as_ref().map(|g| normalize_guard(&g.to_string())).unwrap_or_default();
         if guard.is_empty() {
             return Some(Ambiguity::Unguarded(t));
         }

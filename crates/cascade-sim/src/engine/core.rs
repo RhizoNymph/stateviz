@@ -9,7 +9,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use cascade_core::Model;
-use cascade_core::definition::FieldClause;
+use cascade_core::expr::{Condition, Expr, Guard, MapScope, eval};
 use cascade_core::ids::{ControllerId, EventId, ExternalId, MachineId, RuleId, TriggerId};
 use cascade_core::model::Target;
 
@@ -27,6 +27,9 @@ pub(crate) struct Queued {
     pub id: PendingId,
     /// `OrderPaid from o1` or `Fulfillment → s1: start`, fixed when queued.
     pub label: String,
+    /// Who still has to receive it, in delivery order (see
+    /// `PendingItem::consumers_left`).
+    pub consumers_left: Vec<String>,
     pub item: QueueItem,
 }
 
@@ -202,7 +205,9 @@ impl Core {
     }
 
     /// Deliver `trigger` to an instance: take the first enabled transition in
-    /// definition order (guards are not evaluated) or drop the trigger. Each
+    /// definition order whose guard does not rule it out (an expression guard
+    /// that evaluates false; choices and `else` take the default, i.e. stay
+    /// candidates), or drop the trigger. Each
     /// emitted event carries the instance's fields overlaid with `context`,
     /// the payload that came with the trigger.
     fn deliver_trigger(
@@ -215,7 +220,14 @@ impl Core {
     ) {
         let instance = &mut self.instances[target.0];
         let from = instance.leaf();
-        let Some(&transition) = model.enabled_transitions(from, trigger).first() else {
+        let types = model.types_for(instance.machine, None);
+        let scope = MapScope { event: context, self_fields: &instance.fields };
+        let enabled =
+            model.enabled_transitions(from, trigger).into_iter().find(|&t| match &model.transition(t).guard {
+                Some(Guard::Expr(guard)) => eval(guard, &scope, &types),
+                Some(Guard::Choice(_) | Guard::Else) | None => true,
+            });
+        let Some(transition) = enabled else {
             self.recorder.push(Some(cause), RawKind::Dropped { instance: target, trigger, state: from });
             return;
         };
@@ -225,11 +237,12 @@ impl Core {
         let label_from = instance.name.clone();
 
         let step = self.recorder.push(Some(cause), RawKind::Transition { instance: target, transition, from, to });
-        for &event in &model.transition(transition).emits {
+        for event in model.transition(transition).emits.iter().map(|e| e.event) {
             let emitted = self.recorder.push(Some(step), RawKind::Emit { instance: target, event });
             self.recorder.set_payload(emitted, payload.clone());
             let label = format!("{} from {label_from}", model.event(event).name);
-            self.enqueue(label, QueueItem::Event { event, payload: payload.clone(), emitted });
+            let consumers = event_consumers(model, event);
+            self.enqueue(label, consumers, QueueItem::Event { event, payload: payload.clone(), emitted });
         }
     }
 
@@ -249,9 +262,19 @@ impl Core {
         let r = model.rule(rule);
         let controller = r.controller;
         let machine = model.trigger(r.trigger).machine;
+        // A condition that evaluates false means the rule does not apply; a
+        // choice takes the default (it holds).
+        if let Some(Condition::Expr(condition)) = &r.condition {
+            let none = Payload::new();
+            let scope = MapScope { event: payload, self_fields: &none };
+            if !eval(condition, &scope, &model.event_types(r.event)) {
+                return;
+            }
+        }
+        let filter = r.target.filter();
         match &r.target {
-            Target::One { predicates } => {
-                let candidates = self.matching(machine, predicates, payload);
+            Target::One { .. } => {
+                let candidates = self.matching(model, machine, r.event, filter, payload);
                 match candidates.as_slice() {
                     [] => {
                         self.recorder.push(Some(deliver), RawKind::NoTarget { controller, rule });
@@ -263,8 +286,8 @@ impl Core {
                     }
                 }
             }
-            Target::All { predicates } => {
-                let candidates = self.matching(machine, predicates, payload);
+            Target::All { .. } => {
+                let candidates = self.matching(model, machine, r.event, filter, payload);
                 if candidates.is_empty() {
                     self.recorder.push(Some(deliver), RawKind::NoTarget { controller, rule });
                 }
@@ -283,10 +306,18 @@ impl Core {
         }
     }
 
-    fn matching(&self, machine: MachineId, predicates: &[FieldClause], payload: &Payload) -> Vec<InstanceIx> {
+    fn matching(
+        &self,
+        model: &Model,
+        machine: MachineId,
+        event: EventId,
+        filter: Option<&Expr>,
+        payload: &Payload,
+    ) -> Vec<InstanceIx> {
+        let types = model.types_for(machine, Some(event));
         self.instances_of(machine)
             .into_iter()
-            .filter(|ix| select::matches(&self.instances[ix.0].fields, predicates, payload))
+            .filter(|ix| select::matches(&self.instances[ix.0].fields, filter, payload, &types))
             .collect()
     }
 
@@ -310,13 +341,14 @@ impl Core {
             self.instances[target.0].name,
             model.trigger(model.rule(rule).trigger).name
         );
-        self.enqueue(label, QueueItem::Fire { rule, target, payload: payload.clone(), fired, occurrence });
+        let consumers = vec![self.instances[target.0].name.clone()];
+        self.enqueue(label, consumers, QueueItem::Fire { rule, target, payload: payload.clone(), fired, occurrence });
     }
 
-    fn enqueue(&mut self, label: String, item: QueueItem) {
+    fn enqueue(&mut self, label: String, consumers_left: Vec<String>, item: QueueItem) {
         let id = PendingId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
-        self.queue.push_back(Queued { id, label, item });
+        self.queue.push_back(Queued { id, label, consumers_left, item });
     }
 
     /// `<machine-lowercase><n>` with the smallest unused `n`, counting up
@@ -332,6 +364,20 @@ impl Core {
             }
         }
     }
+}
+
+/// An event's consumers in delivery order: the controllers whose handlers
+/// receive it, in definition order. (Subscribing instances come first once
+/// subscriptions run.)
+fn event_consumers(model: &Model, event: EventId) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for &handler in &model.event(event).handlers {
+        let name = &model.controller(model.handler(handler).controller).name;
+        if !names.contains(name) {
+            names.push(name.clone());
+        }
+    }
+    names
 }
 
 fn step_limit() -> SimError {

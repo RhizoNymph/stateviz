@@ -225,6 +225,33 @@ fn trace_json(model: &Model, run: &SimRun) -> Value {
                     "rule": key(ElementRef::Rule(*rule)),
                     "candidates": candidates.iter().map(|c| c.0).collect::<Vec<_>>(),
                 }),
+                TraceStepKind::Notify { instance, event } => json!({
+                    "kind": "notify",
+                    "instance": instance.0,
+                    "event": model.event(*event).name,
+                }),
+                TraceStepKind::Wait { by, now } => json!({
+                    "kind": "wait",
+                    "by": by.to_string(),
+                    "now": now.to_string(),
+                }),
+                TraceStepKind::TimerExpired { instance, trigger } => json!({
+                    "kind": "timer-expired",
+                    "instance": instance.0,
+                    "trigger": key(ElementRef::Trigger(*trigger)),
+                }),
+                TraceStepKind::Choice { at, options, chosen, defaulted } => json!({
+                    "kind": "choice",
+                    "at": at.0,
+                    "options": options,
+                    "chosen": chosen,
+                    "defaulted": defaulted,
+                }),
+                TraceStepKind::SetFields { instance, fields } => json!({
+                    "kind": "set-fields",
+                    "instance": instance.0,
+                    "fields": fields,
+                }),
             };
             if let Value::Object(map) = &mut value {
                 map.insert("index".to_owned(), json!(i));

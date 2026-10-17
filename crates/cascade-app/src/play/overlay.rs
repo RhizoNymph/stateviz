@@ -19,7 +19,12 @@ fn active_element(kind: &TraceStepKind) -> Option<ElementRef> {
         TraceStepKind::ExternalFire { .. }
         | TraceStepKind::Dropped { .. }
         | TraceStepKind::NoTarget { .. }
-        | TraceStepKind::Ambiguous { .. } => None,
+        | TraceStepKind::Ambiguous { .. }
+        | TraceStepKind::Notify { .. }
+        | TraceStepKind::Wait { .. }
+        | TraceStepKind::TimerExpired { .. }
+        | TraceStepKind::Choice { .. }
+        | TraceStepKind::SetFields { .. } => None,
     }
 }
 
@@ -27,6 +32,7 @@ fn pending_element(kind: &PendingKind) -> ElementRef {
     match kind {
         PendingKind::Event { event } => ElementRef::Event(*event),
         PendingKind::Fire { rule, .. } => ElementRef::Rule(*rule),
+        PendingKind::Timer { trigger, .. } => ElementRef::Trigger(*trigger),
     }
 }
 
@@ -139,13 +145,21 @@ external:
                 kind: PendingKind::Fire { rule, target: l },
                 cause: StepIx(4),
                 label: "x".into(),
+                consumers_left: vec!["o1".into()],
             },
-            PendingItem { id: PendingId(2), kind: PendingKind::Event { event }, cause: StepIx(5), label: "y".into() },
+            PendingItem {
+                id: PendingId(2),
+                kind: PendingKind::Event { event },
+                cause: StepIx(5),
+                label: "y".into(),
+                consumers_left: Vec::new(),
+            },
             PendingItem {
                 id: PendingId(3),
                 kind: PendingKind::Fire { rule, target: l },
                 cause: StepIx(4),
                 label: "z".into(),
+                consumers_left: vec!["o1".into()],
             },
         ];
         let overlay = build_overlay(&m, &t, &instances, &pending, Some(0..6));

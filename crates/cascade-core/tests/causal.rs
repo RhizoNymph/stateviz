@@ -75,6 +75,8 @@ fn spec_example_edges() {
             CausalEdgeKind::Emit => "emit",
             CausalEdgeKind::Subscribe => "subscribe",
             CausalEdgeKind::Fire { .. } => "fire",
+            CausalEdgeKind::Notify { .. } => "notify",
+            CausalEdgeKind::Delay { .. } => "delay",
         })
         .collect();
     assert_eq!(kinds.iter().filter(|k| **k == "trigger").count(), 3);

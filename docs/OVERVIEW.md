@@ -15,7 +15,8 @@ Overview:
   subsystems:
     cascade-core: >
       Definition format (YAML → spanned Definition → resolved Model with
-      typed ids), stable ElementKeys, the derived CausalGraph with cone and
+      typed ids), the expression language (guards, conditions, filters,
+      field types, durations, eval, solve), stable ElementKeys, the derived CausalGraph with cone and
       path queries, static analysis finding types and checks, fuzzy search,
       model diffing. Pure; no UI, the only I/O is load_file.
     cascade-layout: >
@@ -72,12 +73,30 @@ Overview:
 
 Features Index:
   definition_format:
-    description: YAML schema, parser with source spans, name resolution, the resolved Model and stable element keys.
+    description: YAML schema (typed fields and payloads, command/subscription/timer triggers, guards, conditions, sets, emit with), parser with source spans, name resolution and type checking, the resolved Model and stable element keys.
     entry_points: [cascade_core::load_str, cascade_core::load_file, cascade_core::parse_definition, cascade_core::resolve]
     depends_on: []
     doc: docs/features/definition-format.md
+  expressions:
+    description: >
+      The typed expression language of guards (expression, `?choice`,
+      `else`), rule conditions, selector and subscription filters and
+      assignments; field types; durations; canonical text that round-trips;
+      evaluation over string values; sound exclusivity (`overlap`) and
+      coverage reasoning; resolver type checking.
+    entry_points: [cascade_core::expr::parse_expr, cascade_core::expr::parse_guard, cascade_core::expr::parse_condition, cascade_core::expr::eval, cascade_core::expr::overlap, cascade_core::expr::coverage, cascade_core::expr::parse_duration, cascade_core::Model::types_for]
+    depends_on: [definition_format]
+    doc: docs/features/expressions.md
+  semantics_contracts:
+    description: >
+      The shared design of the semantics phase (expressions, exploration,
+      subscriptions and timers) and its workstreams; wave 1 (the core
+      language) has landed.
+    entry_points: []
+    depends_on: [expressions, definition_format, causal_graph, simulator]
+    doc: docs/features/semantics-contracts.md
   causal_graph:
-    description: The derived causal graph, causal depth, forward/backward cones with hop limits, and path queries.
+    description: The derived causal graph (including subscription Notify and timer Delay edges), causal depth, forward/backward cones with hop limits, and path queries.
     entry_points: [cascade_core::CausalGraph::build, CausalGraph::cone, CausalGraph::paths_between, CausalGraph::depths]
     depends_on: [definition_format]
     doc: docs/features/causal-graph.md
@@ -111,7 +130,10 @@ Features Index:
       spawn, history and payloads, traces with cause links and stable
       lifelines, race candidates replayed in both orders, and the play
       session (actions, pending queue, available fires, seek, branches,
-      replay, to_scenario) on the same engine.
+      replay, to_scenario) on the same engine. Contract types for timers,
+      choices and per-consumer delivery (new trace step kinds, Advance /
+      Choose / Step consumer, wait / choose directives, state keys) exist
+      but are rejected as unsupported until wave 2.
     entry_points: [cascade_sim::parse_scenario, cascade_sim::validate, cascade_sim::discover_scenarios, cascade_sim::simulate, cascade_sim::simulate_run, cascade_sim::race_orderings, cascade_sim::PlaySession, cascade_sim::scenario_to_yaml, cascade simulate, cascade simulate --interactive]
     depends_on: [definition_format, static_analysis]
     doc: docs/features/simulator.md

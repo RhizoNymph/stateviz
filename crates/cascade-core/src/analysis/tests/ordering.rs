@@ -87,7 +87,7 @@ fn has_errors_only_counts_errors() {
 
 #[test]
 fn new_findings_take_their_checks_default_severity() {
-    let step = CycleStep { transition: TransitionId::new(0), rule: RuleId::new(0) };
+    let step = CycleStep { transition: TransitionId::new(0), rule: Some(RuleId::new(0)) };
     let details = [
         FindingDetail::InvalidFire { rule: RuleId::new(0), trigger: TriggerId::new(0) },
         FindingDetail::DeadExternalTrigger { source: ExternalId::new(0), trigger: TriggerId::new(0) },

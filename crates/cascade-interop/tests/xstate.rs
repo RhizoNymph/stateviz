@@ -56,14 +56,14 @@ fn emits_of(model: &Model, key: &str) -> Vec<String> {
     let Some(cascade_core::ElementRef::Transition(t)) = key.parse().ok().and_then(|k| model.resolve_key(&k)) else {
         panic!("no transition {key}");
     };
-    model.transition(t).emits.iter().map(|&e| model.event(e).name.clone()).collect()
+    model.transition(t).emits.iter().map(|e| model.event(e.event).name.clone()).collect()
 }
 
 fn guard_of(model: &Model, key: &str) -> Option<String> {
     let Some(cascade_core::ElementRef::Transition(t)) = key.parse().ok().and_then(|k| model.resolve_key(&k)) else {
         panic!("no transition {key}");
     };
-    model.transition(t).guard.clone()
+    model.transition(t).guard.as_ref().map(ToString::to_string)
 }
 
 // --- Fixtures ------------------------------------------------------------------
@@ -93,7 +93,7 @@ fn traffic_light_fixture() {
     assert_eq!(emits_of(&model, "transition:trafficLight:yellow->red@after_5000ms"), ["LightChanged", "WalkSignalOn"]);
     assert_eq!(
         guard_of(&model, "transition:trafficLight:green->yellow@PEDESTRIAN_WAITING").as_deref(),
-        Some(r#"minimumGreenElapsed({"seconds":10})"#)
+        Some(r#"?minimumGreenElapsed({"seconds":10})"#)
     );
     assert!(source_triggers(&model, "Clock").contains(&"trafficLight.after_5000ms".to_owned()));
     assert!(source_triggers(&model, "Environment").contains(&"trafficLight.FAULT".to_owned()));
@@ -287,9 +287,9 @@ fn guarded_alternatives_and_guard_forms() {
       }
     }"#;
     let model = model(json);
-    assert_eq!(guard_of(&model, "transition:m:a->b@GO").as_deref(), Some("isAdmin"));
-    assert_eq!(guard_of(&model, "transition:m:a->c@GO").as_deref(), Some(r#"hasRole({"role":"ops"})"#));
-    assert_eq!(guard_of(&model, "transition:m:a->d@GO").as_deref(), Some("legacyGuard"));
+    assert_eq!(guard_of(&model, "transition:m:a->b@GO").as_deref(), Some("?isAdmin"));
+    assert_eq!(guard_of(&model, "transition:m:a->c@GO").as_deref(), Some(r#"?hasRole({"role":"ops"})"#));
+    assert_eq!(guard_of(&model, "transition:m:a->d@GO").as_deref(), Some("?legacyGuard"));
     assert_eq!(guard_of(&model, "transition:m:a->e@GO"), None);
 }
 

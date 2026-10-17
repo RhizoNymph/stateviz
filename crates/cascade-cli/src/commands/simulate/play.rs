@@ -171,10 +171,11 @@ fn parse_action(words: &[&str]) -> anyhow::Result<PlayAction> {
                 payload: pairs(rest.iter().copied())?,
             }
         }
-        ["step"] => PlayAction::Step { choice: None },
-        ["step", n] => {
-            PlayAction::Step { choice: Some(n.parse().with_context(|| format!("`{n}` is not a queue position"))?) }
-        }
+        ["step"] => PlayAction::Step { choice: None, consumer: None },
+        ["step", n] => PlayAction::Step {
+            choice: Some(n.parse().with_context(|| format!("`{n}` is not a queue position"))?),
+            consumer: None,
+        },
         ["run"] => PlayAction::RunUntilQuiet,
         [word, ..] if ["add", "remove", "fire", "step", "seek", "rewind", "branch", "save"].contains(word) => {
             bail!("wrong arguments for `{word}`; type `help` for the commands")
@@ -207,9 +208,13 @@ fn action_text(action: &PlayAction) -> String {
         PlayAction::Fire { source, trigger, target, payload } => {
             format!("fire {source} {trigger} {target}{}", pairs_text(payload))
         }
-        PlayAction::Step { choice: None } => "step".to_owned(),
-        PlayAction::Step { choice: Some(n) } => format!("step {n}"),
+        PlayAction::Step { choice: None, consumer: None } => "step".to_owned(),
+        PlayAction::Step { choice: Some(n), consumer: None } => format!("step {n}"),
+        PlayAction::Step { choice, consumer: Some(consumer) } => format!("step {} to {consumer}", choice.unwrap_or(0)),
         PlayAction::RunUntilQuiet => "run until quiet".to_owned(),
+        PlayAction::Advance { by: Some(by) } => format!("wait {by}"),
+        PlayAction::Advance { by: None } => "wait".to_owned(),
+        PlayAction::Choose { option } => format!("choose {option}"),
     }
 }
 

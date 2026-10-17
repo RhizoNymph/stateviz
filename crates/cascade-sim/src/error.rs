@@ -79,6 +79,8 @@ pub enum ScenarioErrorKind {
     InvalidQueuePosition { text: String },
     #[error("unknown end `{text}`; expected `drain` or `pause`")]
     UnknownEnd { text: String },
+    #[error("`{text}` is not a duration: {message}")]
+    InvalidDuration { text: String, message: String },
 
     // --- Against the model --------------------------------------------------
     #[error("instance `{name}` is declared more than once")]
@@ -120,6 +122,14 @@ pub enum ScenarioErrorKind {
     QueueEmpty,
     #[error("there is no queue item at position {position}; {pending} pending (the head is 0)")]
     NoPendingItem { position: u32, pending: usize },
+    /// `wait` without a duration (or `Advance { by: None }`) with no timer
+    /// armed.
+    #[error("no timer is armed, so there is no next deadline to wait for")]
+    NoTimerArmed,
+    /// A directive or play action the simulator does not run yet (`wait`,
+    /// `choose`, `consumer:`).
+    #[error("{what} is not supported yet")]
+    Unsupported { what: String },
 }
 
 /// The simulator could not run a scenario, or a play session could not

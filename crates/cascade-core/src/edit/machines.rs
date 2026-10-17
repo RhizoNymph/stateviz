@@ -5,7 +5,7 @@ use super::keys::{self, machine_key};
 use super::lookup::{self, name_taken};
 use super::{EditError, EditOp, Index, validate};
 use crate::color::PaletteColor;
-use crate::definition::{Definition, MachineDef};
+use crate::definition::{Definition, FieldDef, MachineDef};
 
 pub(super) fn add(def: &mut Definition, machine: &MachineDef, index: Index) -> Result<Effect, EditError> {
     validate::machine(machine)?;
@@ -80,9 +80,9 @@ pub(super) fn rename(def: &mut Definition, from: &str, to: &str) -> Result<Effec
                     changed = true;
                 }
                 if let Some(target) = r.target.as_mut()
-                    && target.value.machine == from
+                    && target.value.machine() == from
                 {
-                    target.value.machine = to.to_owned();
+                    *target.value.machine_mut() = to.to_owned();
                     changed = true;
                 }
                 if changed {
@@ -128,10 +128,9 @@ pub(super) fn set_initial(def: &mut Definition, machine: &str, initial: Option<&
     Ok(Effect::new(EditOp::SetMachineInitial { machine: machine.to_owned(), initial: old }, vec![machine_key(machine)]))
 }
 
-pub(super) fn set_fields(def: &mut Definition, machine: &str, fields: &[String]) -> Result<Effect, EditError> {
-    fields.iter().try_for_each(|f| validate::name(f))?;
+pub(super) fn set_fields(def: &mut Definition, machine: &str, fields: &[FieldDef]) -> Result<Effect, EditError> {
+    validate::fields(fields)?;
     let mdef = lookup::machine_mut(def, machine)?;
-    let old = lookup::values(&mdef.fields);
-    mdef.fields = lookup::synthetic_list(fields.iter().cloned());
+    let old = std::mem::replace(&mut mdef.fields, fields.to_vec());
     Ok(Effect::new(EditOp::SetMachineFields { machine: machine.to_owned(), fields: old }, vec![machine_key(machine)]))
 }

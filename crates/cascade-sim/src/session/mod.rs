@@ -30,6 +30,7 @@
 //! queued), and its name is never given out again. Its lifeline and last
 //! state stay in the trace.
 
+mod clock;
 mod save;
 mod view;
 
@@ -37,7 +38,8 @@ use std::collections::BTreeMap;
 
 use cascade_core::Model;
 use cascade_core::definition::TriggerRef;
-use cascade_core::ids::{EventId, MachineId, RuleId, StateId};
+use cascade_core::expr::Duration;
+use cascade_core::ids::{EventId, MachineId, RuleId, StateId, TriggerId};
 
 use crate::engine::core::Core;
 use crate::engine::drive::{self, Player};
@@ -64,10 +66,21 @@ pub enum PlayAction {
     Fire { source: String, trigger: TriggerRef, target: String, payload: BTreeMap<String, String> },
     /// Deliver one queue item: the head when `choice` is `None`, otherwise
     /// the pending item at that position in [`PlaySession::pending`].
-    Step { choice: Option<u32> },
+    /// `consumer: None` delivers it to all of its remaining consumers;
+    /// `Some(name)` only to that one (a controller, or an instance for a
+    /// subscription), the item staying queued until every consumer has had
+    /// it. Not run yet: `Some(_)` is rejected as unsupported.
+    Step { choice: Option<u32>, consumer: Option<String> },
     /// Deliver queue heads until the queue is empty. The session as a whole
     /// delivers at most [`crate::STEP_LIMIT`] items, like a batch run.
     RunUntilQuiet,
+    /// Advance the clock: by a duration, or to the next deadline (`None`).
+    /// Due timers join the queue. Nothing armed and `by: None` is an error
+    /// (`NoTimerArmed`). Not run yet: rejected as unsupported.
+    Advance { by: Option<Duration> },
+    /// Push a pending decision for the next choice point that offers it.
+    /// Not run yet: rejected as unsupported.
+    Choose { option: String },
 }
 
 /// Identifies a queue item for as long as it is queued. Ids are given out
@@ -82,6 +95,8 @@ pub enum PendingKind {
     Event { event: EventId },
     /// A controller's fire waiting to be delivered to its target instance.
     Fire { rule: RuleId, target: LifelineIx },
+    /// A timer that came due, waiting to be delivered to its instance.
+    Timer { trigger: TriggerId, target: LifelineIx },
 }
 
 /// A queue item, in queue order.
@@ -93,7 +108,38 @@ pub struct PendingItem {
     pub cause: StepIx,
     /// Short human label, e.g. `OrderPaid from o1` or `Fulfillment → s1: start`.
     pub label: String,
+    /// Who still has to receive it, in delivery order: for an event, its
+    /// consumers (controller names, or instance names for subscriptions);
+    /// for a fire or timer, the target instance's name.
+    pub consumers_left: Vec<String>,
 }
+
+/// A decision the data doesn't carry: several candidates remain at a
+/// delivery, or a rule's condition is a `?choice`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChoicePoint {
+    /// The instance or controller deciding.
+    pub at: String,
+    /// The options in definition order (`else` for an `else` guard; `label`
+    /// and `not label` for a rule's choice condition).
+    pub options: Vec<String>,
+}
+
+/// A timer armed by an instance's current state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArmedTimer {
+    pub instance: String,
+    pub trigger: TriggerId,
+    /// The clock time it comes due at.
+    pub deadline: Duration,
+}
+
+/// A canonical key of everything in a session that affects its future
+/// (instances, fields, leaves, history, the queue in order with consumers
+/// left, removed names); ids, labels and the trace are left out. Two
+/// sessions with equal keys behave the same under the same future actions.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct StateKey(String);
 
 /// An instance's current situation.
 #[derive(Clone, Debug, PartialEq, Eq)]

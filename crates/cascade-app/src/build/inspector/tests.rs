@@ -163,7 +163,7 @@ fn event_ops() {
         Ok(Some(EditOp::Batch(ops))) => {
             assert_eq!(ops[0], EditOp::RemoveEventDeclaration { event: "Paid".into() });
             assert!(matches!(&ops[1], EditOp::DeclareEvent { event, index: Some(0) }
-                if event.payload.iter().map(|p| p.value.as_str()).collect::<Vec<_>>() == ["orderId", "amount"]));
+                if event.payload.iter().map(|p| p.name.value.as_str()).collect::<Vec<_>>() == ["orderId", "amount"]));
         }
         other => panic!("unexpected {other:?}"),
     }
@@ -231,8 +231,14 @@ fn rule_fields_validate_with_the_core_grammar() {
         matches!(set(FieldId::RuleTarget, "", &rule()), Ok(Some(EditOp::UpdateRule { rule, .. })) if rule.target.is_none())
     );
     assert_eq!(set(FieldId::RuleTarget, "Shipment where orderId == event.orderId", &rule()), Ok(None));
-    assert!(matches!(set(FieldId::RuleWhen, "stock left", &rule()), Ok(Some(EditOp::UpdateRule { rule, .. }))
-        if rule.when.as_ref().map(|w| w.value.as_str()) == Some("stock left")));
+    // Conditions are `?choices` or expressions; free text is shown as an
+    // invalid value (it used to be accepted as is).
+    assert!(matches!(set(FieldId::RuleWhen, "?stock left", &rule()), Ok(Some(EditOp::UpdateRule { rule, .. }))
+        if rule.when.as_ref().map(|w| w.value.clone()) == Some(cascade_core::expr::Condition::Choice("stock left".into()))));
+    assert!(matches!(set(FieldId::RuleWhen, "stock left", &rule()), Err(FieldError::Invalid(_))));
+    assert!(validate(FieldId::RuleWhen, "stock left").is_err());
+    assert!(validate(FieldId::RuleWhen, "event.orderId != 0").is_ok());
+    assert!(validate(FieldId::RuleWhen, "").is_ok(), "blank is no condition");
     let bounded = field_op(&def(), &rule(), FieldId::RuleBounded, &FieldValue::Toggle(true));
     assert!(matches!(bounded, Ok(Some(Planned { op: EditOp::UpdateRule { rule, .. }, .. })) if rule.bounded));
     assert!(matches!(set(FieldId::RuleFire, "Shipment", &rule()), Err(FieldError::Invalid(_))));
@@ -273,7 +279,7 @@ fn transitions_need_their_entry() {
     let i = inspect(&def(), &key).expect("inspects");
     match set(FieldId::TransitionTrigger, "submit", &key) {
         Ok(Some(EditOp::UpdateTransition { machine, index, transition })) => {
-            assert_eq!((machine.as_str(), index, transition.on.value.as_str()), ("Order", 0, "submit"));
+            assert_eq!((machine.as_str(), index, transition.trigger.name().as_str()), ("Order", 0, "submit"));
             assert_eq!(value_of(&i, FieldId::TransitionTrigger), Some(&FieldInput::Text("place".into())));
         }
         // `locate_transition` is a stub until `feat/edit-ops` lands.
@@ -294,7 +300,15 @@ fn transition_field_syntax() {
     assert!(validate(FieldId::TransitionTo, "placed..paid").is_err());
     assert!(validate(FieldId::TransitionEmits, "").is_ok());
     assert!(validate(FieldId::TransitionEmits, "A, B!").is_err());
-    assert!(validate(FieldId::TransitionGuard, "anything at all").is_ok());
+    // Guards are expressions, `?choices` or `else`; free text no longer is
+    // (this used to accept "anything at all").
+    assert!(validate(FieldId::TransitionGuard, "anything at all").is_err());
+    assert!(validate(FieldId::TransitionGuard, "?anything at all").is_ok());
+    assert!(validate(FieldId::TransitionGuard, "else").is_ok());
+    assert!(validate(FieldId::TransitionGuard, "event.amount > 0").is_ok());
+    assert!(validate(FieldId::TransitionGuard, "").is_ok());
+    let message = validate(FieldId::TransitionGuard, "event.amount >").err().unwrap_or_default();
+    assert!(message.contains("column"), "{message}");
 }
 
 #[test]

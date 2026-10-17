@@ -5,11 +5,12 @@
 //! (ghosts do not exist in the file being viewed).
 
 use crate::definition::{
-    ControllerDef, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef, TargetMode,
-    TargetSpec, TransitionDef, TriggerRef,
+    ControllerDef, EmitDef, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef,
+    TargetSpec, TransitionDef, TriggerRef, TriggerSpec,
 };
+use crate::expr::{FieldDecl, FieldType};
 use crate::ids::{ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId};
-use crate::model::{Model, StateKind, Target};
+use crate::model::{Model, StateKind, Target, TriggerKind};
 use crate::span::{SourceSpan, Spanned};
 
 fn ghost<T>(value: T) -> Spanned<T> {
@@ -23,7 +24,7 @@ pub(super) fn machine_def(model: &Model, id: MachineId) -> MachineDef {
         color: m.color.map(ghost),
         domain: m.domain.clone().map(ghost),
         initial: Some(ghost(model.state(m.initial).path.clone())),
-        fields: m.fields.iter().cloned().map(ghost).collect(),
+        fields: field_defs(&m.fields),
         states: m.top_states.iter().map(|&s| state_def(model, s)).collect(),
         transitions: m.transitions.iter().map(|&t| transition_def(model, t)).collect(),
         span: SourceSpan::unknown(),
@@ -48,14 +49,37 @@ pub(super) fn state_def(model: &Model, id: StateId) -> StateDef {
     StateDef { name: ghost(s.name.clone()), kind: ghost(kind), initial, states, span: SourceSpan::unknown() }
 }
 
+/// Declarations as written: the list form when every field is `any`,
+/// otherwise the typed form.
+fn field_defs(fields: &[FieldDecl]) -> Vec<FieldDef> {
+    let typed = fields.iter().any(|f| f.ty != FieldType::Any);
+    fields.iter().map(|f| FieldDef { name: ghost(f.name.clone()), ty: typed.then(|| ghost(f.ty.clone())) }).collect()
+}
+
 pub(super) fn transition_def(model: &Model, id: TransitionId) -> TransitionDef {
     let t = model.transition(id);
+    let trigger = model.trigger(t.trigger);
+    let trigger = match trigger.kind {
+        TriggerKind::Command => TriggerSpec::Command(ghost(trigger.name.clone())),
+        TriggerKind::Event(event) => {
+            TriggerSpec::Event { event: ghost(model.event(event).name.clone()), filter: t.filter.clone().map(ghost) }
+        }
+        TriggerKind::Timer(delay) => TriggerSpec::After(ghost(delay)),
+    };
     TransitionDef {
         from: vec![ghost(model.state(t.from).path.clone())],
         to: ghost(model.state(t.to).path.clone()),
-        on: ghost(model.trigger(t.trigger).name.clone()),
+        trigger,
         guard: t.guard.clone().map(ghost),
-        emits: t.emits.iter().map(|&e| ghost(model.event(e).name.clone())).collect(),
+        sets: t.sets.iter().cloned().map(ghost).collect(),
+        emits: t
+            .emits
+            .iter()
+            .map(|e| EmitDef {
+                event: ghost(model.event(e.event).name.clone()),
+                with: e.with.iter().cloned().map(ghost).collect(),
+            })
+            .collect(),
         bounded: t.bounded,
         span: SourceSpan::unknown(),
     }
@@ -66,7 +90,7 @@ pub(super) fn event_def(model: &Model, id: EventId) -> EventDef {
     let e = model.event(id);
     EventDef {
         name: ghost(e.name.clone()),
-        payload: if e.declared { e.payload.iter().cloned().map(ghost).collect() } else { Vec::new() },
+        payload: if e.declared { field_defs(&e.payload) } else { Vec::new() },
         span: SourceSpan::unknown(),
     }
 }
@@ -118,11 +142,11 @@ pub(super) fn trigger_ref(model: &Model, id: TriggerId) -> TriggerRef {
 
 /// The selector that resolves to `target`; `None` for "the one instance".
 fn target_spec(machine: &str, target: &Target) -> Option<TargetSpec> {
-    let (mode, clauses) = match target {
-        Target::One { predicates } if predicates.is_empty() => return None,
-        Target::One { predicates } => (TargetMode::One, predicates),
-        Target::All { predicates } => (TargetMode::All, predicates),
-        Target::Spawn { assignments } => (TargetMode::Spawn, assignments),
-    };
-    Some(TargetSpec { mode, machine: machine.to_owned(), clauses: clauses.clone() })
+    let machine = machine.to_owned();
+    Some(match target {
+        Target::One { filter: None } => return None,
+        Target::One { filter } => TargetSpec::One { machine, filter: filter.clone() },
+        Target::All { filter } => TargetSpec::All { machine, filter: filter.clone() },
+        Target::Spawn { assignments } => TargetSpec::Spawn { machine, assignments: assignments.clone() },
+    })
 }

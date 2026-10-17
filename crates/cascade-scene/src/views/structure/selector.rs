@@ -26,7 +26,7 @@
 
 use std::collections::HashSet;
 
-use cascade_core::definition::{FieldClause, ValueExpr};
+use cascade_core::expr::{Assignment, CmpOp, Expr, Operand};
 use cascade_core::model::Target;
 
 /// What one rule contributes to its fire's label.
@@ -42,29 +42,46 @@ impl RuleLabel {
     }
 }
 
-/// `f` for `f == event.f`, else `f=value`.
-fn clause(c: &FieldClause) -> String {
-    match &c.value {
-        ValueExpr::EventField(field) if *field == c.field => c.field.clone(),
-        value => format!("{}={value}", c.field),
+/// `f` for `f = event.f`, else `f=value`.
+fn assignment(a: &Assignment) -> String {
+    match &a.value {
+        Operand::Event(field) if *field == a.field => a.field.clone(),
+        value => format!("{}={value}", a.field),
     }
 }
 
-fn clauses(cs: &[FieldClause]) -> String {
-    cs.iter().map(clause).collect::<Vec<_>>().join(", ")
+/// `self.f == v` as `f` / `f=v` (like an assignment), when the filter is
+/// such a test or an `and` of them.
+fn equality(e: &Expr) -> Option<String> {
+    match e {
+        Expr::Cmp { left: Operand::SelfField(field), op: CmpOp::Eq, right } => {
+            Some(assignment(&Assignment::new(field.clone(), right.clone())))
+        }
+        _ => None,
+    }
+}
+
+/// The short form of a filter: `f, g=v` for a conjunction of field
+/// equalities, otherwise the filter's canonical text.
+fn short_filter(filter: &Expr) -> String {
+    let tests: Option<Vec<String>> = match filter {
+        Expr::And(items) => items.iter().map(equality).collect(),
+        other => equality(other).map(|t| vec![t]),
+    };
+    tests.map_or_else(|| filter.display_filter().to_string(), |t| t.join(", "))
 }
 
 /// The shortened selector (see the module docs); `None` for the one
 /// instance of a singleton machine, which needs no saying.
 pub(super) fn short_selector(target: &Target) -> Option<String> {
     match target {
-        Target::One { predicates } if predicates.is_empty() => None,
-        Target::One { predicates } => Some(format!("by {}", clauses(predicates))),
-        Target::All { predicates } if predicates.is_empty() => Some("all".to_owned()),
-        Target::All { predicates } => Some(format!("all by {}", clauses(predicates))),
+        Target::One { filter: None } => None,
+        Target::One { filter: Some(filter) } => Some(format!("by {}", short_filter(filter))),
+        Target::All { filter: None } => Some("all".to_owned()),
+        Target::All { filter: Some(filter) } => Some(format!("all by {}", short_filter(filter))),
         Target::Spawn { assignments } if assignments.is_empty() => Some("new".to_owned()),
         Target::Spawn { assignments } => {
-            let fields: Vec<String> = assignments.iter().map(clause).collect();
+            let fields: Vec<String> = assignments.iter().map(assignment).collect();
             Some(format!("new with {}", fields.join(", ")))
         }
     }
@@ -107,30 +124,42 @@ pub(super) fn shown<G: Eq + std::hash::Hash>(fires: &[(G, Option<&str>)]) -> Vec
 mod tests {
     use super::*;
 
-    fn eq(field: &str, event_field: &str) -> FieldClause {
-        FieldClause { field: field.to_owned(), value: ValueExpr::EventField(event_field.to_owned()) }
-    }
+    use cascade_core::expr::{ExprContext, Literal, parse_expr};
 
-    fn lit(field: &str, value: &str) -> FieldClause {
-        FieldClause { field: field.to_owned(), value: ValueExpr::Literal(value.to_owned()) }
+    fn filter(text: &str) -> Option<Expr> {
+        match parse_expr(text, ExprContext::Filter) {
+            Ok(e) => Some(e),
+            Err(err) => panic!("{err}"),
+        }
     }
 
     #[test]
     fn selectors_shorten() {
-        let one = |p: Vec<FieldClause>| short_selector(&Target::One { predicates: p });
-        assert_eq!(one(vec![]), None, "the singleton needs no label");
-        assert_eq!(one(vec![eq("orderId", "orderId")]).as_deref(), Some("by orderId"));
+        let one = |f: Option<Expr>| short_selector(&Target::One { filter: f });
+        assert_eq!(one(None), None, "the singleton needs no label");
+        assert_eq!(one(filter("orderId == event.orderId")).as_deref(), Some("by orderId"));
         assert_eq!(
-            one(vec![eq("orderId", "id"), lit("region", "eu")]).as_deref(),
+            one(filter("orderId == event.id and region == eu")).as_deref(),
             Some("by orderId=event.id, region=eu")
         );
-        let all = |p: Vec<FieldClause>| short_selector(&Target::All { predicates: p });
-        assert_eq!(all(vec![]).as_deref(), Some("all"));
-        assert_eq!(all(vec![eq("orderId", "orderId")]).as_deref(), Some("all by orderId"));
-        let new = |a: Vec<FieldClause>| short_selector(&Target::Spawn { assignments: a });
+        assert_eq!(
+            one(filter("orderId == event.orderId or event.kind == refund")).as_deref(),
+            Some("by orderId == event.orderId or event.kind == refund"),
+            "anything else reads as written"
+        );
+        let all = |f: Option<Expr>| short_selector(&Target::All { filter: f });
+        assert_eq!(all(None).as_deref(), Some("all"));
+        assert_eq!(all(filter("orderId == event.orderId")).as_deref(), Some("all by orderId"));
+        let new = |a: Vec<Assignment>| short_selector(&Target::Spawn { assignments: a });
         assert_eq!(new(vec![]).as_deref(), Some("new"));
-        assert_eq!(new(vec![eq("orderId", "orderId")]).as_deref(), Some("new with orderId"));
-        assert_eq!(new(vec![lit("tier", "gold")]).as_deref(), Some("new with tier=gold"));
+        assert_eq!(
+            new(vec![Assignment::new("orderId", Operand::Event("orderId".into()))]).as_deref(),
+            Some("new with orderId")
+        );
+        assert_eq!(
+            new(vec![Assignment::new("tier", Operand::Lit(Literal::new("gold")))]).as_deref(),
+            Some("new with tier=gold")
+        );
     }
 
     #[test]

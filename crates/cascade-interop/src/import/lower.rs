@@ -22,7 +22,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use cascade_core::definition::{MachineDef, StateDef, StateKindDef, TransitionDef};
+use cascade_core::definition::{EmitDef, FieldDef, MachineDef, StateDef, StateKindDef, TransitionDef};
+use cascade_core::expr::Guard;
 use cascade_core::{Definition, SourceSpan, Spanned};
 
 use crate::error::InteropError;
@@ -128,7 +129,7 @@ impl Lowerer<'_> {
                 color: chart.attrs.color.map(Spanned::synthetic),
                 domain: chart.attrs.domain.clone().map(Spanned::synthetic),
                 initial: initial.map(Spanned::synthetic),
-                fields: chart.attrs.fields.iter().map(|f| synthetic(f.as_str())).collect(),
+                fields: chart.attrs.fields.iter().map(|f| FieldDef::untyped(f.as_str())).collect(),
                 states,
                 transitions: Vec::new(),
                 span: SourceSpan::unknown(),
@@ -162,11 +163,11 @@ impl Lowerer<'_> {
                     lowered.triggers.push((trigger.clone(), origin, edge.location.clone()));
                 }
                 let emits = attributed_emits(chart, source, edge);
-                let mut emit_names: Vec<Spanned<String>> = Vec::new();
+                let mut emit_names: Vec<EmitDef> = Vec::new();
                 for emit in &emits {
                     let name = self.events.name(&emit.event, &emit.event, &edge.location, self.warnings);
-                    if !emit_names.iter().any(|e| e.value == name) {
-                        emit_names.push(synthetic(name));
+                    if !emit_names.iter().any(|e| e.event.value == name) {
+                        emit_names.push(EmitDef::plain(name));
                     }
                     lowered.emits.push((emit.clone(), edge.location.clone()));
                 }
@@ -179,8 +180,9 @@ impl Lowerer<'_> {
                     lowered.def.transitions.push(TransitionDef {
                         from: from.into_iter().map(synthetic).collect(),
                         to: synthetic(to),
-                        on: synthetic(trigger.as_str()),
-                        guard: edge.guard.clone().map(Spanned::synthetic),
+                        trigger: cascade_core::definition::TriggerSpec::Command(synthetic(trigger.as_str())),
+                        guard: edge.guard.as_deref().and_then(choice_guard).map(Spanned::synthetic),
+                        sets: Vec::new(),
                         emits: emit_names.clone(),
                         bounded: edge.bounded,
                         span: SourceSpan::unknown(),
@@ -423,9 +425,39 @@ pub(crate) fn attributed_emits(chart: &Chart, source: NodeIx, edge: &Edge) -> Ve
     out
 }
 
+/// A statechart guard (an XState guard name, an SCXML `cond`) as a
+/// Cascade guard. Text written in Cascade's own syntax (as Cascade's SCXML
+/// export writes it: `?label`, `else`, or an expression reading `event.x`
+/// or `self.x`) is kept; anything else (a guard name, an ECMAScript
+/// condition) becomes a named choice. Blank guards are dropped.
+pub(crate) fn choice_guard(text: &str) -> Option<Guard> {
+    let label = text.trim();
+    if label.is_empty() {
+        return None;
+    }
+    Some(match cascade_core::expr::parse_guard(label) {
+        Ok(Guard::Expr(e)) if e.operands().iter().any(|o| !o.is_literal()) => Guard::Expr(e),
+        Ok(guard @ (Guard::Choice(_) | Guard::Else)) => guard,
+        Ok(Guard::Expr(_)) | Err(_) => Guard::Choice(label.to_owned()),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreign_guards_become_choices_and_cascade_syntax_is_kept() {
+        let show = |text: &str| choice_guard(text).map(|g| g.to_string());
+        assert_eq!(show("isAdmin").as_deref(), Some("?isAdmin"));
+        assert_eq!(show(" amount > 0 ").as_deref(), Some("?amount > 0"), "no field reference: foreign");
+        assert_eq!(show("_event.data.x == 1").as_deref(), Some("?_event.data.x == 1"));
+        assert_eq!(show("x && y").as_deref(), Some("?x && y"));
+        assert_eq!(show("event.amount > 0").as_deref(), Some("event.amount > 0"));
+        assert_eq!(show("?card declined").as_deref(), Some("?card declined"));
+        assert_eq!(show("else"), Some("else".to_owned()));
+        assert_eq!(show("   "), None);
+    }
     use crate::import::chart::Route;
 
     fn emit(event: &str) -> Emit {

@@ -2,14 +2,15 @@
 //! one-line flow mapping padded to their columns, or a block mapping with
 //! their key indentation.
 
-use cascade_core::definition::TransitionDef;
+use cascade_core::definition::{TransitionDef, TriggerSpec};
 
 use super::{Child, add_child, definition, insert_at, nav, step};
 use crate::patch::collection::{Value, remove_child, replace_scalar, set_key, set_names, set_text_key};
 use crate::patch::doc::{Doc, Node, Seq};
 use crate::patch::error::{Result, SurgeryError, not_found, out_of_range};
-use crate::patch::render::{Block, RowLayout, Style, flow_list, transition_block, transition_row};
+use crate::patch::render::{Block, RowLayout, Style, transition_block, transition_row};
 use crate::patch::splice::Splice;
+use crate::yaml::{assignments_text, emits_text, trigger_entry};
 
 /// Transition `index` of a machine (its mapping node).
 pub(super) fn node<'d>(doc: &'d Doc, machine: &str, index: usize) -> Result<&'d Node> {
@@ -119,19 +120,45 @@ pub(super) fn update(text: &str, machine: &str, index: usize, new: &TransitionDe
     if old.to.value != new.to.value {
         edit(&mut text, &|doc, n| Ok(vec![replace_scalar(doc, &nav::require(n, "to")?.value, &new.to.value)?]))?;
     }
-    if old.on.value != new.on.value {
-        edit(&mut text, &|doc, n| Ok(vec![replace_scalar(doc, &nav::require(n, "on")?.value, &new.on.value)?]))?;
+    let sets = |t: &TransitionDef| t.sets.iter().map(|a| a.value.clone()).collect::<Vec<_>>();
+    let emits = |t: &TransitionDef| {
+        t.emits
+            .iter()
+            .map(|e| (e.event.value.clone(), e.with.iter().map(|a| a.value.clone()).collect::<Vec<_>>()))
+            .collect::<Vec<_>>()
+    };
+    if trigger_entry(&old.trigger) != trigger_entry(&new.trigger) {
+        match (&old.trigger, &new.trigger) {
+            (TriggerSpec::Command(_), TriggerSpec::Command(name)) => {
+                let name = name.value.clone();
+                edit(&mut text, &|doc, n| Ok(vec![replace_scalar(doc, &nav::require(n, "on")?.value, &name)?]))?;
+            }
+            _ => {
+                let (key, value) = trigger_entry(&new.trigger);
+                let other = if key == "on" { "after" } else { "on" };
+                edit(&mut text, &|doc, n| set_key(doc, n, other, None, nav::TRANSITION_ORDER))?;
+                edit(&mut text, &|doc, n| {
+                    set_key(doc, n, key, Some(Value::Inline(value.clone())), nav::TRANSITION_ORDER)
+                })?;
+            }
+        }
     }
     if old.guard.as_ref().map(|g| &g.value) != new.guard.as_ref().map(|g| &g.value) {
-        let guard = new.guard.as_ref().map(|g| g.value.as_str());
-        edit(&mut text, &|doc, n| set_text_key(doc, n, "guard", guard, nav::TRANSITION_ORDER))?;
+        let guard = new.guard.as_ref().map(|g| g.value.to_string());
+        edit(&mut text, &|doc, n| set_text_key(doc, n, "guard", guard.as_deref(), nav::TRANSITION_ORDER))?;
     }
-    if values(&old.emits) != values(&new.emits) {
-        let emits = values(&new.emits);
-        edit(&mut text, &|doc, n| match (n.as_map().and_then(|m| m.get("emits")), emits.is_empty()) {
+    if sets(old) != sets(new) {
+        let sets = (!new.sets.is_empty()).then(|| Value::Inline(assignments_text(&new.sets)));
+        edit(&mut text, &|doc, n| set_key(doc, n, "sets", sets.clone(), nav::TRANSITION_ORDER))?;
+    }
+    if emits(old) != emits(new) {
+        let names: Vec<String> = new.emits.iter().map(|e| e.event.value.clone()).collect();
+        let plain = |t: &TransitionDef| t.emits.iter().all(|e| e.with.is_empty());
+        let whole = Value::Inline(emits_text(&new.emits));
+        edit(&mut text, &|doc, n| match (n.as_map().and_then(|m| m.get("emits")), names.is_empty()) {
             (_, true) => set_key(doc, n, "emits", None, nav::TRANSITION_ORDER),
-            (Some((_, entry)), false) => set_names(doc, entry, &emits),
-            (None, false) => set_key(doc, n, "emits", Some(Value::Inline(flow_list(&emits))), nav::TRANSITION_ORDER),
+            (Some((_, entry)), false) if plain(old) && plain(new) => set_names(doc, entry, &names),
+            (_, false) => set_key(doc, n, "emits", Some(whole.clone()), nav::TRANSITION_ORDER),
         })?;
     }
     if old.bounded != new.bounded {

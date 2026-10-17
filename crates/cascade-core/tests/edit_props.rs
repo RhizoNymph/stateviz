@@ -26,7 +26,7 @@ fn state_paths(states: &[StateDef], prefix: Option<&str>, out: &mut Vec<(String,
 
 fn used_events(def: &Definition) -> Vec<String> {
     let mut out: Vec<String> = def.events.iter().map(|e| e.name.value.clone()).collect();
-    let emitted = def.machines.iter().flat_map(|m| m.transitions.iter().flat_map(|t| t.emits.iter()));
+    let emitted = def.machines.iter().flat_map(|m| m.transitions.iter().flat_map(|t| t.emits.iter().map(|e| &e.event)));
     let handled = def.controllers.iter().flat_map(|c| c.on.iter().map(|h| &h.event));
     for name in emitted.chain(handled) {
         if !out.contains(&name.value) {
@@ -113,7 +113,11 @@ fn candidate_ops(def: &Definition) -> Vec<EditOp> {
         for (i, t) in m.transitions.iter().enumerate() {
             ops.push(EditOp::RemoveTransition { machine: name.clone(), index: i });
             let mut changed = t.clone();
-            changed.guard = if t.guard.is_some() { None } else { Some(s("maybe")) };
+            changed.guard = if t.guard.is_some() {
+                None
+            } else {
+                Some(cascade_core::Spanned::synthetic(cascade_core::expr::Guard::Choice("maybe".into())))
+            };
             changed.bounded = !t.bounded;
             ops.push(EditOp::UpdateTransition { machine: name.clone(), index: i, transition: changed });
             let mut retargeted = t.clone();

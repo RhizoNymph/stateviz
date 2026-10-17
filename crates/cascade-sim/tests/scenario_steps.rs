@@ -22,6 +22,8 @@ fn entry_names(s: &cascade_sim::Scenario) -> Vec<String> {
             ScenarioEntry::Directive(Directive::Run { .. }) => "run".to_owned(),
             ScenarioEntry::Directive(Directive::Create(decl)) => format!("create {}", decl.name.value),
             ScenarioEntry::Directive(Directive::Remove { name, .. }) => format!("remove {}", name.value),
+            ScenarioEntry::Directive(Directive::Wait { .. }) => "wait".to_owned(),
+            ScenarioEntry::Directive(Directive::Choose { option, .. }) => format!("choose {}", option.value),
         })
         .collect()
 }

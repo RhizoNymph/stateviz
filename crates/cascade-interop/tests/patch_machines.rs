@@ -17,7 +17,7 @@ fn refund_machine() -> cascade_core::definition::MachineDef {
         ],
     );
     m.color = Some(Spanned::synthetic(PaletteColor::Yellow));
-    m.fields = vec![s("orderId")];
+    m.fields = vec!["orderId".into()];
     m
 }
 
@@ -72,7 +72,7 @@ fn a_new_machine_follows_the_file_indentation() {
         |d| d.machines.push(m),
     );
     assert!(
-        out.contains("              guard: \"has key\"\n\n    Bell:\n        states: [quiet, ringing]\n\nevents:\n"),
+        out.contains("              guard: \"?has key\"\n\n    Bell:\n        states: [quiet, ringing]\n\nevents:\n"),
         "{out}"
     );
 }
@@ -160,9 +160,9 @@ fn renaming_a_machine_renames_every_reference() {
                             r.fire.value.machine = "Charge".into();
                         }
                         if let Some(t) = &mut r.target
-                            && t.value.machine == "Payment"
+                            && t.value.machine() == "Payment"
                         {
-                            t.value.machine = "Charge".into();
+                            *t.value.machine_mut() = "Charge".into();
                         }
                     }
                 }
@@ -254,7 +254,7 @@ fn fields_change_item_by_item() {
         &text,
         &EditOp::SetMachineFields { machine: "Order".into(), fields: vec!["orderId".into(), "cartId".into()] },
         "@@ 46\n-    fields: [orderId, customerId]\n+    fields: [orderId, cartId]",
-        |d| machine_mut(d, "Order").fields = vec![s("orderId"), s("cartId")],
+        |d| machine_mut(d, "Order").fields = vec!["orderId".into(), "cartId".into()],
     );
     check(
         &text,
@@ -267,7 +267,7 @@ fn fields_change_item_by_item() {
         &of,
         &EditOp::SetMachineFields { machine: "Order".into(), fields: vec!["orderId".into()] },
         "@@ 7\n+    fields: [orderId]",
-        |d| machine_mut(d, "Order").fields = vec![s("orderId")],
+        |d| machine_mut(d, "Order").fields = vec!["orderId".into()],
     );
 }
 

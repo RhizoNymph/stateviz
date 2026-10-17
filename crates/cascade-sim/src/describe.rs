@@ -2,7 +2,7 @@
 //! host that lists a trace as text.
 
 use cascade_core::Model;
-use cascade_core::definition::{TargetMode, TargetSpec};
+use cascade_core::definition::TargetSpec;
 use cascade_core::ids::RuleId;
 use cascade_core::model::Target;
 
@@ -79,6 +79,18 @@ pub fn step_text(model: &Model, trace: &Trace, step: &TraceStep, payload: Option
             candidates.iter().map(|&c| who(c)).collect::<Vec<_>>().join(", "),
             selector_text(model, *rule)
         ),
+        TraceStepKind::Notify { instance, event } => {
+            format!("{} receives {}", who(*instance), model.event(*event).name)
+        }
+        TraceStepKind::Wait { by, now } => format!("waited {by} (now {now})"),
+        TraceStepKind::TimerExpired { instance, trigger } => {
+            format!("{} {}: timer {} expired", machine_of(*instance), who(*instance), model.trigger(*trigger).name)
+        }
+        TraceStepKind::Choice { at, chosen, defaulted, .. } => {
+            let default = if *defaulted { " (default)" } else { "" };
+            format!("{} chose {chosen}{default}", who(*at))
+        }
+        TraceStepKind::SetFields { instance, fields } => format!("{} sets {}", who(*instance), payload_text(fields)),
     }
 }
 
@@ -99,12 +111,12 @@ pub fn payload_text(payload: &Payload) -> String {
 pub fn selector_text(model: &Model, rule: RuleId) -> String {
     let r = model.rule(rule);
     let machine = model.machine(model.trigger(r.trigger).machine).name.clone();
-    let (mode, clauses) = match &r.target {
-        Target::One { predicates } => (TargetMode::One, predicates),
-        Target::All { predicates } => (TargetMode::All, predicates),
-        Target::Spawn { assignments } => (TargetMode::Spawn, assignments),
+    let spec = match &r.target {
+        Target::One { filter } => TargetSpec::One { machine, filter: filter.clone() },
+        Target::All { filter } => TargetSpec::All { machine, filter: filter.clone() },
+        Target::Spawn { assignments } => TargetSpec::Spawn { machine, assignments: assignments.clone() },
     };
-    TargetSpec { mode, machine, clauses: clauses.clone() }.to_string()
+    spec.to_string()
 }
 
 /// Each step's causal depth: 0 for scenario steps, one more than its cause

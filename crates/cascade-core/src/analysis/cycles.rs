@@ -20,7 +20,7 @@ use crate::model::Model;
 struct TransitionGraph {
     /// `edges[t]`: `(successor, rule)` sorted and deduplicated, so the cycle
     /// chosen among equally short ones does not depend on emission order.
-    edges: Vec<Vec<(TransitionId, RuleId)>>,
+    edges: Vec<Vec<(TransitionId, Option<RuleId>)>>,
 }
 
 impl TransitionGraph {
@@ -31,10 +31,12 @@ impl TransitionGraph {
                 if t.bounded {
                     return Vec::new();
                 }
-                let mut out: Vec<(TransitionId, RuleId)> = graph
+                let mut out: Vec<(TransitionId, Option<RuleId>)> = graph
                     .transition_successors(id)
                     .into_iter()
-                    .filter(|&(next, rule)| !model.rule(rule).bounded && !model.transition(next).bounded)
+                    .filter(|&(next, rule)| {
+                        !rule.is_some_and(|r| model.rule(r).bounded) && !model.transition(next).bounded
+                    })
                     .collect();
                 out.sort_unstable();
                 out.dedup();
@@ -44,7 +46,7 @@ impl TransitionGraph {
         Self { edges }
     }
 
-    fn successors(&self, t: TransitionId) -> &[(TransitionId, RuleId)] {
+    fn successors(&self, t: TransitionId) -> &[(TransitionId, Option<RuleId>)] {
         &self.edges[t.index()]
     }
 
@@ -90,7 +92,7 @@ pub(super) fn check(model: &Model, graph: &CausalGraph) -> Vec<Finding> {
 /// stays linear in the size of the non-trivial components.
 struct CycleSearch {
     /// `parent[v] = (u, rule)`: `v` was first reached from `u` through `rule`.
-    parent: Vec<Option<(TransitionId, RuleId)>>,
+    parent: Vec<Option<(TransitionId, Option<RuleId>)>>,
     seen: Vec<bool>,
     touched: Vec<usize>,
 }
@@ -100,7 +102,7 @@ impl CycleSearch {
         Self { parent: vec![None; n], seen: vec![false; n], touched: Vec::new() }
     }
 
-    fn visit(&mut self, v: usize, parent: Option<(TransitionId, RuleId)>) {
+    fn visit(&mut self, v: usize, parent: Option<(TransitionId, Option<RuleId>)>) {
         self.seen[v] = true;
         self.parent[v] = parent;
         self.touched.push(v);
@@ -164,7 +166,10 @@ fn message(model: &Model, steps: &[CycleStep]) -> String {
     for step in steps {
         path.push_str(&model.transition_label(step.transition));
         path.push_str(" ⇒ ");
-        path.push_str(&model.controller(model.rule(step.rule).controller).name);
+        match step.rule {
+            Some(rule) => path.push_str(&model.controller(model.rule(rule).controller).name),
+            None => path.push_str("subscription"),
+        }
         path.push_str(" ⇒ ");
     }
     path.push_str(&first_label);

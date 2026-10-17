@@ -229,7 +229,7 @@ external:
         let planned = connect::connect(&def(), &from, &to).expect("plans");
         let EditOp::Batch(ops) = planned.op else { panic!("a batch") };
         assert!(matches!(&ops[0], EditOp::UpdateTransition { transition, .. }
-            if transition.emits.iter().any(|e| e.value == "PayDone2")));
+            if transition.emits.iter().any(|e| e.event.value == "PayDone2")));
         assert!(matches!(&ops[1], EditOp::AddHandler { controller, .. } if controller == "Fulfil"));
     }
 
