@@ -18,7 +18,7 @@ machines:
             - from: closed
               to: locked
               on: lock
-              guard: "has key"
+              guard: "?has key"
 
 events:
     - Opened
@@ -28,7 +28,7 @@ controllers:
         on:
             Opened:
                 - fire: Door.lock
-                  when: after hours
+                  when: "?after hours"
                   bounded: true
 
 external:

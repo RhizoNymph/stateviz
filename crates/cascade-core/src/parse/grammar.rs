@@ -1,7 +1,10 @@
 //! The small grammars embedded in YAML string values: names, trigger
 //! references (`Machine.trigger`) and target selectors.
 
-use crate::definition::{FieldClause, TargetMode, TargetSpec, TriggerRef, ValueExpr};
+use crate::definition::{TargetMode, TargetSpec, TriggerRef};
+use crate::expr::lexer::{Tok, tokenize};
+use crate::expr::parser::Parser;
+use crate::expr::{Assignment, ExprContext, ExprError};
 
 /// Names of machines, states, triggers, events, controllers, sources and
 /// fields: a letter or `_`, then letters, digits, `_` or `-`.
@@ -26,162 +29,104 @@ pub fn parse_trigger_ref(text: &str) -> Option<TriggerRef> {
         .then(|| TriggerRef { machine: machine.to_owned(), trigger: trigger.to_owned() })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Token {
-    Word(String),
-    Quoted(String),
-    EqEq,
-    Eq,
-    Comma,
-}
-
-fn tokenize(text: &str) -> Result<Vec<Token>, String> {
-    let mut tokens = Vec::new();
-    let mut chars = text.chars().peekable();
-    while let Some(&c) = chars.peek() {
-        if c.is_whitespace() {
-            chars.next();
-        } else if c == ',' {
-            chars.next();
-            tokens.push(Token::Comma);
-        } else if c == '=' {
-            chars.next();
-            if chars.peek() == Some(&'=') {
-                chars.next();
-                tokens.push(Token::EqEq);
-            } else {
-                tokens.push(Token::Eq);
-            }
-        } else if c == '"' || c == '\'' {
-            chars.next();
-            let mut value = String::new();
-            let mut closed = false;
-            for next in chars.by_ref() {
-                if next == c {
-                    closed = true;
-                    break;
-                }
-                value.push(next);
-            }
-            if !closed {
-                return Err("unterminated quoted string".to_owned());
-            }
-            tokens.push(Token::Quoted(value));
-        } else if c.is_alphanumeric() || matches!(c, '_' | '-' | '.') {
-            let mut word = String::new();
-            while let Some(&next) = chars.peek() {
-                if next.is_alphanumeric() || matches!(next, '_' | '-' | '.') {
-                    word.push(next);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            tokens.push(Token::Word(word));
-        } else {
-            return Err(format!("unexpected character `{c}`"));
-        }
-    }
-    Ok(tokens)
-}
-
-fn parse_value(token: Option<Token>) -> Result<ValueExpr, String> {
-    match token {
-        Some(Token::Quoted(lit)) => Ok(ValueExpr::Literal(lit)),
-        Some(Token::Word(word)) => match word.strip_prefix("event.") {
-            Some(field) if is_valid_name(field) => Ok(ValueExpr::EventField(field.to_owned())),
-            Some(_) => Err(format!("`{word}` is not a valid event field reference")),
-            None => Ok(ValueExpr::Literal(word)),
-        },
-        Some(other) => Err(format!("expected a value, found {}", describe(&other))),
-        None => Err("expected a value, found end of selector".to_owned()),
-    }
-}
-
-fn describe(token: &Token) -> String {
-    match token {
-        Token::Word(w) => format!("`{w}`"),
-        Token::Quoted(q) => format!("{q:?}"),
-        Token::EqEq => "`==`".to_owned(),
-        Token::Eq => "`=`".to_owned(),
-        Token::Comma => "`,`".to_owned(),
-    }
-}
-
 /// Parse a target selector.
 ///
 /// ```text
-/// selector := ["all"] MACHINE ["where" FIELD "==" value ("and" FIELD "==" value)*]
-///           | "new" MACHINE ["with" FIELD "=" value ("," FIELD "=" value)*]
-/// value    := "event." FIELD | WORD | QUOTED
+/// selector := ["all"] MACHINE ["where" expr]
+///           | "new" MACHINE ["with" FIELD "=" operand ("," FIELD "=" operand)*]
 /// ```
+///
+/// The `where` expression is in [`ExprContext::Filter`]: a bare name on the
+/// left of a test is the candidate's field (`orderId == event.orderId`), and
+/// `event.x == lit` tests the handled event. Errors carry the column.
 pub fn parse_target(text: &str) -> Result<TargetSpec, String> {
-    let mut tokens = tokenize(text)?.into_iter().peekable();
+    parse_target_inner(text).map_err(|e| e.to_string())
+}
 
-    let mode = match tokens.peek() {
-        Some(Token::Word(w)) if w == "all" => TargetMode::All,
-        Some(Token::Word(w)) if w == "new" => TargetMode::Spawn,
-        _ => TargetMode::One,
-    };
-    if mode != TargetMode::One {
-        tokens.next();
-    }
+fn parse_target_inner(text: &str) -> Result<TargetSpec, ExprError> {
+    let tokens = tokenize(text)?;
+    let mut p = Parser::new(&tokens, text, ExprContext::Filter);
 
-    let machine = match tokens.next() {
-        Some(Token::Word(w)) if is_valid_name(&w) => w,
-        Some(other) => return Err(format!("expected a machine name, found {}", describe(&other))),
-        None => return Err("expected a machine name".to_owned()),
+    let mode = if p.eat_word("all") {
+        TargetMode::All
+    } else if p.eat_word("new") {
+        TargetMode::Spawn
+    } else {
+        TargetMode::One
     };
 
-    let mut clauses = Vec::new();
-    let (lead, op, joiner) = match mode {
-        TargetMode::Spawn => ("with", Token::Eq, None),
-        TargetMode::One | TargetMode::All => ("where", Token::EqEq, Some("and")),
-    };
-    match tokens.next() {
-        None => {
-            return Ok(TargetSpec { mode, machine, clauses });
+    let machine = match p.peek() {
+        Some(Tok::Word(w)) if is_valid_name(w) => {
+            let w = w.clone();
+            p.next();
+            w
         }
-        Some(Token::Word(w)) if w == lead => {}
-        Some(other) => return Err(format!("expected `{lead}`, found {}", describe(&other))),
-    }
+        _ => return Err(p.expected("a machine name")),
+    };
 
-    loop {
-        let field = match tokens.next() {
-            Some(Token::Word(w)) if is_valid_name(&w) => w,
-            Some(other) => return Err(format!("expected a field name, found {}", describe(&other))),
-            None => return Err("expected a field name".to_owned()),
-        };
-        match tokens.next() {
-            Some(ref t) if *t == op => {}
-            Some(other) => {
-                return Err(format!("expected {}, found {}", describe(&op), describe(&other)));
+    if mode == TargetMode::Spawn {
+        let mut assignments = Vec::new();
+        if p.peek().is_some() {
+            if !p.eat_word("with") {
+                return Err(p.expected("`with`"));
             }
-            None => return Err(format!("expected {} after `{field}`", describe(&op))),
-        }
-        let value = parse_value(tokens.next())?;
-        clauses.push(FieldClause { field, value });
-
-        match tokens.next() {
-            None => break,
-            Some(Token::Comma) if joiner.is_none() => {}
-            Some(Token::Word(w)) if Some(w.as_str()) == joiner => {}
-            Some(other) => {
-                let expected = joiner.map_or("`,`".to_owned(), |j| format!("`{j}`"));
-                return Err(format!("expected {expected} or end of selector, found {}", describe(&other)));
+            loop {
+                let field = match p.peek() {
+                    Some(Tok::Word(w)) if is_valid_name(w) => {
+                        let w = w.clone();
+                        p.next();
+                        w
+                    }
+                    _ => return Err(p.expected("a field name")),
+                };
+                p.expect(&Tok::Assign)?;
+                let value = p.operand(false)?;
+                assignments.push(Assignment { field, value });
+                if !p.eat(&Tok::Comma) {
+                    break;
+                }
             }
         }
+        p.finish()?;
+        return Ok(TargetSpec::Spawn { machine, assignments });
     }
 
-    Ok(TargetSpec { mode, machine, clauses })
+    let filter = if p.peek().is_some() {
+        if !p.eat_word("where") {
+            return Err(p.expected("`where`"));
+        }
+        let filter = p.expr()?;
+        p.finish()?;
+        Some(filter)
+    } else {
+        None
+    };
+    Ok(match mode {
+        TargetMode::All => TargetSpec::All { machine, filter },
+        TargetMode::One | TargetMode::Spawn => TargetSpec::One { machine, filter },
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn clause(field: &str, value: ValueExpr) -> FieldClause {
-        FieldClause { field: field.to_owned(), value }
+    use crate::expr::{CmpOp, Expr, Literal, Operand};
+
+    fn eq(left: Operand, right: Operand) -> Expr {
+        Expr::Cmp { left, op: CmpOp::Eq, right }
+    }
+
+    fn me(f: &str) -> Operand {
+        Operand::SelfField(f.into())
+    }
+
+    fn ev(f: &str) -> Operand {
+        Operand::Event(f.into())
+    }
+
+    fn lit(t: &str) -> Operand {
+        Operand::Lit(Literal::new(t))
     }
 
     #[test]
@@ -214,42 +159,57 @@ mod tests {
     #[test]
     fn bare_machine_selects_the_one_instance() {
         let spec = parse_target("Shipment").expect("valid");
-        assert_eq!(spec.mode, TargetMode::One);
-        assert_eq!(spec.machine, "Shipment");
-        assert!(spec.clauses.is_empty());
+        assert_eq!(spec, TargetSpec::One { machine: "Shipment".into(), filter: None });
+        assert_eq!(spec.mode(), TargetMode::One);
+        assert_eq!(spec.machine(), "Shipment");
     }
 
     #[test]
     fn where_clause_with_event_field() {
         let spec = parse_target("Shipment where orderId == event.orderId").expect("valid");
-        assert_eq!(spec.mode, TargetMode::One);
-        assert_eq!(spec.clauses, vec![clause("orderId", ValueExpr::EventField("orderId".into()))]);
+        assert_eq!(
+            spec,
+            TargetSpec::One { machine: "Shipment".into(), filter: Some(eq(me("orderId"), ev("orderId"))) }
+        );
     }
 
     #[test]
     fn fan_out_with_multiple_predicates() {
         let spec = parse_target("all Job where batch == event.batch and kind == 'nightly run'").expect("valid");
-        assert_eq!(spec.mode, TargetMode::All);
-        assert_eq!(spec.machine, "Job");
         assert_eq!(
-            spec.clauses,
-            vec![
-                clause("batch", ValueExpr::EventField("batch".into())),
-                clause("kind", ValueExpr::Literal("nightly run".into())),
-            ]
+            spec,
+            TargetSpec::All {
+                machine: "Job".into(),
+                filter: Some(Expr::And(vec![
+                    eq(me("batch"), ev("batch")),
+                    eq(me("kind"), Operand::Lit(Literal::quoted("nightly run"))),
+                ])),
+            }
         );
+    }
+
+    #[test]
+    fn filters_are_full_expressions() {
+        let spec =
+            parse_target("all Job where event.kind == refund and (prio > 3 or self.vip == true)").expect("valid");
+        let Some(filter) = spec.filter() else { panic!("filter") };
+        assert_eq!(filter.display_filter().to_string(), "event.kind == refund and (prio > 3 or vip == true)");
+        assert!(parse_target("Job where not tier in [a, b]").is_ok());
     }
 
     #[test]
     fn spawn_with_assignments() {
         let spec = parse_target("new Shipment with orderId = event.orderId, carrier = ups").expect("valid");
-        assert_eq!(spec.mode, TargetMode::Spawn);
         assert_eq!(
-            spec.clauses,
-            vec![
-                clause("orderId", ValueExpr::EventField("orderId".into())),
-                clause("carrier", ValueExpr::Literal("ups".into())),
-            ]
+            spec,
+            TargetSpec::Spawn {
+                machine: "Shipment".into(),
+                assignments: vec![Assignment::new("orderId", ev("orderId")), Assignment::new("carrier", lit("ups"))],
+            }
+        );
+        assert_eq!(
+            parse_target("new Shipment"),
+            Ok(TargetSpec::Spawn { machine: "Shipment".into(), assignments: Vec::new() })
         );
     }
 
@@ -259,7 +219,9 @@ mod tests {
             "Shipment",
             "Shipment where orderId == event.orderId",
             "all Job where batch == event.batch and kind == \"nightly run\"",
+            "all Job where event.kind == refund or kind != x",
             "new Shipment with orderId = event.orderId, carrier = ups",
+            "new Shipment",
         ] {
             let spec = parse_target(text).expect("valid");
             assert_eq!(spec.to_string(), text);
@@ -281,8 +243,14 @@ mod tests {
             "Shipment where a == event.",
             "Shipment where a == 1 b",
             "Shipment where a == 1 @",
+            "new Shipment with a = 1 b = 2",
+            "new Shipment where a == 1",
         ] {
             assert!(parse_target(text).is_err(), "should reject {text:?}");
         }
+        assert_eq!(
+            parse_target("Shipment where orderId ="),
+            Err("expected a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`) or `in`, found `=` (column 24)".to_owned())
+        );
     }
 }

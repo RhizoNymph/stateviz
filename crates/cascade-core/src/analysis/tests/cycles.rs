@@ -31,7 +31,8 @@ fn steps(model: &Model, finding: &Finding) -> Vec<String> {
         .cycle_steps()
         .iter()
         .map(|s: &CycleStep| {
-            format!("{} | {}", key(model, ElementRef::Transition(s.transition)), key(model, ElementRef::Rule(s.rule)))
+            let rule = s.rule.map_or_else(|| "subscription".to_owned(), |r| key(model, ElementRef::Rule(r)));
+            format!("{} | {}", key(model, ElementRef::Transition(s.transition)), rule)
         })
         .collect()
 }

@@ -2,7 +2,9 @@
 //!
 //! Machines × machines. The cell in row R, column C counts the derived
 //! causal links from a transition of R to a transition of C (through an
-//! event and a controller rule), like a design structure matrix. Rows and
+//! event and a controller rule, or an event C subscribes to), like a
+//! design structure matrix. Timers are not links: they stay within one
+//! machine and are not cascades. Rows and
 //! columns share one order that clusters coupled machines (see
 //! [`seriate`]); headers carry a hue chip, rows the number and name,
 //! columns the number. Cells are shaded neutral gray by count, never by
@@ -16,13 +18,15 @@ use cascade_layout::{Point, Rect};
 
 use crate::color::{Rgba, machine_styles};
 use crate::emphasis::{Anchor, Interaction};
-use crate::scene::{Border, Emphasis, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneNode, Shape, Stroke};
+use crate::scene::{
+    Border, Emphasis, FontStyle, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneNode, Shape, Stroke,
+};
 use crate::view_state::ViewKind;
 use crate::views::SceneInput;
 use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
 use crate::views::draft::{EdgeInfo, Meta};
 use crate::views::filters::hidden_machines;
-use crate::views::links::causal_links;
+use crate::views::links::{causal_links, subscription_links};
 use crate::views::style::Painter;
 
 /// Smallest cell side.
@@ -59,10 +63,15 @@ pub(super) fn build(input: &SceneInput<'_>, interaction: &Interaction) -> Scene 
 
     // Links and their causal chains per (row, column) slot.
     let mut chains: Vec<Vec<Vec<Vec<EdgeIx>>>> = vec![vec![Vec::new(); n]; n];
-    for link in causal_links(input.graph) {
-        let (from, to) = (model.transition(link.from).machine, model.transition(link.to).machine);
+    // Rule links (T1 → event → handler → T2) and subscription links
+    // (T1 → event → T2) count alike: each is one way R's transitions set
+    // C's off.
+    let rule_links = causal_links(input.graph).into_iter().map(|l| (l.from, l.to, l.chain.to_vec()));
+    let subscriptions = subscription_links(input.graph).into_iter().map(|l| (l.from, l.to, l.chain.to_vec()));
+    for (from, to, chain) in rule_links.chain(subscriptions) {
+        let (from, to) = (model.transition(from).machine, model.transition(to).machine);
         if let (Some(r), Some(c)) = (slot(from), slot(to)) {
-            chains[r][c].push(link.chain.to_vec());
+            chains[r][c].push(chain);
         }
     }
     let counts: Vec<Vec<u32>> =
@@ -104,6 +113,7 @@ pub(super) fn build(input: &SceneInput<'_>, interaction: &Interaction) -> Scene 
             font_size: font,
             color: theme.text,
             weight: FontWeight::Normal,
+            style: FontStyle::Normal,
         };
         push_node(&mut scene, HitTarget::Element(key.clone()), rect, None, header_stroke, vec![label]);
         metas.push(meta.clone());
@@ -120,6 +130,7 @@ pub(super) fn build(input: &SceneInput<'_>, interaction: &Interaction) -> Scene 
             font_size: small,
             color: theme.text,
             weight: FontWeight::Normal,
+            style: FontStyle::Normal,
         };
         push_node(&mut scene, HitTarget::Element(key.clone()), rect, None, header_stroke, vec![label]);
         metas.push(meta);
@@ -148,6 +159,7 @@ pub(super) fn build(input: &SceneInput<'_>, interaction: &Interaction) -> Scene 
                     font_size: small,
                     color: text_color,
                     weight: FontWeight::Normal,
+                    style: FontStyle::Normal,
                 }]
             };
             let target = HitTarget::MatrixCell {

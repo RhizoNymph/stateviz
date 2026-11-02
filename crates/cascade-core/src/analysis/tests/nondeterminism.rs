@@ -36,24 +36,26 @@ fn two_unguarded_transitions_on_one_trigger_are_an_error() {
 #[test]
 fn one_unguarded_candidate_is_enough() {
     let (_, findings) = nondeterminism(&with_transitions(
-        "      - { from: a, to: b, on: go, guard: \"x > 0\" }\n      - { from: a, to: c, on: go }",
+        "      - { from: a, to: b, on: go, guard: \"self.x > 0\" }\n      - { from: a, to: c, on: go }",
     ));
     let [f] = findings.as_slice() else { panic!("{findings:#?}") };
     assert!(f.message.ends_with("M: a → c has no guard"), "{}", f.message);
 }
 
 #[test]
-fn blank_guards_count_as_missing() {
-    let (_, findings) = nondeterminism(&with_transitions(
-        "      - { from: a, to: b, on: go, guard: \"x > 0\" }\n      - { from: a, to: c, on: go, guard: \"   \" }",
-    ));
-    assert_eq!(findings.len(), 1, "{findings:#?}");
+fn blank_guards_are_load_errors() {
+    // Guards are expressions or `?choices` now; a blank guard does not load.
+    let text = with_transitions(
+        "      - { from: a, to: b, on: go, guard: \"self.x > 0\" }\n      - { from: a, to: c, on: go, guard: \"   \" }",
+    );
+    let err = crate::load_str(&text).err().map(|e| e.diagnostics.into_iter().map(|d| d.kind).collect::<Vec<_>>());
+    assert!(matches!(err.as_deref(), Some([crate::DiagnosticKind::InvalidExpression { .. }])), "{err:#?}");
 }
 
 #[test]
 fn distinct_guards_are_mutually_exclusive() {
     let (_, findings) = nondeterminism(&with_transitions(
-        "      - { from: a, to: b, on: go, guard: \"x > 0\" }\n      - { from: a, to: c, on: go, guard: \"x <= 0\" }",
+        "      - { from: a, to: b, on: go, guard: \"self.x > 0\" }\n      - { from: a, to: c, on: go, guard: \"self.x <= 0\" }",
     ));
     assert!(findings.is_empty(), "{findings:#?}");
 }
@@ -61,7 +63,7 @@ fn distinct_guards_are_mutually_exclusive() {
 #[test]
 fn one_else_with_other_guards_is_fine() {
     let (_, findings) = nondeterminism(&with_transitions(
-        "      - { from: a, to: b, on: go, guard: \"x > 0\" }\n      - { from: a, to: c, on: go, guard: \"x < 0\" }\n      - { from: a, to: d, on: go, guard: else }",
+        "      - { from: a, to: b, on: go, guard: \"self.x > 0\" }\n      - { from: a, to: c, on: go, guard: \"self.x < 0\" }\n      - { from: a, to: d, on: go, guard: else }",
     ));
     assert!(findings.is_empty(), "{findings:#?}");
 }
@@ -78,7 +80,7 @@ fn two_else_guards_are_an_error() {
 #[test]
 fn guards_equal_after_whitespace_normalization_are_duplicates() {
     let (model, findings) = nondeterminism(&with_transitions(
-        "      - { from: a, to: b, on: go, guard: \"x  >   0\" }\n      - { from: a, to: c, on: go, guard: \"y > 0\" }\n      - { from: a, to: d, on: go, guard: \" x > 0\" }",
+        "      - { from: a, to: b, on: go, guard: \"self.x  >   0\" }\n      - { from: a, to: c, on: go, guard: \"self.y > 0\" }\n      - { from: a, to: d, on: go, guard: \" self.x > 0\" }",
     ));
     let [f] = findings.as_slice() else { panic!("{findings:#?}") };
     // Every candidate is listed, not only the duplicated pair.
@@ -88,7 +90,7 @@ fn guards_equal_after_whitespace_normalization_are_duplicates() {
     );
     assert_eq!(
         f.message,
-        "M.a has 3 transitions on `go` without mutually exclusive guards: the guard `x > 0` appears 2 times"
+        "M.a has 3 transitions on `go` without mutually exclusive guards: the guard `self.x > 0` appears 2 times"
     );
 }
 

@@ -35,7 +35,11 @@ fn large_model() -> String {
             let _ = writeln!(y, "      - {{ from: s{s}, to: s{}, on: t{s}{emits} }}", (s + 1) % STATES);
         }
         for s in 0..5 {
-            let _ = writeln!(y, "      - {{ from: s{s}, to: s{}, on: jump{s}, guard: \"x > {s}\" }}", (s + 3) % STATES);
+            let _ = writeln!(
+                y,
+                "      - {{ from: s{s}, to: s{}, on: jump{s}, guard: \"self.x > {s}\" }}",
+                (s + 3) % STATES
+            );
         }
         if m % 5 == 0 {
             let _ = writeln!(y, "      - {{ from: s5.inner0, to: s5.inner1, on: step }}");
@@ -88,6 +92,7 @@ fn play_overlays_on_the_large_model_are_cheap() {
         markers,
         active: (0..MACHINES).map(|m| k(&format!("event:E{m}_0"))).collect(),
         pending: (0..MACHINES).map(|m| k(&format!("event:E{m}_2"))).collect(),
+        timers: Vec::new(),
     };
     for (view, mode) in [
         (ViewKind::Causal, SceneMode::View),

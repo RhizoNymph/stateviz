@@ -19,7 +19,8 @@ use crate::color::{Rgba, Theme};
 use crate::emphasis::Anchor;
 use crate::pins::LayoutSidecar;
 use crate::scene::{
-    Arrow, Dash, EdgeKind, Emphasis, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneEdge, SceneNode, Stroke,
+    Arrow, Dash, EdgeKind, Emphasis, FontStyle, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneEdge,
+    SceneNode, Stroke,
 };
 use crate::text::TextMeasure;
 use crate::view_state::ViewKind;
@@ -75,6 +76,7 @@ pub(crate) struct EdgeText {
     pub text: String,
     pub font_size: f32,
     pub color: Rgba,
+    pub style: FontStyle,
 }
 
 #[derive(Clone, Debug)]
@@ -309,6 +311,7 @@ pub(crate) fn realize(
                     font_size: l.font_size,
                     color: l.color,
                     weight: l.weight,
+                    style: l.style,
                 })
                 .collect(),
             badge: None,
@@ -332,7 +335,9 @@ pub(crate) fn realize(
                 (self_loop(rects[edge.from]), false, label_box)
             }
         };
-        let back_edge = edge.on_cycle && reversed;
+        // A hand-drawn self-loop always runs back against the flow: on a
+        // cycle (a timer re-arming itself), it is the cycle's back edge.
+        let back_edge = edge.on_cycle && (reversed || id.is_none());
         let stroke = if back_edge { Stroke { color: ctx.theme.finding, ..edge.stroke } } else { edge.stroke };
         let label = edge.label.map(|text| place_edge_label(ctx.measure, text, &points, label_rect));
         scene.edges.push(SceneEdge {
@@ -470,7 +475,14 @@ pub(crate) fn place_edge_label(
             Point::new(mid.x - size.width / 2.0, mid.y - size.height - 2.0)
         }
     };
-    Label { text: text.text, origin, font_size: text.font_size, color: text.color, weight: FontWeight::Normal }
+    Label {
+        text: text.text,
+        origin,
+        font_size: text.font_size,
+        color: text.color,
+        weight: FontWeight::Normal,
+        style: text.style,
+    }
 }
 
 /// The point halfway along a polyline.

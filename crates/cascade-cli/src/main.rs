@@ -1,4 +1,4 @@
-//! `cascade`: check, render, export, import, diff and simulate Cascade
+//! `cascade`: check, render, export, import, diff, simulate and explore Cascade
 //! definitions from the command line and CI.
 //!
 //! Exit codes: 0 success; 1 `check` found errors (or warnings with
@@ -104,6 +104,34 @@ enum Command {
         #[arg(long, conflicts_with_all = ["race", "format"])]
         interactive: bool,
     },
+    /// Explore every delivery ordering a scenario allows and list the
+    /// distinct outcomes, each with a witness. Exit codes: 0 one outcome and
+    /// no anomalies, 1 several outcomes or anomalies, 2 errors, 3 the state
+    /// bound was hit.
+    Explore {
+        file: PathBuf,
+        scenario: PathBuf,
+        /// Any queued item may go next (default: per-consumer order).
+        #[arg(long)]
+        unordered: bool,
+        /// Branch on every option at choice points (scenario `choose`
+        /// entries are then ignored).
+        #[arg(long)]
+        choices: bool,
+        /// Let armed timers expire between any two deliveries.
+        #[arg(long)]
+        timers: bool,
+        #[arg(long, default_value_t = cascade_sim::explore::DEFAULT_MAX_STATES)]
+        max_states: usize,
+        /// Explore every interleaving (slower; for debugging).
+        #[arg(long)]
+        no_reduction: bool,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Text)]
+        format: OutputFormat,
+        /// Write each outcome's witness as a scenario file in this directory.
+        #[arg(long)]
+        save_witness: Option<PathBuf>,
+    },
     /// Open the definition in the native app.
     Open {
         file: PathBuf,
@@ -143,6 +171,29 @@ fn main() -> ExitCode {
         Command::Simulate { file, scenario, format, race, interactive } => {
             commands::simulate::run(&file, scenario.as_deref(), format, race, interactive)
         }
+        Command::Explore {
+            file,
+            scenario,
+            unordered,
+            choices,
+            timers,
+            max_states,
+            no_reduction,
+            format,
+            save_witness,
+        } => commands::explore::run(&commands::explore::ExploreArgs {
+            file,
+            scenario,
+            options: cascade_sim::ExploreOptions {
+                ordering: commands::explore::ordering(unordered),
+                choices,
+                timers_anytime: timers,
+                max_states,
+                reduction: !no_reduction,
+            },
+            format,
+            save_witness,
+        }),
         Command::Open { file, view } => commands::open::run(&file, view.as_deref()),
         Command::New { file, no_open } => commands::new::run(&file, !no_open),
     };

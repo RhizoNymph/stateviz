@@ -3,9 +3,10 @@
 
 use std::ops::Range;
 
+use cascade_core::expr::Duration;
 use cascade_core::{ElementKey, ElementRef, Model};
-use cascade_scene::{PlayMarker, PlayOverlay};
-use cascade_sim::{InstanceState, PendingItem, PendingKind, Trace, TraceStepKind};
+use cascade_scene::{PlayMarker, PlayOverlay, PlayTimer};
+use cascade_sim::{ArmedTimer, InstanceState, PendingItem, PendingKind, Trace, TraceStepKind};
 
 /// The element a step "went through", for emphasis: transitions taken,
 /// events emitted, handlers run, rules fired. External fires, drops and
@@ -19,7 +20,12 @@ fn active_element(kind: &TraceStepKind) -> Option<ElementRef> {
         TraceStepKind::ExternalFire { .. }
         | TraceStepKind::Dropped { .. }
         | TraceStepKind::NoTarget { .. }
-        | TraceStepKind::Ambiguous { .. } => None,
+        | TraceStepKind::Ambiguous { .. }
+        | TraceStepKind::Notify { .. }
+        | TraceStepKind::Wait { .. }
+        | TraceStepKind::TimerExpired { .. }
+        | TraceStepKind::Choice { .. }
+        | TraceStepKind::SetFields { .. } => None,
     }
 }
 
@@ -27,6 +33,7 @@ fn pending_element(kind: &PendingKind) -> ElementRef {
     match kind {
         PendingKind::Event { event } => ElementRef::Event(*event),
         PendingKind::Fire { rule, .. } => ElementRef::Rule(*rule),
+        PendingKind::Timer { trigger, .. } => ElementRef::Trigger(*trigger),
     }
 }
 
@@ -64,7 +71,20 @@ pub fn build_overlay(
     for item in pending {
         push_unique(&mut queued, model.key_of(pending_element(&item.kind)));
     }
-    PlayOverlay { markers, active, pending: queued }
+    PlayOverlay { markers, active, pending: queued, timers: Vec::new() }
+}
+
+/// The overlay's timers: each armed timer with the time left until its
+/// deadline at `now` (zero once due), in the session's deadline order.
+pub fn play_timers(model: &Model, armed: &[ArmedTimer], now: Duration) -> Vec<PlayTimer> {
+    armed
+        .iter()
+        .map(|timer| PlayTimer {
+            instance: timer.instance.clone(),
+            trigger: model.key_of(ElementRef::Trigger(timer.trigger)),
+            remaining: timer.deadline.saturating_sub(now),
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -139,13 +159,21 @@ external:
                 kind: PendingKind::Fire { rule, target: l },
                 cause: StepIx(4),
                 label: "x".into(),
+                consumers_left: vec!["o1".into()],
             },
-            PendingItem { id: PendingId(2), kind: PendingKind::Event { event }, cause: StepIx(5), label: "y".into() },
+            PendingItem {
+                id: PendingId(2),
+                kind: PendingKind::Event { event },
+                cause: StepIx(5),
+                label: "y".into(),
+                consumers_left: Vec::new(),
+            },
             PendingItem {
                 id: PendingId(3),
                 kind: PendingKind::Fire { rule, target: l },
                 cause: StepIx(4),
                 label: "z".into(),
+                consumers_left: vec!["o1".into()],
             },
         ];
         let overlay = build_overlay(&m, &t, &instances, &pending, Some(0..6));
@@ -195,5 +223,25 @@ external:
     fn an_empty_session_draws_nothing() {
         let m = model();
         assert_eq!(build_overlay(&m, &trace(Vec::new()), &[], &[], None), PlayOverlay::default());
+    }
+    #[test]
+    fn timers_count_down_from_now_and_stop_at_zero() {
+        let m = model();
+        let (_, _, _, pay, ..) = ids(&m);
+        let secs = Duration::from_secs;
+        let armed = [
+            ArmedTimer { instance: "o1".into(), trigger: pay, deadline: secs(30) },
+            ArmedTimer { instance: "o2".into(), trigger: pay, deadline: secs(5) },
+        ];
+        let timers = play_timers(&m, &armed, secs(10));
+        let trigger = ElementKey::Trigger { machine: "Order".into(), trigger: "pay".into() };
+        assert_eq!(
+            timers,
+            [
+                PlayTimer { instance: "o1".into(), trigger: trigger.clone(), remaining: secs(20) },
+                PlayTimer { instance: "o2".into(), trigger, remaining: Duration::ZERO },
+            ]
+        );
+        assert!(play_timers(&m, &[], secs(10)).is_empty());
     }
 }

@@ -27,10 +27,10 @@ machines:
     transitions:
       - { from: draft, to: pending, on: submit }
       - { from: waiting, to: authorizing, on: authorize }
-      - { from: pending, to: paid, on: capture_ok, guard: amount > 0, emits: [OrderPaid] }
+      - { from: pending, to: paid, on: capture_ok, guard: event.amount > 0, emits: [OrderPaid] }
       - { from: pending, to: cancelled, on: timeout, emits: [OrderCancelled] }
       - { from: paid, to: paid, on: ping }
-      - { from: paid, to: paid, on: ping, guard: again }
+      - { from: paid, to: paid, on: ping, guard: '?again' }
 
   Shipment:
     color: green
@@ -48,7 +48,7 @@ controllers:
         - fire: Order.ping
       OrderCancelled:
         - fire: Shipment.handoff
-          when: never
+          when: '?never'
   Audit:
     on:
       Shipped:
@@ -256,7 +256,7 @@ fn atomic_state_becoming_compound() {
 
 // --- diff_models: transitions and triggers ---------------------------------------
 
-const PING_AGAIN: &str = "      - { from: paid, to: paid, on: ping, guard: again }\n";
+const PING_AGAIN: &str = "      - { from: paid, to: paid, on: ping, guard: '?again' }\n";
 
 #[test]
 fn transition_added_and_removed_with_its_trigger_and_event() {
@@ -286,10 +286,10 @@ fn transition_added_and_removed_with_its_trigger_and_event() {
 #[test]
 fn transition_attribute_changes() {
     let capture = "transition:Order:pending->paid@capture_ok";
-    let guard = diff_texts(BASE, &edit(BASE, "guard: amount > 0", "guard: amount >= 1"));
+    let guard = diff_texts(BASE, &edit(BASE, "guard: event.amount > 0", "guard: event.amount >= 1"));
     assert_eq!(changes(&guard), expected(&[(capture, Changed)]));
 
-    let no_guard = diff_texts(BASE, &edit(BASE, "guard: amount > 0, ", ""));
+    let no_guard = diff_texts(BASE, &edit(BASE, "guard: event.amount > 0, ", ""));
     assert_eq!(changes(&no_guard), expected(&[(capture, Changed)]));
 
     let two = edit(BASE, "emits: [OrderPaid] }", "emits: [OrderPaid, Receipt] }");
@@ -436,9 +436,9 @@ fn rule_attribute_changes() {
             "rule:Fulfillment/OrderPaid#0",
         ),
         ("\n          target: Shipment where orderId == event.orderId", "", "rule:Fulfillment/OrderPaid#0"),
-        ("when: never", "when: sometimes", "rule:Fulfillment/OrderCancelled#0"),
-        ("\n          when: never", "", "rule:Fulfillment/OrderCancelled#0"),
-        ("when: never", "when: never\n          bounded: true", "rule:Fulfillment/OrderCancelled#0"),
+        ("when: '?never'", "when: '?sometimes'", "rule:Fulfillment/OrderCancelled#0"),
+        ("\n          when: '?never'", "", "rule:Fulfillment/OrderCancelled#0"),
+        ("when: '?never'", "when: '?never'\n          bounded: true", "rule:Fulfillment/OrderCancelled#0"),
     ];
     for (from, to, changed) in cases {
         let diff = diff_texts(BASE, &edit(BASE, from, to));
@@ -607,7 +607,7 @@ fn removed_elements_appear_as_ghosts() {
     let old = edit(
         &old,
         "        - fire: Order.ping\n      OrderCancelled:",
-        "        - fire: Order.ping\n        - fire: Shipment.start\n          when: rarely\n      OrderCancelled:",
+        "        - fire: Order.ping\n        - fire: Shipment.start\n          when: '?rarely'\n      OrderCancelled:",
     );
     let old = edit(&old, "  Clock: [Order.timeout]\n", "  Clock: [Order.timeout]\n  Admin: [Order.refund]\n");
 
@@ -634,7 +634,7 @@ fn removed_elements_appear_as_ghosts() {
 
     // The ghost rule keeps its attributes.
     let ElementRef::Rule(rule) = find(&merged, "rule:Fulfillment/OrderPaid#2") else { panic!("not a rule") };
-    assert_eq!(merged.rule(rule).condition.as_deref(), Some("rarely"));
+    assert_eq!(merged.rule(rule).condition.as_ref().map(ToString::to_string).as_deref(), Some("?rarely"));
     // A transition keeps the line it has in the new file.
     let capture = find(&merged, "transition:Order:pending->paid@capture_ok");
     assert_eq!(merged.span_of(capture).line(), Some(19));
@@ -648,14 +648,14 @@ fn removed_elements_appear_as_ghosts() {
 #[test]
 fn added_and_changed_elements_come_from_the_new_model() {
     let new = edit(BASE, "      - paid\n", "      - paid\n      - refunded\n");
-    let new = edit(&new, "guard: amount > 0", "guard: amount >= 1");
+    let new = edit(&new, "guard: event.amount > 0", "guard: event.amount >= 1");
     let (merged, diff, new_model) = merge(BASE, &new);
     assert_eq!(diff.status(&key("state:Order:refunded")), Added);
     assert_eq!(diff.status(&key("transition:Order:pending->paid@capture_ok")), Changed);
     let ElementRef::Transition(t) = find(&merged, "transition:Order:pending->paid@capture_ok") else {
         panic!("not a transition")
     };
-    assert_eq!(merged.transition(t).guard.as_deref(), Some("amount >= 1"));
+    assert_eq!(merged.transition(t).guard.as_ref().map(ToString::to_string).as_deref(), Some("event.amount >= 1"));
     assert_eq!(key_set(&merged), key_set(&new_model));
 }
 
@@ -777,7 +777,7 @@ fn duplicate_transition_ghosts_keep_their_ordinals() {
     let ElementRef::Transition(ghost) = find(&merged, "transition:Order:paid->paid@ping#1") else {
         panic!("not a transition")
     };
-    assert_eq!(merged.transition(ghost).guard.as_deref(), Some("again"));
+    assert_eq!(merged.transition(ghost).guard.as_ref().map(ToString::to_string).as_deref(), Some("?again"));
     assert_ghosts(&merged, &diff, &new);
 
     let (merged, diff, new) = merge(BASE, &edit(BASE, "      - { from: paid, to: paid, on: ping }\n", ""));
@@ -786,7 +786,7 @@ fn duplicate_transition_ghosts_keep_their_ordinals() {
     let ElementRef::Transition(kept) = find(&merged, "transition:Order:paid->paid@ping") else {
         panic!("not a transition")
     };
-    assert_eq!(merged.transition(kept).guard.as_deref(), Some("again"));
+    assert_eq!(merged.transition(kept).guard.as_ref().map(ToString::to_string).as_deref(), Some("?again"));
     assert!(merged.resolve_key(&key("transition:Order:paid->paid@ping#1")).is_some());
     assert_ghosts(&merged, &diff, &new);
     assert_new_elements_keep_spans(&merged, &new);
@@ -822,13 +822,13 @@ fn strict_events_union_declares_ghost_events_and_widens_checked_lists() {
     assert_eq!(diff.status(&key("rule:Fulfillment/OrderPaid#2")), Removed);
     let ElementRef::Event(refunded) = find(&merged, "event:Refunded") else { panic!("not an event") };
     assert!(merged.event(refunded).declared);
-    assert_eq!(merged.event(refunded).payload, ["refundId"]);
+    assert_eq!(merged.event(refunded).payload, [cascade_core::expr::FieldDecl::untyped("refundId")]);
     // The ghost rule matches on a payload field and a machine field the new
     // version no longer declares; the union declares them so it resolves.
     let ElementRef::Event(paid) = find(&merged, "event:OrderPaid") else { panic!("not an event") };
-    assert!(merged.event(paid).payload.contains(&"amount".to_owned()));
+    assert!(merged.event(paid).payload.iter().any(|f| f.name == "amount"));
     let ElementRef::Machine(shipment) = find(&merged, "machine:Shipment") else { panic!("not a machine") };
-    assert!(merged.machine(shipment).fields.contains(&"amount".to_owned()));
+    assert!(merged.machine(shipment).fields.iter().any(|f| f.name == "amount"));
     assert_ghosts(&merged, &diff, &new_model);
     assert_new_elements_keep_spans(&merged, &new_model);
 }

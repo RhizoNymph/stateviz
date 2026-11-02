@@ -100,7 +100,7 @@ pub fn signature(model: &Model) -> Vec<(String, String)> {
                 ElementRef::State(id) => kind_text(model, &model.state(id).kind),
                 ElementRef::Transition(id) => {
                     let t = model.transition(id);
-                    let emits: Vec<&str> = t.emits.iter().map(|&e| model.event(e).name.as_str()).collect();
+                    let emits: Vec<&str> = t.emits.iter().map(|e| model.event(e.event).name.as_str()).collect();
                     format!("guard={:?} emits={emits:?} bounded={}", t.guard, t.bounded)
                 }
                 ElementRef::Trigger(id) => {

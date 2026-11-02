@@ -1,16 +1,16 @@
 //! Machine ops and the system name.
 
-use cascade_core::definition::{MachineDef, TargetSpec};
+use cascade_core::definition::{FieldDef, MachineDef, TargetSpec};
 use cascade_core::parse::grammar::{parse_target, parse_trigger_ref};
 
-use super::{Child, add_child, check_new_name, controllers, definition, insert_at, nav, step};
+use super::{Child, add_child, check_new_name, controllers, definition, insert_at, keyed, nav, step};
 use crate::patch::block;
 use crate::patch::collection::{
     Value, child_col, remove_child, replace_scalar, replace_value, set_key, set_names, set_scalar_key,
 };
 use crate::patch::doc::{Doc, Node};
 use crate::patch::error::{Result, Unsupported, not_found};
-use crate::patch::render::{self, flow_list, plain_or_quoted};
+use crate::patch::render::{self, plain_or_quoted};
 use crate::patch::splice::Splice;
 
 pub(super) fn add(text: &str, machine: &MachineDef, index: Option<usize>) -> Result<String> {
@@ -108,7 +108,7 @@ fn trigger_ref_splices(doc: &Doc, from: &str, to: &str) -> Result<Vec<Splice>> {
                     }
                     if let Some(target) = rule.value("target")
                         && let Some(spec) = target.text().and_then(|t| parse_target(t).ok())
-                        && spec.machine == from
+                        && spec.machine() == from
                     {
                         let text = target.text().unwrap_or_default();
                         splices.push(replace_scalar(doc, target, &renamed_selector(text, &spec, to))?);
@@ -133,9 +133,9 @@ fn trigger_ref_splices(doc: &Doc, from: &str, to: &str) -> Result<Vec<Splice>> {
 /// the machine word can be swapped in place.
 fn renamed_selector(text: &str, spec: &TargetSpec, to: &str) -> String {
     let mut expected = spec.clone();
-    expected.machine = to.to_owned();
+    *expected.machine_mut() = to.to_owned();
     for &(offset, word) in words(text).iter().take(2) {
-        if word == spec.machine {
+        if word == spec.machine() {
             let candidate = format!("{}{to}{}", &text[..offset], &text[offset + word.len()..]);
             if parse_target(&candidate).as_ref() == Ok(&expected) {
                 return candidate;
@@ -172,16 +172,20 @@ pub(super) fn set_scalar(text: &str, machine: &str, key: &str, value: Option<Str
     })
 }
 
-pub(super) fn set_fields(text: &str, machine: &str, fields: &[String]) -> Result<String> {
-    step(text, |doc, _| {
-        let (_, entry) = nav::machine(doc, machine)?;
-        let body = &entry.value;
-        match (body.as_map().and_then(|m| m.get("fields")), fields.is_empty()) {
-            (Some(_), true) | (None, true) => set_key(doc, body, "fields", None, nav::MACHINE_ORDER),
-            (Some((_, existing)), false) => set_names(doc, existing, fields),
-            (None, false) => set_key(doc, body, "fields", Some(Value::Inline(flow_list(fields))), nav::MACHINE_ORDER),
-        }
-    })
+/// Replace the declared fields: entry by entry when the key exists (see
+/// [`keyed::set_field_decls`]), else a new flow value.
+pub(super) fn set_fields(text: &str, machine: &str, fields: &[FieldDef]) -> Result<String> {
+    let doc = Doc::parse(text)?;
+    let (_, entry) = nav::machine(&doc, machine)?;
+    let exists = entry.value.as_map().and_then(|m| m.get("fields")).is_some();
+    if fields.is_empty() || !exists {
+        let list = (!fields.is_empty()).then(|| Value::Inline(crate::yaml::fields_text(fields)));
+        return step(text, |doc, _| {
+            let (_, entry) = nav::machine(doc, machine)?;
+            set_key(doc, &entry.value, "fields", list.clone(), nav::MACHINE_ORDER)
+        });
+    }
+    keyed::set_field_decls(text, &|doc| nav::require(&nav::machine(doc, machine)?.1.value, "fields"), fields)
 }
 
 /// Sets the system name; a new `system:` line opens the file (after its

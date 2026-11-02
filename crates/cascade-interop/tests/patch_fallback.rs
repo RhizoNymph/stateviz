@@ -24,15 +24,15 @@ fn assert_falls_back(text: &str, op: &EditOp) {
 
 #[test]
 fn a_block_scalar_is_never_edited_in_place() {
-    let text = "machines:\n  A:\n    states: [x, y]\n    transitions:\n      - from: x\n        to: y\n        on: go\n        guard: |\n          n > 0\n";
-    let mut t = guarded(transition(&["x"], "y", "go"), "n > 1");
+    let text = "machines:\n  A:\n    states: [x, y]\n    transitions:\n      - from: x\n        to: y\n        on: go\n        guard: |\n          event.n > 0\n";
+    let mut t = guarded(transition(&["x"], "y", "go"), "event.n > 1");
     t.bounded = false;
     assert_falls_back(text, &EditOp::UpdateTransition { machine: "A".into(), index: 0, transition: t });
 }
 
 #[test]
 fn a_single_rule_block_mapping_is_not_turned_into_a_list() {
-    let text = "machines:\n  A:\n    states: [x, y]\n    transitions:\n      - { from: x, to: y, on: go, emits: [E] }\ncontrollers:\n  C:\n    on:\n      E:\n        fire: A.go\n        when: sometimes\n";
+    let text = "machines:\n  A:\n    states: [x, y]\n    transitions:\n      - { from: x, to: y, on: go, emits: [E] }\ncontrollers:\n  C:\n    on:\n      E:\n        fire: A.go\n        when: \"?sometimes\"\n";
     assert_falls_back(
         text,
         &EditOp::AddRule { controller: "C".into(), event: "E".into(), rule: rule("A.go", None, None), index: None },

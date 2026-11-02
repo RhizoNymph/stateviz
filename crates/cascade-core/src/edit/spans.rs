@@ -4,7 +4,8 @@
 //! laws hold "ignoring spans": compare `without_spans(a) == without_spans(b)`.
 
 use crate::definition::{
-    ControllerDef, Definition, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, TransitionDef,
+    ControllerDef, Definition, EmitDef, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef,
+    TransitionDef, TriggerSpec,
 };
 use crate::span::{SourceSpan, Spanned};
 
@@ -33,7 +34,7 @@ fn machine(m: &MachineDef) -> MachineDef {
         color: m.color.as_ref().map(bare),
         domain: m.domain.as_ref().map(bare),
         initial: m.initial.as_ref().map(bare),
-        fields: bare_all(&m.fields),
+        fields: fields(&m.fields),
         states: m.states.iter().map(state).collect(),
         transitions: m.transitions.iter().map(transition).collect(),
         span: SourceSpan::unknown(),
@@ -50,20 +51,35 @@ fn state(s: &StateDef) -> StateDef {
     }
 }
 
+fn fields(list: &[FieldDef]) -> Vec<FieldDef> {
+    list.iter().map(|f| FieldDef { name: bare(&f.name), ty: f.ty.as_ref().map(bare) }).collect()
+}
+
+fn trigger(spec: &TriggerSpec) -> TriggerSpec {
+    match spec {
+        TriggerSpec::Command(name) => TriggerSpec::Command(bare(name)),
+        TriggerSpec::Event { event, filter } => {
+            TriggerSpec::Event { event: bare(event), filter: filter.as_ref().map(bare) }
+        }
+        TriggerSpec::After(delay) => TriggerSpec::After(bare(delay)),
+    }
+}
+
 pub(super) fn transition(t: &TransitionDef) -> TransitionDef {
     TransitionDef {
         from: bare_all(&t.from),
         to: bare(&t.to),
-        on: bare(&t.on),
+        trigger: trigger(&t.trigger),
         guard: t.guard.as_ref().map(bare),
-        emits: bare_all(&t.emits),
+        sets: bare_all(&t.sets),
+        emits: t.emits.iter().map(|e| EmitDef { event: bare(&e.event), with: bare_all(&e.with) }).collect(),
         bounded: t.bounded,
         span: SourceSpan::unknown(),
     }
 }
 
 fn event(e: &EventDef) -> EventDef {
-    EventDef { name: bare(&e.name), payload: bare_all(&e.payload), span: SourceSpan::unknown() }
+    EventDef { name: bare(&e.name), payload: fields(&e.payload), span: SourceSpan::unknown() }
 }
 
 fn controller(c: &ControllerDef) -> ControllerDef {

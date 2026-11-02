@@ -173,7 +173,7 @@ impl Workspace {
             return None;
         }
         let target = pick::hit(&self.scene, viewport::to_scene(vp, canvas, at), vp.zoom, self.picking())?;
-        locate::drop_key(&target).cloned()
+        locate::drop_key(&target)
     }
 
     /// The rubber band and drop highlights of a connect drag, in screen

@@ -4,9 +4,11 @@ use cascade_core::definition::{
     ControllerDef, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef, TransitionDef,
 };
 
+use cascade_core::expr::Guard;
+
 use super::scalar::{flow_list, free_text, plain_or_quoted};
 use super::{Block, Style};
-use crate::yaml::selector;
+use crate::yaml::{assignments_text, emits_text, fields_text, selector, trigger_text};
 
 fn values(items: &[cascade_core::Spanned<String>]) -> Vec<&str> {
     items.iter().map(|s| s.value.as_str()).collect()
@@ -138,10 +140,17 @@ fn parts(t: &TransitionDef, in_flow: bool, quote: bool) -> Parts {
     };
     let mut rest = Vec::new();
     if let Some(guard) = &t.guard {
-        rest.push(format!("guard: {}", free_text(&guard.value, in_flow, quote)));
+        let text = match &guard.value {
+            Guard::Else => "else".to_owned(),
+            other => free_text(&other.to_string(), in_flow, quote),
+        };
+        rest.push(format!("guard: {text}"));
+    }
+    if !t.sets.is_empty() {
+        rest.push(format!("sets: {}", assignments_text(&t.sets)));
     }
     if !t.emits.is_empty() {
-        rest.push(format!("emits: {}", flow_list(&values(&t.emits))));
+        rest.push(format!("emits: {}", emits_text(&t.emits)));
     }
     if t.bounded {
         rest.push("bounded: true".to_owned());
@@ -149,7 +158,7 @@ fn parts(t: &TransitionDef, in_flow: bool, quote: bool) -> Parts {
     Parts {
         from: format!("from: {from}"),
         to: format!("to: {}", plain_or_quoted(&t.to.value, in_flow)),
-        on: format!("on: {}", plain_or_quoted(&t.on.value, in_flow)),
+        on: trigger_text(&t.trigger),
         rest,
     }
 }
@@ -232,7 +241,7 @@ pub(crate) fn machine(m: &MachineDef, style: Style) -> Block {
         body.line(0, format!("initial: {}", plain_or_quoted(&initial.value, false)));
     }
     if !m.fields.is_empty() {
-        body.line(0, format!("fields: {}", flow_list(&values(&m.fields))));
+        body.line(0, format!("fields: {}", fields_text(&m.fields)));
     }
     body.nest(0, states_entry(&m.states, style));
     if !m.transitions.is_empty() {
@@ -253,7 +262,7 @@ pub(crate) fn event_entry(e: &EventDef) -> String {
     if e.payload.is_empty() {
         format!("{name}: {{}}")
     } else {
-        format!("{name}: {{ payload: {} }}", flow_list(&values(&e.payload)))
+        format!("{name}: {{ payload: {} }}", fields_text(&e.payload))
     }
 }
 
@@ -271,7 +280,7 @@ fn rule_parts(r: &RuleDef, in_flow: bool, quote: bool) -> Vec<String> {
         parts.push(format!("target: {}", plain_or_quoted(&selector(&target.value), in_flow)));
     }
     if let Some(when) = &r.when {
-        parts.push(format!("when: {}", free_text(&when.value, in_flow, quote)));
+        parts.push(format!("when: {}", free_text(&when.value.to_string(), in_flow, quote)));
     }
     if r.bounded {
         parts.push("bounded: true".to_owned());
@@ -344,9 +353,10 @@ mod tests {
         TransitionDef {
             from: vec![s(from)],
             to: s(to),
-            on: s(on),
+            trigger: cascade_core::definition::TriggerSpec::Command(s(on)),
             guard: None,
-            emits: emits.iter().map(|e| s(e)).collect(),
+            sets: Vec::new(),
+            emits: emits.iter().map(|e| cascade_core::definition::EmitDef::plain(*e)).collect(),
             bounded: false,
             span: SourceSpan::unknown(),
         }

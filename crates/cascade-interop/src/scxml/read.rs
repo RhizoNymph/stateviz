@@ -11,10 +11,12 @@ use std::collections::HashMap;
 use roxmltree::{Document, Node};
 
 use cascade_core::PaletteColor;
+use cascade_core::definition::FieldDef;
+use cascade_core::expr::{Assignment, ExprContext, parse_expr, parse_field_type, parse_operand};
 
 use crate::error::InteropError;
 use crate::import::Warnings;
-use crate::import::chart::{Chart, Edge, Emit, NodeIx, NodeKind, Route, TriggerSpec};
+use crate::import::chart::{Chart, Delay, Edge, Emit, NodeIx, NodeKind, Route, TriggerSpec};
 use crate::import::wiring::{
     AnnotatedController, AnnotatedEvent, AnnotatedHandler, AnnotatedRule, AnnotatedSource, Annotations, Wiring,
 };
@@ -52,12 +54,26 @@ struct PendingEdge {
     chart: usize,
     source: NodeIx,
     trigger: String,
+    /// The event descriptor as written (for matching delayed sends).
+    raw_event: String,
+    /// A subscription (Cascade's export: an event without the machine
+    /// prefix), with its filter.
+    subscription: Option<Option<cascade_core::expr::Expr>>,
+    sets: Vec<Assignment>,
     target: Option<String>,
     guard: Option<String>,
     emits: Vec<Emit>,
     reenter: bool,
     bounded: bool,
     location: String,
+}
+
+struct DelayedSend {
+    chart: usize,
+    node: NodeIx,
+    event: String,
+    millis: u64,
+    emit: Emit,
 }
 
 struct Reader<'d, 'w> {
@@ -69,6 +85,9 @@ struct Reader<'d, 'w> {
     ids: HashMap<String, (usize, NodeIx)>,
     edges: Vec<PendingEdge>,
     initials: Vec<(usize, NodeIx, String, String)>,
+    /// Delayed `<send>`s in `<onentry>`: a timer when a transition of the
+    /// same state takes the event, else an entry emit.
+    delayed: Vec<DelayedSend>,
     annotations: Annotations,
     generated: usize,
 }
@@ -91,6 +110,7 @@ pub(crate) fn read(text: &str, warnings: &mut Warnings) -> Result<ReadDocument, 
         ids: HashMap::new(),
         edges: Vec::new(),
         initials: Vec::new(),
+        delayed: Vec::new(),
         annotations: Annotations::default(),
         generated: 0,
     };
@@ -163,8 +183,9 @@ impl<'d> Reader<'d, '_> {
             }
             chart.attrs.domain = cascade_attr(element, "domain").map(str::to_owned);
             chart.attrs.fields = cascade_attr(element, "fields")
-                .map(|f| f.split_whitespace().map(str::to_owned).collect())
+                .map(|f| f.split_whitespace().map(FieldDef::untyped).collect())
                 .unwrap_or_default();
+            chart.attrs.fields.extend(typed_fields(element, &location)?);
         }
         self.charts.push(chart);
         if !is_scxml(element, "scxml") {
@@ -249,7 +270,7 @@ impl<'d> Reader<'d, '_> {
                     self.initials.push((chart, parent, target.to_owned(), location));
                 }
                 "onentry" => {
-                    let emits = self.executable(child);
+                    let emits = self.entry_actions(chart, parent, child);
                     self.charts[chart].node_mut(parent).entry.extend(emits);
                 }
                 "onexit" => {
@@ -280,19 +301,40 @@ impl<'d> Reader<'d, '_> {
             },
         };
         let emits = self.executable(element);
+        let sets = self.assigns(element);
         for token in events.split_whitespace() {
             let descriptor = token.trim_end_matches('*').trim_end_matches('.');
-            let trigger = descriptor.strip_prefix(&format!("{machine}.")).unwrap_or(descriptor);
+            let stripped = descriptor.strip_prefix(&format!("{machine}."));
+            let trigger = stripped.unwrap_or(descriptor);
             if trigger.is_empty() {
                 self.warnings.ignored(location.as_str(), format!("the wildcard event descriptor `{token}`"));
                 continue;
             }
+            // Cascade's export names triggers `Machine.trigger`; an event
+            // without the prefix is a subscription.
+            let subscription = match (self.annotated, stripped) {
+                (true, None) => Some(match cascade_attr(element, "where") {
+                    Some(text) => Some(
+                        parse_expr(text, ExprContext::Filter)
+                            .map_err(|err| invalid(&location, format!("invalid `cascade:where` `{text}`: {err}")))?,
+                    ),
+                    None => None,
+                }),
+                _ => None,
+            };
+            let guard = match &subscription {
+                Some(_) if cascade_attr(element, "where").is_some() => cascade_attr(element, "guard"),
+                _ => element.attribute("cond"),
+            };
             self.edges.push(PendingEdge {
                 chart,
                 source,
                 trigger: trigger.to_owned(),
+                raw_event: descriptor.to_owned(),
+                subscription,
+                sets: sets.clone(),
                 target: target.clone(),
-                guard: element.attribute("cond").map(str::to_owned),
+                guard: guard.map(str::to_owned),
                 emits: emits.clone(),
                 reenter: element.attribute("type") != Some("internal"),
                 bounded: cascade_attr(element, "bounded") == Some("true"),
@@ -302,38 +344,118 @@ impl<'d> Reader<'d, '_> {
         Ok(())
     }
 
+    /// `<onentry>` content: emits, except delayed `<send>`s with a static
+    /// event and delay, which wait to see whether they are timers.
+    fn entry_actions(&mut self, chart: usize, node: NodeIx, element: Node) -> Vec<Emit> {
+        let mut immediate = Vec::new();
+        for child in element.children().filter(Node::is_element) {
+            let delay = child.attribute("delay").and_then(parse_delay);
+            match (is_scxml(child, "send"), child.attribute("event"), delay) {
+                (true, Some(event), Some(millis)) if child.attribute("target").is_none() => {
+                    let with = self.params(child);
+                    let emit = Emit { event: event.to_owned(), route: Route::All, with };
+                    self.delayed.push(DelayedSend { chart, node, event: event.to_owned(), millis, emit });
+                }
+                _ => immediate.extend(self.action(child)),
+            }
+        }
+        immediate
+    }
+
+    /// `<assign location expr>` children of a transition as `sets`: kept
+    /// when `expr` is a Cascade operand (in a foreign document, only one
+    /// reading `event.x` or `self.x`), else ignored with a warning.
+    fn assigns(&mut self, element: Node) -> Vec<Assignment> {
+        let mut out = Vec::new();
+        for child in element.children().filter(|n| is_scxml(*n, "assign")) {
+            let location = self.location(child);
+            let (Some(field), Some(expr)) = (child.attribute("location"), child.attribute("expr")) else {
+                self.warnings.ignored(location, "an <assign> without a static `location` and `expr`");
+                continue;
+            };
+            match self.operand(expr) {
+                Some(value) if cascade_core::parse::grammar::is_valid_name(field) => {
+                    out.push(Assignment::new(field, value));
+                }
+                _ => {
+                    self.warnings.ignored(location, format!("an <assign> to `{field}` of `{expr}` (not a field copy)"))
+                }
+            }
+        }
+        out
+    }
+
+    /// `<param name expr>` children of a `<send>` as emit `with:`, read
+    /// like [`Self::assigns`].
+    fn params(&mut self, send: Node) -> Vec<Assignment> {
+        let mut out = Vec::new();
+        for child in send.children().filter(|n| is_scxml(*n, "param")) {
+            let location = self.location(child);
+            let (Some(name), Some(expr)) = (child.attribute("name"), child.attribute("expr")) else {
+                self.warnings.ignored(location, "a <param> without a `name` and `expr`");
+                continue;
+            };
+            match self.operand(expr) {
+                Some(value) if cascade_core::parse::grammar::is_valid_name(name) => {
+                    out.push(Assignment::new(name, value));
+                }
+                _ => self.warnings.ignored(location, format!("a <param> `{name}` of `{expr}` (not a field copy)")),
+            }
+        }
+        out
+    }
+
+    /// An `expr` as a Cascade operand: any operand in Cascade's own export,
+    /// only `event.x`/`self.x` in a foreign document.
+    fn operand(&self, expr: &str) -> Option<cascade_core::expr::Operand> {
+        let operand = parse_operand(expr.trim()).ok()?;
+        (self.annotated || !operand.is_literal()).then_some(operand)
+    }
+
     /// Events raised or sent by executable content, including inside
     /// `<if>`/`<foreach>` blocks.
     fn executable(&mut self, element: Node) -> Vec<Emit> {
         let mut out = Vec::new();
         for child in element.children().filter(Node::is_element) {
-            if !matches!(child.tag_name().namespace(), None | Some(SCXML_NS)) {
-                continue;
-            }
-            match child.tag_name().name() {
-                "raise" => match child.attribute("event") {
-                    Some(event) => out.push(Emit { event: event.to_owned(), route: Route::All }),
-                    None => self.warnings.ignored(self.location(child), "a <raise> without an `event`"),
-                },
-                "send" => match child.attribute("event") {
-                    Some(event) => {
-                        let route = match child.attribute("target") {
-                            None | Some("#_internal") => Route::All,
-                            Some("#_parent") => Route::Others,
-                            Some(t) => match t.strip_prefix("#_scxml_").or_else(|| t.strip_prefix("#_")) {
-                                Some(id) => Route::Machine(id.to_owned()),
-                                None => Route::Others,
-                            },
-                        };
-                        out.push(Emit { event: event.to_owned(), route });
-                    }
-                    None => self.warnings.ignored(self.location(child), "a <send> without a static `event`"),
-                },
-                "if" | "elseif" | "else" | "foreach" => out.extend(self.executable(child)),
-                _ => {}
-            }
+            out.extend(self.action(child));
         }
         out
+    }
+
+    /// The events one executable element raises or sends.
+    fn action(&mut self, child: Node) -> Vec<Emit> {
+        if !matches!(child.tag_name().namespace(), None | Some(SCXML_NS)) {
+            return Vec::new();
+        }
+        match child.tag_name().name() {
+            "raise" => match child.attribute("event") {
+                Some(event) => vec![Emit::new(event, Route::All)],
+                None => {
+                    self.warnings.ignored(self.location(child), "a <raise> without an `event`");
+                    Vec::new()
+                }
+            },
+            "send" => match child.attribute("event") {
+                Some(event) => {
+                    let route = match child.attribute("target") {
+                        None | Some("#_internal") => Route::All,
+                        Some("#_parent") => Route::Others,
+                        Some(t) => match t.strip_prefix("#_scxml_").or_else(|| t.strip_prefix("#_")) {
+                            Some(id) => Route::Machine(id.to_owned()),
+                            None => Route::Others,
+                        },
+                    };
+                    let with = self.params(child);
+                    vec![Emit { event: event.to_owned(), route, with }]
+                }
+                None => {
+                    self.warnings.ignored(self.location(child), "a <send> without a static `event`");
+                    Vec::new()
+                }
+            },
+            "if" | "elseif" | "else" | "foreach" => self.executable(child),
+            _ => Vec::new(),
+        }
     }
 
     // --- Cascade annotations ---------------------------------------------------------
@@ -341,12 +463,12 @@ impl<'d> Reader<'d, '_> {
     fn cascade_event(&mut self, element: Node) -> Result<(), InteropError> {
         let location = self.location(element);
         let name = element.attribute("name").ok_or_else(|| invalid(&location, "<cascade:event> needs a `name`"))?;
-        let payload = element.attribute("payload").map(|p| p.split_whitespace().map(str::to_owned).collect());
-        self.annotations.events.push(AnnotatedEvent {
-            name: name.to_owned(),
-            payload: payload.unwrap_or_default(),
-            location,
-        });
+        let mut payload: Vec<FieldDef> = element
+            .attribute("payload")
+            .map(|p| p.split_whitespace().map(FieldDef::untyped).collect())
+            .unwrap_or_default();
+        payload.extend(typed_fields(element, &location)?);
+        self.annotations.events.push(AnnotatedEvent { name: name.to_owned(), payload, location });
         Ok(())
     }
 
@@ -433,23 +555,73 @@ impl<'d> Reader<'d, '_> {
             }
             self.charts[chart].node_mut(node).initial = Some(target);
         }
+        let delayed = std::mem::take(&mut self.delayed);
+        let mut timers_used = vec![false; delayed.len()];
         for edge in std::mem::take(&mut self.edges) {
             let target = match &edge.target {
                 None => None,
                 Some(id) => Some(self.lookup(edge.chart, id, &edge.location)?),
             };
+            let timer = delayed
+                .iter()
+                .position(|d| d.chart == edge.chart && d.node == edge.source && d.event == edge.raw_event);
+            let trigger = match (timer, edge.subscription) {
+                (Some(i), _) => {
+                    timers_used[i] = true;
+                    TriggerSpec::After(Delay::Millis(delayed[i].millis))
+                }
+                (None, Some(filter)) => TriggerSpec::Subscription { event: edge.trigger, filter },
+                (None, None) => TriggerSpec::Event(edge.trigger),
+            };
             self.charts[edge.chart].node_mut(edge.source).edges.push(Edge {
-                trigger: TriggerSpec::Event(edge.trigger),
+                trigger,
                 target,
                 guard: edge.guard,
+                sets: edge.sets,
                 emits: edge.emits,
                 reenter: edge.reenter,
                 bounded: edge.bounded,
                 location: edge.location,
             });
         }
+        // Delayed sends no transition of their state takes are plain emits.
+        for (send, used) in delayed.into_iter().zip(timers_used) {
+            if !used {
+                self.charts[send.chart].node_mut(send.node).entry.push(send.emit);
+            }
+        }
         Ok(())
     }
+}
+
+/// `<cascade:field name type/>` children: typed fields.
+fn typed_fields(element: Node, location: &str) -> Result<Vec<FieldDef>, InteropError> {
+    element
+        .children()
+        .filter(|n| is_cascade(*n, "field"))
+        .map(|field| {
+            let name = field.attribute("name").ok_or_else(|| invalid(location, "<cascade:field> needs a `name`"))?;
+            let ty = field.attribute("type").unwrap_or("any");
+            let ty = parse_field_type(ty)
+                .map_err(|err| invalid(location, format!("invalid type `{ty}` of field `{name}`: {err}")))?;
+            Ok(FieldDef::typed(name, ty))
+        })
+        .collect()
+}
+
+/// An SCXML delay (`30s`, `1.5s`, `250ms`) in milliseconds, when it is a
+/// whole positive number of them.
+fn parse_delay(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (number, scale) = match text.strip_suffix("ms") {
+        Some(n) => (n, 1.0),
+        None => (text.strip_suffix('s')?, 1000.0),
+    };
+    if number.is_empty() || !number.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return None;
+    }
+    let millis = number.parse::<f64>().ok()? * scale;
+    (millis >= 1.0 && millis.fract() == 0.0 && millis < u64::MAX as f64).then_some(millis as u64)
 }
 
 /// `Machine.trigger` → (machine, trigger).

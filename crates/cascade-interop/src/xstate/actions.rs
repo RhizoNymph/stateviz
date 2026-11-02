@@ -16,6 +16,9 @@
 //! [`ImportOptions::emit_prefix`](crate::ImportOptions). Any other action
 //! emits nothing.
 
+use cascade_core::expr::{Assignment, Operand};
+use cascade_core::parse::grammar::is_valid_name;
+
 use crate::error::InteropError;
 use crate::import::Warnings;
 use crate::import::chart::{Emit, Route};
@@ -57,7 +60,7 @@ fn prefixed(name: &str, emit_prefix: &str) -> Option<Emit> {
         return None;
     }
     let event = name.strip_prefix(emit_prefix)?;
-    (!event.is_empty()).then(|| Emit { event: event.to_owned(), route: Route::All })
+    (!event.is_empty()).then(|| Emit::new(event.to_owned(), Route::All))
 }
 
 fn action_object(
@@ -90,12 +93,78 @@ fn action_object(
         _ => None,
     };
     match name {
-        Some(name) if !name.is_empty() => Ok(vec![Emit { event: name.to_owned(), route }]),
+        Some(name) if !name.is_empty() => Ok(vec![Emit::new(name, route)]),
         _ => {
             warnings.ignored(location, format!("a `{kind}` action whose event is not a static name"));
             Ok(Vec::new())
         }
     }
+}
+
+/// The `sets` an `actions` value makes: each `assign` action whose
+/// assignment copies an event field (`"event.x"`, `"({ event }) =>
+/// event.x"`). Any other assignment is ignored with a warning, since its
+/// value is only known at run time.
+pub(crate) fn sets(value: &Json, location: &str, warnings: &mut Warnings) -> Vec<Assignment> {
+    match value {
+        Json::Array(items) => {
+            items.iter().enumerate().flat_map(|(i, item)| sets(item, &format!("{location}[{i}]"), warnings)).collect()
+        }
+        Json::String(name) if is_assign(name) => {
+            warnings.ignored(location, "an `assign` action without a static assignment");
+            Vec::new()
+        }
+        Json::Object(_) => {
+            let Some(kind) = value.get("type").and_then(Json::as_str).filter(|k| is_assign(k)) else {
+                return Vec::new();
+            };
+            let assignment = value.get("assignment").or_else(|| value.get("params").and_then(|p| p.get("assignment")));
+            let Some(Json::Object(entries)) = assignment else {
+                warnings.ignored(location, format!("a `{kind}` action without a static assignment object"));
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            for (field, v) in entries {
+                match v.as_str().and_then(event_copy) {
+                    Some(source) if is_valid_name(field) => {
+                        out.push(Assignment::new(field.as_str(), Operand::Event(source.to_owned())));
+                    }
+                    _ => warnings.ignored(
+                        format!("{location}.assignment.{field}"),
+                        format!("the assignment of `{field}` (only copies of an event field become `sets`)"),
+                    ),
+                }
+            }
+            out
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn is_assign(kind: &str) -> bool {
+    kind.strip_prefix("xstate.").unwrap_or(kind) == "assign"
+}
+
+/// `event.x` (after an optional arrow-function head) → `x`.
+fn event_copy(text: &str) -> Option<&str> {
+    let body = match text.rfind("=>") {
+        Some(at) => &text[at + 2..],
+        None => text,
+    };
+    let field = body.trim().strip_prefix("event.")?;
+    is_valid_name(field).then_some(field)
+}
+
+/// The label of a guard as a choice: the guard's `type` for a parameterized
+/// guard object (`{ type: "hasRole", params }` → `hasRole`), else its
+/// display text.
+pub(crate) fn guard_label(value: &Json, location: &str) -> Result<String, InteropError> {
+    if let Some(kind) = value.get("type").and_then(Json::as_str)
+        && !matches!(kind.strip_prefix("xstate.").unwrap_or(kind), "and" | "or" | "not")
+    {
+        return Ok(kind.to_owned());
+    }
+    guard_text(value, location)
 }
 
 /// A guard's display text: `"name"`, `{ type: "name" }` (with parameters as

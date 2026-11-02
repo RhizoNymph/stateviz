@@ -276,3 +276,31 @@ external:
     let err = race_orderings(&model, &scenario(FIXTURE_SCENARIO), &finding);
     assert!(matches!(err, Err(SimError::RaceNotSwappable { .. })), "{err:?}");
 }
+
+#[test]
+fn only_rule_races_replay_and_subscription_races_say_why() {
+    use cascade_sim::race_replay_note;
+    let model = model(FIXTURE);
+    assert_eq!(race_replay_note(&race(&model, "OrderPaid", "Fulfillment", "Billing")), None);
+
+    // The checkout saga's race is between two subscriptions of Order.
+    let saga = model_of_saga();
+    let graph = cascade_core::CausalGraph::build(&saga);
+    let findings = cascade_core::analyze(&saga, &graph);
+    let subscription = findings
+        .iter()
+        .find(|f| matches!(f.detail, FindingDetail::SubscriptionRace { .. }))
+        .expect("the saga has a subscription race");
+    let note = race_replay_note(&subscription.detail).expect("not replayable");
+    assert!(note.contains("subscription"), "{note}");
+    // race_orderings agrees.
+    let happy = scenario(include_str!("../../../examples/checkout-saga/scenarios/happy-path.yaml"));
+    assert!(matches!(race_orderings(&saga, &happy, &subscription.detail), Err(SimError::NotARace)));
+    // Other findings are not races at all.
+    let other = findings.iter().find(|f| f.check() != cascade_core::Check::RaceCandidate).expect("another finding");
+    assert_eq!(race_replay_note(&other.detail), Some("it is not a race candidate"));
+}
+
+fn model_of_saga() -> Model {
+    model(include_str!("../../../examples/checkout-saga/cascade.yaml"))
+}

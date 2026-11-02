@@ -24,7 +24,7 @@ machines:
       - done: { kind: final }
     transitions:
       - { from: queued, to: running, on: start }
-      - { from: running.fetching, to: running.computing, on: fetched, guard: 'amount > 0; x: "y" # z %% c' }
+      - { from: running.fetching, to: running.computing, on: fetched, guard: '?amount > 0; x: "y" # z %% c' }
       - { from: running.computing, to: done, on: finish, emits: [JobDone] }
       - { from: running, to: queued, on: cancel }
       - { from: queued, to: running.hist, on: resume }
@@ -189,7 +189,7 @@ machines:
 #[test]
 fn structure_escapes_guard_labels() {
     let out = structure(NESTED);
-    let expected = "Job_running_fetching --> Job_running_computing : fetched [amount #62; 0#59; x#58; #quot;y#quot; #35; z #37;#37; c]";
+    let expected = "Job_running_fetching --> Job_running_computing : fetched [?amount #62; 0#59; x#58; #quot;y#quot; #35; z #37;#37; c]";
     assert!(has_line(&out, expected), "{out}");
     assert_eq!(scope_of(&out, expected), ["Job", "Job_running"]);
 }
@@ -350,13 +350,13 @@ controllers:
     on:
       Paid:
         - fire: Shipment.start
-          when: "paid in full"
+          when: "?paid in full"
         - fire: Shipment.restart
 external:
   User: [Order.pay, Order.refund]
 "#;
     let out = causal(text);
-    assert!(has_line(&out, r#"c0 -.->|"start [paid in full]"| t1"#), "{out}");
+    assert!(has_line(&out, r#"c0 -.->|"start [?paid in full]"| t1"#), "{out}");
     assert!(has_line(&out, r#"u0["Shipment.restart (no transition)"]"#), "{out}");
     assert!(has_line(&out, r#"c0 -.->|"restart"| u0"#), "{out}");
     assert!(has_line(&out, r#"u1["Order.refund (no transition)"]"#), "{out}");
@@ -379,10 +379,10 @@ controllers:
     on:
       E:
         - fire: M.go
-          when: 'x > "1" # y'
+          when: '?x > "1" # y'
 "#;
     let out = causal(text);
-    assert!(has_line(&out, r#"c0 -.->|"go [x #62; #quot;1#quot; #35; y]"| t0"#), "{out}");
+    assert!(has_line(&out, r#"c0 -.->|"go [?x #62; #quot;1#quot; #35; y]"| t0"#), "{out}");
 }
 
 #[test]

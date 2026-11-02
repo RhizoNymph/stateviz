@@ -269,7 +269,7 @@ fn the_play_overlay_draws_over_the_lanes() {
     let fx = Fixture::new(SPEC_EXAMPLE);
     let findings = Vec::new();
     let key = "transition:Order:pending->paid@capture_ok";
-    let play = PlayOverlay { markers: Vec::new(), active: vec![k(key)], pending: Vec::new() };
+    let play = PlayOverlay { markers: Vec::new(), active: vec![k(key)], pending: Vec::new(), timers: Vec::new() };
     let view = lanes();
     let input = SceneInput {
         model: &fx.model,

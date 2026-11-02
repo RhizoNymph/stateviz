@@ -70,6 +70,35 @@ pub fn run(
                     races.len()
                 );
             };
+            if let Some(note) = cascade_sim::race_replay_note(&finding.detail) {
+                // Not replayable (a subscription race): say why and show the
+                // scenario as queued instead.
+                let run = match cascade_sim::simulate_run(&model, &scenario) {
+                    Ok(run) => run,
+                    Err(SimError::Scenario(err)) => return Ok(report(scenario_path, &err)),
+                    Err(err) => return Err(err.into()),
+                };
+                match format {
+                    OutputFormat::Text => {
+                        println!("Race candidate #{index}: {}", finding.message);
+                        println!("note: not replayed in both orders: {note}; showing the scenario as queued");
+                        println!();
+                        print!("{}", trace_text(&model, &run));
+                    }
+                    OutputFormat::Json => {
+                        let subjects: Vec<String> =
+                            finding.detail.subjects().into_iter().map(|e| model.key_of(e).to_string()).collect();
+                        let out = json!({
+                            "race": { "index": index, "message": finding.message, "subjects": subjects },
+                            "replayed": false,
+                            "note": note,
+                            "as_queued": trace_json(&model, &run),
+                        });
+                        println!("{out}");
+                    }
+                }
+                return Ok(ExitCode::SUCCESS);
+            }
             let runs = match cascade_sim::race_runs(&model, &scenario, &finding.detail) {
                 Ok(runs) => runs,
                 Err(SimError::Scenario(err)) => return Ok(report(scenario_path, &err)),
@@ -224,6 +253,33 @@ fn trace_json(model: &Model, run: &SimRun) -> Value {
                     "controller": controller.0,
                     "rule": key(ElementRef::Rule(*rule)),
                     "candidates": candidates.iter().map(|c| c.0).collect::<Vec<_>>(),
+                }),
+                TraceStepKind::Notify { instance, event } => json!({
+                    "kind": "notify",
+                    "instance": instance.0,
+                    "event": model.event(*event).name,
+                }),
+                TraceStepKind::Wait { by, now } => json!({
+                    "kind": "wait",
+                    "by": by.to_string(),
+                    "now": now.to_string(),
+                }),
+                TraceStepKind::TimerExpired { instance, trigger } => json!({
+                    "kind": "timer-expired",
+                    "instance": instance.0,
+                    "trigger": key(ElementRef::Trigger(*trigger)),
+                }),
+                TraceStepKind::Choice { at, options, chosen, defaulted } => json!({
+                    "kind": "choice",
+                    "at": at.0,
+                    "options": options,
+                    "chosen": chosen,
+                    "defaulted": defaulted,
+                }),
+                TraceStepKind::SetFields { instance, fields } => json!({
+                    "kind": "set-fields",
+                    "instance": instance.0,
+                    "fields": fields,
                 }),
             };
             if let Value::Object(map) = &mut value {

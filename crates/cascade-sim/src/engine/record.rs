@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use cascade_core::expr::Duration;
 use cascade_core::ids::{
     ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId,
 };
@@ -31,6 +32,18 @@ pub(crate) enum RawKind {
     Spawn { controller: ControllerId, instance: InstanceIx, rule: RuleId },
     NoTarget { controller: ControllerId, rule: RuleId },
     Ambiguous { controller: ControllerId, rule: RuleId, candidates: Vec<InstanceIx> },
+    Notify { instance: InstanceIx, event: EventId },
+    Wait { by: Duration, now: Duration },
+    TimerExpired { instance: InstanceIx, trigger: TriggerId },
+    Choice { at: Participant, options: Vec<String>, chosen: String, defaulted: bool },
+    SetFields { instance: InstanceIx, fields: Payload },
+}
+
+/// Who decides at a choice point.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Participant {
+    Instance(InstanceIx),
+    Controller(ControllerId),
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +72,9 @@ pub(crate) struct Finished {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Recorder {
+    /// Steps forgotten by [`Recorder::forget`]: `steps[0]` is step `base`.
+    /// Always 0 except in exploration, which never finishes a recording.
+    base: usize,
     steps: Vec<RawStep>,
     payloads: BTreeMap<StepRef, Payload>,
 }
@@ -66,11 +82,37 @@ pub(crate) struct Recorder {
 impl Recorder {
     pub fn push(&mut self, cause: Option<StepRef>, kind: RawKind) -> StepRef {
         self.steps.push(RawStep { cause, kind });
-        self.steps.len() - 1
+        self.base + self.steps.len() - 1
     }
 
     pub fn len(&self) -> usize {
-        self.steps.len()
+        self.base + self.steps.len()
+    }
+
+    /// The kinds of the steps recorded from step `from` on (forgotten steps
+    /// excluded).
+    pub fn kinds_since(&self, from: StepRef) -> impl Iterator<Item = &RawKind> + '_ {
+        self.steps.iter().skip(from.saturating_sub(self.base)).map(|step| &step.kind)
+    }
+
+    /// Drop every recorded step and payload, keeping the step count, so a
+    /// copy of the core is cheap. Exploration only: a recorder that forgot
+    /// steps can no longer [`finish`](Self::finish) a trace.
+    pub fn forget(&mut self) {
+        self.base += self.steps.len();
+        self.steps.clear();
+        self.payloads.clear();
+    }
+
+    /// The choice points recorded from step `from` on: who decided and the
+    /// options.
+    pub fn choices_since(&self, from: StepRef) -> Vec<(Participant, Vec<String>)> {
+        self.kinds_since(from)
+            .filter_map(|kind| match kind {
+                RawKind::Choice { at, options, .. } => Some((*at, options.clone())),
+                _ => None,
+            })
+            .collect()
     }
 
     pub fn set_payload(&mut self, step: StepRef, payload: Payload) {
@@ -96,8 +138,18 @@ impl Recorder {
                 | RawKind::Fire { controller, .. }
                 | RawKind::Spawn { controller, .. }
                 | RawKind::NoTarget { controller, .. }
-                | RawKind::Ambiguous { controller, .. } => keys.push(LifelineKey::Controller(*controller)),
-                RawKind::Transition { .. } | RawKind::Dropped { .. } | RawKind::Emit { .. } => {}
+                | RawKind::Ambiguous { controller, .. }
+                | RawKind::Choice { at: Participant::Controller(controller), .. } => {
+                    keys.push(LifelineKey::Controller(*controller));
+                }
+                RawKind::Transition { .. }
+                | RawKind::Dropped { .. }
+                | RawKind::Emit { .. }
+                | RawKind::Notify { .. }
+                | RawKind::Wait { .. }
+                | RawKind::TimerExpired { .. }
+                | RawKind::Choice { at: Participant::Instance(_), .. }
+                | RawKind::SetFields { .. } => {}
             }
         }
         keys.sort_unstable();
@@ -157,6 +209,23 @@ impl Recorder {
                         rule,
                         candidates: candidates.into_iter().map(inst).collect(),
                     },
+                    RawKind::Notify { instance, event } => TraceStepKind::Notify { instance: inst(instance), event },
+                    RawKind::Wait { by, now } => TraceStepKind::Wait { by, now },
+                    RawKind::TimerExpired { instance, trigger } => {
+                        TraceStepKind::TimerExpired { instance: inst(instance), trigger }
+                    }
+                    RawKind::Choice { at, options, chosen, defaulted } => TraceStepKind::Choice {
+                        at: match at {
+                            Participant::Instance(ix) => inst(ix),
+                            Participant::Controller(c) => ctl(c),
+                        },
+                        options,
+                        chosen,
+                        defaulted,
+                    },
+                    RawKind::SetFields { instance, fields } => {
+                        TraceStepKind::SetFields { instance: inst(instance), fields }
+                    }
                 },
             })
             .collect();

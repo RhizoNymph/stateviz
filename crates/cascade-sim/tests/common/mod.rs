@@ -90,6 +90,22 @@ pub fn lines(model: &Model, trace: &Trace) -> Vec<String> {
                 model.trigger(model.rule(*rule).trigger).name,
                 candidates.iter().map(|&c| n(c)).collect::<Vec<_>>().join(", ")
             ),
+            TraceStepKind::Notify { instance, event } => {
+                format!("{} notify {}", n(*instance), model.event(*event).name)
+            }
+            TraceStepKind::Wait { by, now } => format!("wait {by} -> {now}"),
+            TraceStepKind::TimerExpired { instance, trigger } => {
+                format!("{} timer {}", n(*instance), model.trigger(*trigger).name)
+            }
+            TraceStepKind::Choice { at, options, chosen, defaulted } => {
+                format!(
+                    "{} choice [{}] {chosen}{}",
+                    n(*at),
+                    options.join(", "),
+                    if *defaulted { " default" } else { "" }
+                )
+            }
+            TraceStepKind::SetFields { instance, fields } => format!("{} sets {fields:?}", n(*instance)),
         })
         .collect()
 }

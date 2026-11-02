@@ -1,10 +1,15 @@
 //! Play mode's pure logic: the session state the panels show, the overlay
-//! drawn over the canvas, the timeline strip and the input forms.
+//! drawn over the canvas, the timeline strip, the input forms, the clock,
+//! the queue rows and the choice prompt.
 //!
 //! GPUI glue lives in `workspace::playing` and `panels::play`.
 
+pub mod choices;
+pub mod clock;
+pub mod explore;
 pub mod forms;
 pub mod overlay;
+pub mod queue;
 pub mod timeline;
 
 use std::ops::Range;
@@ -64,6 +69,27 @@ impl PlayState {
         }
     }
 
+    /// Seek to `position` on the current line, then apply `actions` (an
+    /// exploration witness): acting there forks the timeline unless the
+    /// line already continues with them. The last-action emphasis covers
+    /// every step they appended. All or nothing: on error the state is
+    /// unchanged (and the error is not kept, the caller reports it).
+    pub fn open_witness(&mut self, model: &Model, position: usize, actions: &[PlayAction]) -> Result<(), SimError> {
+        let mut session = self.session.clone();
+        if session.timeline().position != position {
+            session.seek(model, position)?;
+        }
+        let before = session.trace().steps.len();
+        for action in actions {
+            session.apply(model, action.clone())?;
+        }
+        let after = session.trace().steps.len();
+        self.session = session;
+        self.last = Some(before..after);
+        self.error = None;
+        Ok(())
+    }
+
     pub fn seek(&mut self, model: &Model, position: usize) -> Result<(), SimError> {
         let result = self.session.seek(model, position);
         self.after_jump(result)
@@ -111,13 +137,15 @@ impl PlayState {
     }
 
     pub fn overlay(&self, model: &Model) -> PlayOverlay {
-        overlay::build_overlay(
+        let mut overlay = overlay::build_overlay(
             model,
             self.session.trace(),
             &self.session.instances(),
             &self.session.pending(),
             self.last.clone(),
-        )
+        );
+        overlay.timers = overlay::play_timers(model, &self.session.timers(), self.session.now());
+        overlay
     }
 
     /// The last action's trace steps in plain language.
@@ -136,6 +164,9 @@ impl PlayState {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use cascade_core::ElementKey;
+    use cascade_core::expr::Duration;
 
     use super::*;
 
@@ -217,5 +248,23 @@ mod tests {
         let note = state.rebase(&edited, 2).expect("the instance's machine is gone");
         assert!(note.starts_with("Replay stopped at action 1:"), "{note}");
         assert_eq!(state.replay_note, Some(note));
+    }
+    #[test]
+    fn the_overlay_shows_armed_timers_counting_down() {
+        let m = cascade_core::load_str(
+            "machines:\n  Order:\n    states: [waiting, expired]\n    transitions:\n      - { from: waiting, to: expired, after: 30s }\n",
+        )
+        .expect("loads");
+        let mut state = PlayState::new(&m, 1);
+        state.act(&m, add()).expect("adds");
+        let timers = state.overlay(&m).timers;
+        assert_eq!(timers.len(), 1);
+        assert_eq!(timers[0].instance, "o1");
+        assert_eq!(timers[0].trigger, ElementKey::Trigger { machine: "Order".into(), trigger: "after-30s".into() });
+        assert_eq!(timers[0].remaining, Duration::from_secs(30));
+        state.act(&m, PlayAction::Advance { by: Some(Duration::from_secs(12)) }).expect("advances");
+        assert_eq!(state.overlay(&m).timers[0].remaining, Duration::from_secs(18));
+        state.act(&m, PlayAction::Advance { by: None }).expect("advances to the deadline");
+        assert!(state.overlay(&m).timers.is_empty(), "a due timer is queued, not armed");
     }
 }

@@ -2,15 +2,23 @@
 //! statechart structure and the reverse indexes, and report every dangling
 //! or contradictory reference.
 
+mod typing;
+
 use std::collections::{HashMap, HashSet};
 
-use crate::definition::{Definition, FieldClause, MachineDef, StateDef, StateKindDef, TargetMode, ValueExpr};
+use crate::definition::{
+    Definition, EmitDef, FieldDef, MachineDef, RuleDef, StateDef, StateKindDef, TargetSpec, TransitionDef, TriggerSpec,
+    timer_trigger_name,
+};
 use crate::error::{Diagnostic, DiagnosticKind, LoadError};
+use crate::expr::{Assignment, Condition, Expr, FieldDecl, Guard};
 use crate::ids::{ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId};
 use crate::model::{
-    Controller, Event, ExternalSource, Handler, Machine, Model, Rule, State, StateKind, Target, Transition, Trigger,
+    Controller, Emit, Event, ExternalSource, Handler, Machine, Model, Rule, State, StateKind, Target, Transition,
+    Trigger, TriggerKind,
 };
 use crate::span::{SourceSpan, Spanned};
+use typing::{EventScope, SelfScope, Site};
 
 /// Resolve a parsed or imported definition into a model.
 pub fn resolve(definition: Definition) -> Result<Model, LoadError> {
@@ -26,12 +34,14 @@ pub fn resolve(definition: Definition) -> Result<Model, LoadError> {
         }
         let id = EventId::new(r.model.events.len());
         r.model.event_names.insert(edef.name.value.clone(), id);
+        let payload = r.field_decls(&edef.payload, &format!("event `{}` payload", edef.name.value));
         r.model.events.push(Event {
             name: edef.name.value.clone(),
-            payload: edef.payload.iter().map(|p| p.value.clone()).collect(),
+            payload,
             declared: true,
             emitted_by: Vec::new(),
             handlers: Vec::new(),
+            subscribers: Vec::new(),
             span: edef.name.span,
         });
     }
@@ -96,6 +106,25 @@ impl Resolver {
         self.push(DiagnosticKind::Duplicate { context: context.to_owned(), what, name: name.value.clone() }, name.span);
     }
 
+    fn push_all(&mut self, kinds: Vec<DiagnosticKind>, span: SourceSpan) {
+        for kind in kinds {
+            self.push(kind, span);
+        }
+    }
+
+    /// Declarations of a field list, reporting duplicate names.
+    fn field_decls(&mut self, fields: &[FieldDef], context: &str) -> Vec<FieldDecl> {
+        let mut out: Vec<FieldDecl> = Vec::with_capacity(fields.len());
+        for field in fields {
+            if out.iter().any(|f| f.name == field.name.value) {
+                self.duplicate(context, "field", &field.name);
+            } else {
+                out.push(field.decl());
+            }
+        }
+        out
+    }
+
     // --- Machines and states -----------------------------------------------
 
     fn add_machine(&mut self, mdef: &MachineDef) {
@@ -112,6 +141,7 @@ impl Resolver {
 
         let mid = MachineId::new(self.model.machines.len());
         self.model.machine_names.insert(name.value.clone(), mid);
+        let fields = self.field_decls(&mdef.fields, &format!("machine `{}` fields", name.value));
         // Push a placeholder so states can refer to the machine id; the real
         // initial state is set once the states exist.
         self.model.machines.push(Machine {
@@ -119,7 +149,7 @@ impl Resolver {
             color: mdef.color.as_ref().map(|c| c.value),
             domain: mdef.domain.as_ref().map(|d| d.value.clone()),
             initial: StateId::new(self.model.states.len()),
-            fields: mdef.fields.iter().map(|f| f.value.clone()).collect(),
+            fields,
             states: Vec::new(),
             top_states: Vec::new(),
             transitions: Vec::new(),
@@ -286,21 +316,47 @@ impl Resolver {
 
     // --- Triggers and events --------------------------------------------------
 
-    fn trigger_for(&mut self, machine: MachineId, name: &str, span: SourceSpan) -> TriggerId {
+    /// The trigger named `name` on `machine`, created with `kind` on first
+    /// mention. A name already used with another kind is a conflict (only
+    /// commands may be fired by rules and external sources).
+    fn trigger_for(
+        &mut self,
+        machine: MachineId,
+        name: &str,
+        kind: TriggerKind,
+        span: SourceSpan,
+    ) -> Option<TriggerId> {
         if let Some(id) = self.model.trigger_by_name(machine, name) {
-            return id;
+            let existing = self.model.trigger(id).kind;
+            if existing == kind {
+                return Some(id);
+            }
+            self.push(
+                DiagnosticKind::TriggerKindConflict {
+                    machine: self.model.machine(machine).name.clone(),
+                    trigger: name.to_owned(),
+                    first: existing.describe(),
+                    second: kind.describe(),
+                },
+                span,
+            );
+            return None;
         }
         let id = TriggerId::new(self.model.triggers.len());
         self.model.triggers.push(Trigger {
             machine,
             name: name.to_owned(),
+            kind,
             accepted_by: Vec::new(),
             fired_by: Vec::new(),
             sources: Vec::new(),
             span,
         });
         self.model.machines[machine.index()].triggers.push(id);
-        id
+        if let TriggerKind::Event(event) = kind {
+            self.model.events[event.index()].subscribers.push(id);
+        }
+        Some(id)
     }
 
     fn event_for(&mut self, name: &Spanned<String>) -> Option<EventId> {
@@ -319,6 +375,7 @@ impl Resolver {
             declared: false,
             emitted_by: Vec::new(),
             handlers: Vec::new(),
+            subscribers: Vec::new(),
             span: name.span,
         });
         Some(id)
@@ -337,15 +394,12 @@ impl Resolver {
     fn add_transitions(&mut self, mid: MachineId, mdef: &MachineDef) {
         for tdef in &mdef.transitions {
             let to = self.lookup_state(mid, &tdef.to);
-            let trigger = self.trigger_for(mid, &tdef.on.value, tdef.on.span);
-            let mut emits = Vec::new();
-            for event in &tdef.emits {
-                if let Some(e) = self.event_for(event)
-                    && !emits.contains(&e)
-                {
-                    emits.push(e);
-                }
-            }
+            let trigger = self.transition_trigger(mid, &tdef.trigger);
+            let event = trigger.and_then(|t| match self.model.trigger(t).kind {
+                TriggerKind::Event(e) => Some(e),
+                TriggerKind::Command | TriggerKind::Timer(_) => None,
+            });
+            let checked = self.check_transition(mid, event, tdef);
             let to = match to {
                 Ok(to) => Some(to),
                 Err(kind) => {
@@ -370,7 +424,7 @@ impl Resolver {
                     self.push(DiagnosticKind::TransitionFromHistory { state: from_state.path.clone() }, from_name.span);
                     continue;
                 }
-                let Some(to) = to else { continue };
+                let (Some(to), Some(trigger)) = (to, trigger) else { continue };
                 let ordinal = self.model.machines[mid.index()]
                     .transitions
                     .iter()
@@ -385,19 +439,123 @@ impl Resolver {
                     from,
                     to,
                     trigger,
-                    guard: tdef.guard.as_ref().map(|g| g.value.clone()),
-                    emits: emits.clone(),
+                    guard: checked.guard.clone(),
+                    filter: checked.filter.clone(),
+                    sets: checked.sets.clone(),
+                    emits: checked.emits.clone(),
                     bounded: tdef.bounded,
                     ordinal: u32::try_from(ordinal).unwrap_or(u32::MAX),
                     span: tdef.span,
                 });
                 self.model.machines[mid.index()].transitions.push(id);
                 self.model.triggers[trigger.index()].accepted_by.push(id);
-                for &e in &emits {
-                    self.model.events[e.index()].emitted_by.push(id);
+                for emit in &checked.emits {
+                    self.model.events[emit.event.index()].emitted_by.push(id);
                 }
             }
         }
+    }
+
+    fn transition_trigger(&mut self, mid: MachineId, spec: &TriggerSpec) -> Option<TriggerId> {
+        match spec {
+            TriggerSpec::Command(name) => self.trigger_for(mid, &name.value, TriggerKind::Command, name.span),
+            TriggerSpec::Event { event, .. } => {
+                let e = self.event_for(event)?;
+                self.trigger_for(mid, &event.value, TriggerKind::Event(e), event.span)
+            }
+            TriggerSpec::After(delay) if delay.value.is_zero() => {
+                self.push(
+                    DiagnosticKind::InvalidDuration {
+                        text: delay.value.to_string(),
+                        message: "a timer's delay must be greater than zero".to_owned(),
+                    },
+                    delay.span,
+                );
+                None
+            }
+            TriggerSpec::After(delay) => {
+                self.trigger_for(mid, &timer_trigger_name(delay.value), TriggerKind::Timer(delay.value), delay.span)
+            }
+        }
+    }
+
+    /// Type-check a transition's guard, filter, sets and emits; `event` is
+    /// the subscribed event (the payload in scope), if any.
+    fn check_transition(&mut self, mid: MachineId, event: Option<EventId>, tdef: &TransitionDef) -> CheckedTransition {
+        let machine = self.model.machine(mid).clone();
+        let event_def = event.map(|e| self.model.event(e).clone());
+        let site = Site {
+            self_scope: SelfScope::Instance(&machine),
+            event: event_def.as_ref().map_or(EventScope::Open, EventScope::Known),
+        };
+        let mut diags = Vec::new();
+
+        if let Some(guard) = &tdef.guard
+            && let Guard::Expr(expr) = &guard.value
+        {
+            diags.push((site.check_expr(expr, &guard.value.to_string()), guard.span));
+        }
+        let filter = match &tdef.trigger {
+            TriggerSpec::Event { filter: Some(filter), .. } => {
+                diags.push((site.check_expr(&filter.value, &filter.value.display_filter().to_string()), filter.span));
+                Some(filter.value.clone())
+            }
+            TriggerSpec::Event { filter: None, .. } | TriggerSpec::Command(_) | TriggerSpec::After(_) => None,
+        };
+        for set in &tdef.sets {
+            let mut found = Vec::new();
+            let target = match machine.fields.iter().find(|f| f.name == set.value.field) {
+                Some(f) => Some(&f.ty),
+                None if machine.fields.is_empty() => None,
+                None => {
+                    found.push(typing::unknown_field(&machine, &set.value.field));
+                    None
+                }
+            };
+            found.extend(site.check_value(target, &set.value));
+            diags.push((found, set.span));
+        }
+        let mut emits: Vec<Emit> = Vec::new();
+        for edef in &tdef.emits {
+            let Some(emitted) = self.event_for(&edef.event) else { continue };
+            diags.extend(self.check_with(&site, emitted, edef));
+            if !emits.iter().any(|e| e.event == emitted) {
+                emits.push(Emit { event: emitted, with: edef.with.iter().map(|w| w.value.clone()).collect() });
+            }
+        }
+        for (kinds, span) in diags {
+            self.push_all(kinds, span);
+        }
+        CheckedTransition {
+            guard: tdef.guard.as_ref().map(|g| g.value.clone()),
+            filter,
+            sets: tdef.sets.iter().map(|s| s.value.clone()).collect(),
+            emits,
+        }
+    }
+
+    /// `with:` keys must be payload fields of the emitted event (when it
+    /// declares a payload) and values must fit them.
+    fn check_with(&self, site: &Site<'_>, emitted: EventId, edef: &EmitDef) -> Vec<(Vec<DiagnosticKind>, SourceSpan)> {
+        let event = self.model.event(emitted);
+        let checks_payload = event.declared && !event.payload.is_empty();
+        edef.with
+            .iter()
+            .map(|w| {
+                let mut found = Vec::new();
+                let target = match event.payload.iter().find(|f| f.name == w.value.field) {
+                    Some(f) => Some(&f.ty),
+                    None => {
+                        if checks_payload {
+                            found.push(typing::unknown_payload_field(event, &w.value.field));
+                        }
+                        None
+                    }
+                };
+                found.extend(site.check_value(target, &w.value));
+                (found, w.span)
+            })
+            .collect()
     }
 
     // --- Controllers ------------------------------------------------------------
@@ -431,13 +589,17 @@ impl Resolver {
 
                 for (ordinal, rdef) in hdef.rules.iter().enumerate() {
                     let fire = &rdef.fire;
+                    self.check_condition(event, rdef);
                     let Some(machine) = self.machine_ref(&fire.value.machine, fire.span) else {
                         continue;
                     };
                     let Some(target) = self.resolve_target(machine, event, rdef) else {
                         continue;
                     };
-                    let trigger = self.trigger_for(machine, &fire.value.trigger, fire.span);
+                    let Some(trigger) = self.trigger_for(machine, &fire.value.trigger, TriggerKind::Command, fire.span)
+                    else {
+                        continue;
+                    };
                     let rid = RuleId::new(self.model.rules.len());
                     self.model.rules.push(Rule {
                         controller: cid,
@@ -457,65 +619,54 @@ impl Resolver {
         }
     }
 
-    fn resolve_target(
-        &mut self,
-        machine: MachineId,
-        event: EventId,
-        rdef: &crate::definition::RuleDef,
-    ) -> Option<Target> {
+    /// A rule's `when:` reads the handled event; there is no instance.
+    fn check_condition(&mut self, event: EventId, rdef: &RuleDef) {
+        let Some(when) = &rdef.when else { return };
+        let Condition::Expr(expr) = &when.value else { return };
+        let event = self.model.event(event).clone();
+        let site = Site { self_scope: SelfScope::None("a rule's `when`"), event: EventScope::Known(&event) };
+        let found = site.check_expr(expr, &when.value.to_string());
+        self.push_all(found, when.span);
+    }
+
+    fn resolve_target(&mut self, machine: MachineId, event: EventId, rdef: &RuleDef) -> Option<Target> {
         let Some(spec) = &rdef.target else {
-            return Some(Target::One { predicates: Vec::new() });
+            return Some(Target::One { filter: None });
         };
-        if spec.value.machine != rdef.fire.value.machine {
+        if spec.value.machine() != rdef.fire.value.machine {
             self.push(
                 DiagnosticKind::TargetMachineMismatch {
                     fire: rdef.fire.value.to_string(),
-                    target: spec.value.machine.clone(),
+                    target: spec.value.machine().to_owned(),
                 },
                 spec.span,
             );
             return None;
         }
-        let mut ok = true;
-        for clause in &spec.value.clauses {
-            ok &= self.check_clause(machine, event, clause, spec.span);
-        }
+        let machine_def = self.model.machine(machine).clone();
+        let event_def = self.model.event(event).clone();
+        let found = match &spec.value {
+            TargetSpec::One { filter: Some(filter), .. } | TargetSpec::All { filter: Some(filter), .. } => {
+                let site = Site { self_scope: SelfScope::Instance(&machine_def), event: EventScope::Known(&event_def) };
+                site.check_expr(filter, &filter.display_filter().to_string())
+            }
+            TargetSpec::One { filter: None, .. } | TargetSpec::All { filter: None, .. } => Vec::new(),
+            TargetSpec::Spawn { assignments, .. } => {
+                let site =
+                    Site { self_scope: SelfScope::None("a spawn assignment"), event: EventScope::Known(&event_def) };
+                assignments.iter().flat_map(|a| check_spawn(&site, &machine_def, a)).collect()
+            }
+        };
+        let ok = found.is_empty();
+        self.push_all(found, spec.span);
         if !ok {
             return None;
         }
-        let clauses = spec.value.clauses.clone();
-        Some(match spec.value.mode {
-            TargetMode::One => Target::One { predicates: clauses },
-            TargetMode::All => Target::All { predicates: clauses },
-            TargetMode::Spawn => Target::Spawn { assignments: clauses },
+        Some(match &spec.value {
+            TargetSpec::One { filter, .. } => Target::One { filter: filter.clone() },
+            TargetSpec::All { filter, .. } => Target::All { filter: filter.clone() },
+            TargetSpec::Spawn { assignments, .. } => Target::Spawn { assignments: assignments.clone() },
         })
-    }
-
-    fn check_clause(&mut self, machine: MachineId, event: EventId, clause: &FieldClause, span: SourceSpan) -> bool {
-        let mut ok = true;
-        let machine = self.model.machine(machine);
-        if !machine.fields.is_empty() && !machine.fields.contains(&clause.field) {
-            let kind = DiagnosticKind::UnknownField {
-                machine: machine.name.clone(),
-                field: clause.field.clone(),
-                declared: machine.fields.clone(),
-            };
-            self.push(kind, span);
-            ok = false;
-        }
-        if let ValueExpr::EventField(field) = &clause.value {
-            let event = self.model.event(event);
-            if event.declared && !event.payload.is_empty() && !event.payload.contains(field) {
-                let kind = DiagnosticKind::UnknownPayloadField {
-                    event: event.name.clone(),
-                    field: field.clone(),
-                    declared: event.payload.clone(),
-                };
-                self.push(kind, span);
-                ok = false;
-            }
-        }
-        ok
     }
 
     // --- External sources ---------------------------------------------------------
@@ -533,7 +684,10 @@ impl Resolver {
                 let Some(machine) = self.machine_ref(&tref.value.machine, tref.span) else {
                     continue;
                 };
-                let trigger = self.trigger_for(machine, &tref.value.trigger, tref.span);
+                let Some(trigger) = self.trigger_for(machine, &tref.value.trigger, TriggerKind::Command, tref.span)
+                else {
+                    continue;
+                };
                 if !triggers.contains(&trigger) {
                     triggers.push(trigger);
                     self.model.triggers[trigger.index()].sources.push(xid);
@@ -542,4 +696,28 @@ impl Resolver {
             self.model.externals.push(ExternalSource { name: edef.name.value.clone(), triggers, span: edef.name.span });
         }
     }
+}
+
+/// A transition's checked parts, shared by its expansions.
+struct CheckedTransition {
+    guard: Option<Guard>,
+    filter: Option<Expr>,
+    sets: Vec<Assignment>,
+    emits: Vec<Emit>,
+}
+
+/// A spawn assignment names a field of the spawned machine (when it
+/// declares fields) and takes a value from the handled event or a literal.
+fn check_spawn(site: &Site<'_>, machine: &Machine, assignment: &Assignment) -> Vec<DiagnosticKind> {
+    let mut found = Vec::new();
+    let target = match machine.fields.iter().find(|f| f.name == assignment.field) {
+        Some(f) => Some(&f.ty),
+        None if machine.fields.is_empty() => None,
+        None => {
+            found.push(typing::unknown_field(machine, &assignment.field));
+            None
+        }
+    };
+    found.extend(site.check_value(target, assignment));
+    found
 }

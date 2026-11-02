@@ -221,7 +221,7 @@ machines:
   M:
     states: [a, b]
     transitions:
-      - { from: a, to: b, on: go, guard: "false" }
+      - { from: a, to: b, on: go, guard: "self.x == a and self.x == b" }
 external:
   User: [M.go]
 "#;

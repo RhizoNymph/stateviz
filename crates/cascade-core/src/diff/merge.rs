@@ -4,10 +4,11 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::definition::{ControllerDef, Definition, MachineDef, StateDef, StateKindDef, ValueExpr};
-use crate::ids::{ControllerId, MachineId, RuleId, StateId};
+use crate::definition::{ControllerDef, Definition, FieldDef, MachineDef, StateDef, StateKindDef};
+use crate::expr::{Assignment, Condition, Expr, FieldType, Guard, Operand};
+use crate::ids::{ControllerId, MachineId, RuleId, StateId, TransitionId};
 use crate::key::{ElementKey, ElementRef};
-use crate::model::{Model, StateKind, Target};
+use crate::model::{Model, StateKind, Target, TriggerKind};
 use crate::span::{SourceSpan, Spanned};
 
 use super::rebuild;
@@ -17,7 +18,7 @@ pub(super) fn union_definition(old: &Model, new: &Model) -> Definition {
     let mut union = new.definition().clone();
     canonicalize(&mut union, new);
     let mut needs = SelectorNeeds::default();
-    merge_machines(&mut union, old, new);
+    merge_machines(&mut union, old, new, &mut needs);
     merge_controllers(&mut union, old, &mut needs);
     merge_externals(&mut union, old);
     declare_removed_events(&mut union, old);
@@ -99,14 +100,14 @@ fn place<T>(items: &mut Vec<T>, cursor: &mut Option<usize>, item: T) {
 
 // --- Machines, states and transitions -----------------------------------------------
 
-fn merge_machines(union: &mut Definition, old: &Model, new: &Model) {
+fn merge_machines(union: &mut Definition, old: &Model, new: &Model, needs: &mut SelectorNeeds) {
     let mut cursor = None;
     for (old_id, machine) in old.machines() {
         match union.machines.iter().position(|m| m.name.value == machine.name) {
             Some(ix) => {
                 cursor = Some(ix);
                 if let (Some(mdef), Some(new_id)) = (union.machines.get_mut(ix), new.machine_by_name(&machine.name)) {
-                    merge_machine(mdef, old, old_id, new, new_id);
+                    merge_machine(mdef, old, old_id, new, new_id, needs);
                 }
             }
             None => place(&mut union.machines, &mut cursor, rebuild::machine_def(old, old_id)),
@@ -115,7 +116,14 @@ fn merge_machines(union: &mut Definition, old: &Model, new: &Model) {
 }
 
 /// Add the removed states and transitions of a machine both versions have.
-fn merge_machine(mdef: &mut MachineDef, old: &Model, old_id: MachineId, new: &Model, new_id: MachineId) {
+fn merge_machine(
+    mdef: &mut MachineDef,
+    old: &Model,
+    old_id: MachineId,
+    new: &Model,
+    new_id: MachineId,
+    needs: &mut SelectorNeeds,
+) {
     merge_states(&mut mdef.states, &old.machine(old_id).top_states, old);
 
     let kinds = state_kinds(&mdef.states);
@@ -132,6 +140,7 @@ fn merge_machine(mdef: &mut MachineDef, old: &Model, old_id: MachineId, new: &Mo
         let leaves_normal_state = kinds.get(&old.state(transition.from).path) == Some(&StateKindDef::Normal);
         let target_exists = kinds.contains_key(&old.state(transition.to).path);
         if leaves_normal_state && target_exists {
+            needs.note_transition(old, t);
             mdef.transitions.push(rebuild::transition_def(old, t));
         }
     }
@@ -195,28 +204,92 @@ fn collect_kinds(states: &[StateDef], prefix: Option<&str>, out: &mut HashMap<St
 
 // --- Controllers, sources and events --------------------------------------------------
 
-/// Fields and payload fields that ghost rule selectors are checked against.
+/// Fields and payload fields that ghost expressions and assignments are
+/// checked against.
 #[derive(Default)]
 struct SelectorNeeds {
-    /// Machine name → fields named by ghost selectors firing into it.
+    /// Machine name → fields read (`self.x`, filters) or assigned by ghosts.
     machine_fields: HashMap<String, Vec<String>>,
-    /// Event name → payload fields ghost selectors read (`event.x`).
+    /// Event name → payload fields ghosts read (`event.x`) or emit (`with`).
     event_fields: HashMap<String, Vec<String>>,
 }
 
 impl SelectorNeeds {
+    fn self_field(&mut self, machine: &str, field: &str) {
+        push_unique(self.machine_fields.entry(machine.to_owned()).or_default(), field);
+    }
+
+    fn event_field(&mut self, event: Option<&str>, field: &str) {
+        if let Some(event) = event {
+            push_unique(self.event_fields.entry(event.to_owned()).or_default(), field);
+        }
+    }
+
+    fn expr(&mut self, machine: &str, event: Option<&str>, expr: &Expr) {
+        for field in expr.self_fields() {
+            self.self_field(machine, field);
+        }
+        for field in expr.event_fields() {
+            self.event_field(event, field);
+        }
+    }
+
+    /// The value side of an assignment.
+    fn value(&mut self, machine: Option<&str>, event: Option<&str>, assignment: &Assignment) {
+        match &assignment.value {
+            Operand::SelfField(field) => {
+                if let Some(machine) = machine {
+                    self.self_field(machine, field);
+                }
+            }
+            Operand::Event(field) => self.event_field(event, field),
+            Operand::Lit(_) => {}
+        }
+    }
+
     fn note(&mut self, model: &Model, rule: RuleId) {
         let r = model.rule(rule);
-        let clauses = match &r.target {
-            Target::One { predicates } | Target::All { predicates } => predicates,
-            Target::Spawn { assignments } => assignments,
-        };
         let machine = &model.machine(model.trigger(r.trigger).machine).name;
-        let event = &model.event(r.event).name;
-        for clause in clauses {
-            push_unique(self.machine_fields.entry(machine.clone()).or_default(), &clause.field);
-            if let ValueExpr::EventField(field) = &clause.value {
-                push_unique(self.event_fields.entry(event.clone()).or_default(), field);
+        let event = Some(model.event(r.event).name.as_str());
+        match &r.target {
+            Target::One { filter } | Target::All { filter } => {
+                if let Some(filter) = filter {
+                    self.expr(machine, event, filter);
+                }
+            }
+            Target::Spawn { assignments } => {
+                for assignment in assignments {
+                    self.self_field(machine, &assignment.field);
+                    self.value(None, event, assignment);
+                }
+            }
+        }
+        if let Some(Condition::Expr(expr)) = &r.condition {
+            self.expr(machine, event, expr);
+        }
+    }
+
+    fn note_transition(&mut self, model: &Model, transition: TransitionId) {
+        let t = model.transition(transition);
+        let machine = model.machine(t.machine).name.as_str();
+        let event = match model.trigger(t.trigger).kind {
+            TriggerKind::Event(e) => Some(model.event(e).name.as_str()),
+            TriggerKind::Command | TriggerKind::Timer(_) => None,
+        };
+        if let Some(Guard::Expr(expr)) = &t.guard {
+            self.expr(machine, event, expr);
+        }
+        if let Some(filter) = &t.filter {
+            self.expr(machine, event, filter);
+        }
+        for set in &t.sets {
+            self.self_field(machine, &set.field);
+            self.value(Some(machine), event, set);
+        }
+        for emit in &t.emits {
+            for with in &emit.with {
+                self.event_field(Some(&model.event(emit.event).name), &with.field);
+                self.value(Some(machine), event, with);
             }
         }
     }
@@ -311,22 +384,28 @@ fn widen_checked_lists(union: &mut Definition, needs: &SelectorNeeds) {
         if let Some(fields) = needs.machine_fields.get(&mdef.name.value)
             && !mdef.fields.is_empty()
         {
-            for field in fields {
-                if !mdef.fields.iter().any(|f| f.value == *field) {
-                    mdef.fields.push(Spanned::synthetic(field.clone()));
-                }
-            }
+            widen(&mut mdef.fields, fields);
         }
     }
     for edef in &mut union.events {
         if let Some(fields) = needs.event_fields.get(&edef.name.value)
             && !edef.payload.is_empty()
         {
-            for field in fields {
-                if !edef.payload.iter().any(|f| f.value == *field) {
-                    edef.payload.push(Spanned::synthetic(field.clone()));
-                }
-            }
+            widen(&mut edef.payload, fields);
+        }
+    }
+}
+
+/// Add the missing `fields` to a declared list, as `any` in a typed list.
+fn widen(declared: &mut Vec<FieldDef>, fields: &[String]) {
+    let typed = crate::definition::fields_are_typed(declared);
+    for field in fields {
+        if !declared.iter().any(|f| f.name.value == *field) {
+            declared.push(if typed {
+                FieldDef::typed(field.clone(), FieldType::Any)
+            } else {
+                FieldDef::untyped(field.clone())
+            });
         }
     }
 }

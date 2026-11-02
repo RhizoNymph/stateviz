@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 
 use cascade_core::definition::{
     ControllerDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef, TransitionDef, TriggerRef,
+    TriggerSpec,
 };
 use cascade_core::{Definition, SourceSpan, Spanned};
 
@@ -57,8 +58,9 @@ pub fn transition_def(from: &str, to: &str, trigger: &str) -> TransitionDef {
     TransitionDef {
         from: vec![synthetic(from)],
         to: synthetic(to),
-        on: synthetic(trigger),
+        trigger: TriggerSpec::Command(synthetic(trigger)),
         guard: None,
+        sets: Vec::new(),
         emits: Vec::new(),
         bounded: false,
         span: SourceSpan::unknown(),
@@ -142,7 +144,7 @@ pub fn event_names(definition: &Definition) -> BTreeSet<String> {
         .machines
         .iter()
         .flat_map(|m| m.transitions.iter())
-        .flat_map(|t| t.emits.iter().map(|e| e.value.clone()));
+        .flat_map(|t| t.emits.iter().map(|e| e.event.value.clone()));
     let subscribed = definition.controllers.iter().flat_map(|c| c.on.iter().map(|h| h.event.value.clone()));
     declared.chain(emitted).chain(subscribed).collect()
 }
@@ -151,7 +153,7 @@ pub fn event_names(definition: &Definition) -> BTreeSet<String> {
 /// rule, or exposed by a source.
 pub fn trigger_names(definition: &Definition, machine_name: &str) -> BTreeSet<String> {
     let accepted =
-        machine(definition, machine_name).into_iter().flat_map(|m| m.transitions.iter().map(|t| t.on.value.clone()));
+        machine(definition, machine_name).into_iter().flat_map(|m| m.transitions.iter().map(|t| t.trigger.name()));
     let fired = definition
         .controllers
         .iter()

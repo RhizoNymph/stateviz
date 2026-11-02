@@ -33,7 +33,7 @@ controllers:
           target: Shipment where orderId == event.orderId
         - fire: Shipment.start
           target: all Shipment where orderId == event.orderId
-          when: "express\ndelivery"
+          when: "?express\ndelivery"
         - fire: Shipment.start
           target: new Shipment with orderId = event.orderId
 external:
@@ -60,9 +60,9 @@ machines:
       - { from: running.computing, to: done, on: cancel }
       - { from: running.fetching, to: running.computing, on: fetched }
       - { from: queued, to: running.hist, on: resume }
-      - { from: queued, to: done, on: go, guard: "x > 0" }
+      - { from: queued, to: done, on: go, guard: "event.x > 0" }
       - { from: queued, to: running, on: go }
-      - { from: queued, to: queued, on: poke, guard: "a\nb" }
+      - { from: queued, to: queued, on: poke, guard: "?a\nb" }
 "#;
 
 fn load(text: &str) -> Model {
@@ -334,14 +334,14 @@ fn guarded_and_nondeterministic_choices_use_dollar() {
     let queued = state_block(machine_block(&out, "Job"), "queued");
     assert!(has_line(queued, "on eJob_go do {"), "{queued}");
     assert!(has_line(queued, "if ($) {"), "{queued}");
-    assert!(has_line(queued, "// guard: x > 0"), "{queued}");
+    assert!(has_line(queued, "// guard: event.x > 0"), "{queued}");
     assert!(has_line(queued, "goto done;"), "{queued}");
     assert!(has_line(queued, "} else {"), "{queued}");
     assert!(has_line(queued, "goto running_fetching;"), "{queued}");
     // A lone guarded transition has no else: the trigger is dropped when the
     // guard is false. Newlines in guards become spaces.
     assert!(has_line(queued, "on eJob_poke do {"), "{queued}");
-    assert!(has_line(queued, "// guard: a b"), "{queued}");
+    assert!(has_line(queued, "// guard: ?a b"), "{queued}");
     check_structure(&out);
 }
 
@@ -386,7 +386,7 @@ fn controllers_forward_events_as_triggers() {
 fn controller_rules_with_conditions_fan_out_and_spawn() {
     let out = p(WITH_PAYLOADS);
     let running = state_block(machine_block(&out, "Fulfillment"), "Running");
-    assert!(has_line(running, "// when: express delivery"), "{running}");
+    assert!(has_line(running, "// when: ?express delivery"), "{running}");
     assert!(has_line(running, "if ($) {"), "{running}");
     assert!(running.contains("TODO fan-out"), "{running}");
     assert!(running.contains("TODO spawn"), "{running}");

@@ -12,10 +12,29 @@ pub fn action_label(action: &PlayAction) -> String {
         },
         PlayAction::RemoveInstance { name } => format!("− {name}"),
         PlayAction::Fire { source, trigger, target, .. } => format!("{source}: {} → {target}", trigger.trigger),
-        PlayAction::Step { choice: None } => "step".to_owned(),
-        PlayAction::Step { choice: Some(n) } => format!("deliver #{}", n + 1),
+        PlayAction::Step { choice: None, consumer: None } => "step".to_owned(),
+        PlayAction::Step { choice: Some(n), consumer: None } => format!("deliver #{}", n + 1),
+        PlayAction::Step { choice, consumer: Some(consumer) } => {
+            format!("deliver #{} to {consumer}", choice.unwrap_or(0) + 1)
+        }
         PlayAction::RunUntilQuiet => "run until quiet".to_owned(),
+        PlayAction::Advance { by: Some(by) } => format!("wait {by}"),
+        PlayAction::Advance { by: None } => "wait for next timer".to_owned(),
+        PlayAction::Choose { option } => format!("choose {option}"),
     }
+}
+
+/// Longest chip label, in characters; longer labels end in `…`.
+pub const CHIP_CHARS: usize = 28;
+
+/// `label` cut to [`CHIP_CHARS`] characters.
+pub fn chip_text(label: &str) -> String {
+    if label.chars().count() <= CHIP_CHARS {
+        return label.to_owned();
+    }
+    let mut short: String = label.chars().take(CHIP_CHARS - 1).collect();
+    short.push('…');
+    short
 }
 
 /// One chip. Clicking it seeks to `position`: the timeline with this action
@@ -36,7 +55,7 @@ pub fn chips(timeline: &Timeline) -> Vec<Chip> {
     let start = Chip { label: "start".to_owned(), position: 0, applied: true, current: position == 0 };
     std::iter::once(start)
         .chain(timeline.actions.iter().enumerate().map(|(i, action)| Chip {
-            label: action_label(action),
+            label: chip_text(&action_label(action)),
             position: i + 1,
             applied: i < position,
             current: i + 1 == position,
@@ -104,9 +123,38 @@ mod tests {
         );
         assert_eq!(action_label(&PlayAction::RemoveInstance { name: "o1".into() }), "− o1");
         assert_eq!(action_label(&fire()), "User: pay → o1");
-        assert_eq!(action_label(&PlayAction::Step { choice: None }), "step");
-        assert_eq!(action_label(&PlayAction::Step { choice: Some(2) }), "deliver #3");
+        assert_eq!(action_label(&PlayAction::Step { choice: None, consumer: None }), "step");
+        assert_eq!(action_label(&PlayAction::Step { choice: Some(2), consumer: None }), "deliver #3");
         assert_eq!(action_label(&PlayAction::RunUntilQuiet), "run until quiet");
+    }
+
+    #[test]
+    fn clock_choice_and_consumer_labels() {
+        use cascade_core::expr::Duration;
+        assert_eq!(action_label(&PlayAction::Advance { by: Some(Duration::from_secs(90)) }), "wait 90s");
+        assert_eq!(action_label(&PlayAction::Advance { by: Some(Duration::from_secs(120)) }), "wait 2m");
+        assert_eq!(action_label(&PlayAction::Advance { by: None }), "wait for next timer");
+        assert_eq!(action_label(&PlayAction::Choose { option: "card declined".into() }), "choose card declined");
+        assert_eq!(
+            action_label(&PlayAction::Step { choice: None, consumer: Some("Fulfil".into()) }),
+            "deliver #1 to Fulfil"
+        );
+        assert_eq!(
+            action_label(&PlayAction::Step { choice: Some(2), consumer: Some("o1".into()) }),
+            "deliver #3 to o1"
+        );
+    }
+
+    #[test]
+    fn long_labels_are_cut_on_chips_only() {
+        let long = PlayAction::Choose { option: "the customer cancelled before shipping".into() };
+        let timeline = Timeline { actions: vec![long.clone()], position: 1, branches: vec![] };
+        let chip = &chips(&timeline)[1];
+        assert_eq!(chip.label.chars().count(), CHIP_CHARS);
+        assert!(chip.label.ends_with('…'));
+        assert!(action_label(&long).starts_with(chip.label.trim_end_matches('…')));
+        assert_eq!(chip_text("wait 2m"), "wait 2m");
+        assert_eq!(chip_text(&"x".repeat(CHIP_CHARS)), "x".repeat(CHIP_CHARS));
     }
 
     #[test]

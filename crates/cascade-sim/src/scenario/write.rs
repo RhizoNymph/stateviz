@@ -12,6 +12,8 @@
 //!   - { source: PaymentGateway, fire: Order.capture_ok, target: o1 }
 //!   - step
 //!   - { step: 1 }
+//!   - { wait: 30s }
+//!   - { choose: "card declined" }
 //! end: pause
 //! ```
 //!
@@ -48,8 +50,32 @@ pub fn scenario_to_yaml(scenario: &Scenario) -> String {
 fn entry(entry: ScenarioEntry<'_>) -> String {
     match entry {
         ScenarioEntry::Fire(step) => fire(step),
-        ScenarioEntry::Directive(Directive::Deliver { choice: None, .. }) => "step".to_owned(),
-        ScenarioEntry::Directive(Directive::Deliver { choice: Some(n), .. }) => format!("{{ step: {n} }}"),
+        ScenarioEntry::Directive(Directive::Deliver { choice: None, consumer: None, .. }) => "step".to_owned(),
+        ScenarioEntry::Directive(Directive::Deliver { choice: Some(n), consumer: None, .. }) => {
+            format!("{{ step: {n} }}")
+        }
+        // The head is position 0: the file has no other spelling for "the
+        // head, one consumer".
+        ScenarioEntry::Directive(Directive::Deliver { choice, consumer: Some(consumer), .. }) => {
+            format!("{{ step: {}, consumer: {} }}", choice.unwrap_or(0), name(&consumer.value))
+        }
+        ScenarioEntry::Directive(Directive::Wait { by: None, timing: StepTiming::AfterQuiescence, .. }) => {
+            "wait".to_owned()
+        }
+        ScenarioEntry::Directive(Directive::Wait { by, timing, .. }) => {
+            // A bare `wait` with a timing needs the mapping form; `~` is the
+            // next deadline.
+            let by = by.as_ref().map_or_else(|| "~".to_owned(), |d| d.value.to_string());
+            let mut text = format!("{{ wait: {by}");
+            if *timing != StepTiming::default() {
+                text.push_str(&format!(", timing: {}", timing.name()));
+            }
+            text.push_str(" }");
+            text
+        }
+        ScenarioEntry::Directive(Directive::Choose { option, .. }) => {
+            format!("{{ choose: {} }}", quoted(&option.value))
+        }
         ScenarioEntry::Directive(Directive::Run { .. }) => "run".to_owned(),
         ScenarioEntry::Directive(Directive::Create(decl)) => {
             format!("{{ create: {}, {} }}", name(&decl.name.value), instance_body(decl))

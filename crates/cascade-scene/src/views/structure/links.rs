@@ -1,26 +1,51 @@
-//! Cross-machine links in the structure view: one dashed edge per pair of
-//! endpoints, straight from the causing pill (or arrow) to the caused one, labelled
-//! with the event and controller it runs through ("OrderPaid ›
-//! Fulfillment").
+//! Cross-machine links in the structure view: one edge per pair of
+//! endpoints and kind, straight from the causing pill (or arrow) to the
+//! caused one. Links through a controller rule are fires (dashed in the
+//! target's hue), labelled with the event and controller they run through
+//! ("OrderPaid › Fulfillment"); links through a machine subscription are
+//! `Notify` edges (solid in the subscriber's hue), labelled with the event
+//! ("PaymentCaptured").
 
 use std::collections::HashMap;
 
-use cascade_core::{CausalGraph, EdgeIx, ElementRef, MachineId, Model, RuleId};
+use cascade_core::model::TriggerKind;
+use cascade_core::{CausalGraph, EdgeIx, ElementRef, MachineId, Model};
 
 use crate::emphasis::Anchor;
-use crate::scene::{Arrow, EdgeKind, HitTarget};
+use crate::scene::{Arrow, EdgeKind, FontStyle, HitTarget};
 use crate::views::draft::{DraftEdge, DraftGraph, EdgeText, Meta};
-use crate::views::links::causal_links;
+use crate::views::links::{causal_links, subscription_links};
 use crate::views::structure::machines::{EndKind, Endpoint, PORT_EAST, PORT_NORTH, PORT_SOUTH, PORT_WEST};
 use crate::views::style::Painter;
+
+/// One drawn link: what it runs through.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Through {
+    Rule,
+    Subscription,
+}
 
 struct Link {
     from: Endpoint,
     to: Endpoint,
+    through: Through,
     target_machine: MachineId,
-    rules: Vec<RuleId>,
+    /// Rules (fires) or subscription triggers (notify links).
+    elements: Vec<ElementRef>,
     labels: Vec<String>,
     chains: Vec<Vec<EdgeIx>>,
+}
+
+impl Link {
+    fn add(&mut self, element: ElementRef, label: String, chain: Vec<EdgeIx>) {
+        if !self.labels.contains(&label) {
+            self.labels.push(label);
+        }
+        if !self.elements.contains(&element) {
+            self.elements.push(element);
+        }
+        self.chains.push(chain);
+    }
 }
 
 /// Add the cross-lane links, then finish every stub with its link count.
@@ -35,33 +60,36 @@ pub(super) fn draft_links(
 ) {
     let theme = painter.theme;
     let mut links: Vec<Link> = Vec::new();
-    let mut at: HashMap<(usize, usize), usize> = HashMap::new();
-    for link in causal_links(graph) {
-        let (Some(Some(from)), Some(Some(to))) = (endpoints.get(link.from.index()), endpoints.get(link.to.index()))
-        else {
+    let mut at: HashMap<(usize, usize, Through), usize> = HashMap::new();
+    let rule_links = causal_links(graph).into_iter().map(|l| {
+        let rule = model.rule(l.rule);
+        let label = format!("{} › {}", model.event(rule.event).name, model.controller(rule.controller).name);
+        (l.from, l.to, Through::Rule, ElementRef::Rule(l.rule), label, l.chain.to_vec())
+    });
+    let subscriptions = subscription_links(graph).into_iter().map(|l| {
+        let label = match model.trigger(l.trigger).kind {
+            TriggerKind::Event(event) => model.event(event).name.clone(),
+            TriggerKind::Command | TriggerKind::Timer(_) => model.trigger(l.trigger).name.clone(),
+        };
+        (l.from, l.to, Through::Subscription, ElementRef::Trigger(l.trigger), label, l.chain.to_vec())
+    });
+    for (from_t, to_t, through, element, label, chain) in rule_links.chain(subscriptions) {
+        let (Some(Some(from)), Some(Some(to))) = (endpoints.get(from_t.index()), endpoints.get(to_t.index())) else {
             continue;
         };
-        let i = *at.entry((from.node, to.node)).or_insert_with(|| {
+        let i = *at.entry((from.node, to.node, through)).or_insert_with(|| {
             links.push(Link {
                 from: *from,
                 to: *to,
-                target_machine: model.transition(link.to).machine,
-                rules: Vec::new(),
+                through,
+                target_machine: model.transition(to_t).machine,
+                elements: Vec::new(),
                 labels: Vec::new(),
                 chains: Vec::new(),
             });
             links.len() - 1
         });
-        let entry = &mut links[i];
-        let rule = model.rule(link.rule);
-        let label = format!("{} › {}", model.event(rule.event).name, model.controller(rule.controller).name);
-        if !entry.labels.contains(&label) {
-            entry.labels.push(label);
-        }
-        if !entry.rules.contains(&link.rule) {
-            entry.rules.push(link.rule);
-        }
-        entry.chains.push(link.chain.to_vec());
+        links[i].add(element, label, chain);
     }
 
     let mut stub_links: HashMap<usize, u32> = HashMap::new();
@@ -72,7 +100,11 @@ pub(super) fn draft_links(
                 *stub_links.entry(end.node).or_insert(0) += 1;
             }
         }
-        let fire = painter.fire_stroke(painter.machine(link.target_machine));
+        let target_style = painter.machine(link.target_machine);
+        let (kind, stroke) = match link.through {
+            Through::Rule => (EdgeKind::Fire, painter.fire_stroke(target_style)),
+            Through::Subscription => (EdgeKind::Notify, painter.notify_stroke(target_style)),
+        };
         let (from_port, to_port) = if link.from.kind == EndKind::Pill && link.to.kind == EndKind::Pill {
             let (ga, gb) = (draft.nodes[link.from.node].group, draft.nodes[link.to.node].group);
             match ga.cmp(&gb) {
@@ -87,16 +119,21 @@ pub(super) fn draft_links(
         } else {
             (None, None)
         };
-        let elements: Vec<ElementRef> = link.rules.iter().map(|&r| ElementRef::Rule(r)).collect();
+        let elements = link.elements;
         draft.edges.push(DraftEdge {
             from: link.from.node,
             from_port,
             to: link.to.node,
             to_port,
-            kind: if through_stub { EdgeKind::StubLink } else { EdgeKind::Fire },
-            stroke: if through_stub { painter.stub_link_stroke(fire) } else { fire },
+            kind: if through_stub { EdgeKind::StubLink } else { kind },
+            stroke: if through_stub { painter.stub_link_stroke(stroke) } else { stroke },
             arrow: Arrow::End,
-            label: Some(EdgeText { text: link.labels.join(", "), font_size: theme.small_font_size, color: theme.text }),
+            label: Some(EdgeText {
+                text: link.labels.join(", "),
+                font_size: theme.small_font_size,
+                color: theme.text,
+                style: FontStyle::Normal,
+            }),
             target: elements.first().map_or(HitTarget::None, |e| HitTarget::Element(model.key_of(*e))),
             meta: Meta::new(elements, Anchor::Chains(link.chains)),
             on_cycle: false,

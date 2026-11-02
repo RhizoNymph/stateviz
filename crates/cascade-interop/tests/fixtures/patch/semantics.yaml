@@ -1,0 +1,62 @@
+# Semantics keys written in block style, with comments everywhere.
+machines:
+  Order:
+    fields:
+      orderId: string      # the key
+      amount: number       # in cents
+      # tier decides the discount
+      tier: enum [basic, gold]
+    states: [draft, paid, done]
+    transitions:
+      - from: draft
+        to: paid
+        on: pay
+        # only real money
+        guard: event.amount > 0
+        sets:
+          amount: event.amount   # copied from the payment
+          tier: basic            # reset
+        emits:
+          - OrderPaid            # plain
+          - event: Receipt       # shaped
+            with:
+              total: self.amount # after sets
+      - from: paid
+        to: done
+        on:
+          event: Shipped
+          where: orderId == event.orderId   # match the order
+      - from: draft
+        to: done
+        after: 30m   # give up
+      - { from: paid, to: done, on: { event: Cancelled, where: "orderId == event.orderId" }, sets: { tier: basic } }
+
+  Checkout:
+    fields:
+      - orderId   # the order
+      - total     # what to charge
+    states: [waiting, charged]
+    transitions:
+      - { from: waiting, to: charged, on: { event: OrderPaid } }   # subscription
+
+events:
+  OrderPaid:
+    payload:
+      orderId: string   # key
+      amount: number    # cents
+      legacy: any       # unused
+  Shipped: { payload: [orderId] }   # untyped
+  Receipt: { payload: [total] }
+  Cancelled: { payload: [orderId] }
+
+controllers:
+  Billing:
+    on:
+      OrderPaid:
+        # charge the checkout of this order
+        - fire: Order.pay
+          target: Order where orderId == event.orderId   # one order
+          when: "event.amount >= 100"                     # big ones only
+
+external:
+  Customer: [Order.pay]

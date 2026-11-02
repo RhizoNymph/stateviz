@@ -39,14 +39,15 @@ pub(super) fn expansions(machine: &MachineDef) -> Vec<Expansion> {
     let mut out: Vec<Expansion> = Vec::new();
     for (entry, t) in machine.transitions.iter().enumerate() {
         let Some(to) = index.resolve(&t.to.value) else { continue };
+        let trigger = t.trigger.name();
         for from in &t.from {
             let Some(from) = index.resolve(&from.value) else { continue };
-            let earlier = out.iter().filter(|e| e.from == from && e.to == to && e.trigger == t.on.value).count();
+            let earlier = out.iter().filter(|e| e.from == from && e.to == to && e.trigger == trigger).count();
             out.push(Expansion {
                 entry,
                 from: from.to_owned(),
                 to: to.to_owned(),
-                trigger: t.on.value.clone(),
+                trigger: trigger.clone(),
                 ordinal: u32::try_from(earlier).unwrap_or(u32::MAX),
             });
         }

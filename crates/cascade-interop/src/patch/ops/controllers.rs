@@ -187,8 +187,8 @@ pub(super) fn update_rule(text: &str, controller: &str, event: &str, index: usiz
         edit(&mut text, &|doc, n| set_scalar_key(doc, n, "target", target.as_deref(), nav::RULE_ORDER))?;
     }
     if old.when.as_ref().map(|w| &w.value) != new.when.as_ref().map(|w| &w.value) {
-        let when = new.when.as_ref().map(|w| w.value.as_str());
-        edit(&mut text, &|doc, n| set_text_key(doc, n, "when", when, nav::RULE_ORDER))?;
+        let when = new.when.as_ref().map(|w| w.value.to_string());
+        edit(&mut text, &|doc, n| set_text_key(doc, n, "when", when.as_deref(), nav::RULE_ORDER))?;
     }
     if old.bounded != new.bounded {
         let bounded = new.bounded.then(|| Value::Inline("true".to_owned()));

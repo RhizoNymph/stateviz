@@ -4,8 +4,14 @@
 
 - `cascade_core::analyze(model, graph) -> Vec<Finding>`: the seven checks from
   the spec (invalid fire, nondeterminism, cascade cycle, unhandled event,
-  orphan controller, unreachable state, race candidate) plus the
-  state-dependent-fire note, on a well-formed `Model`.
+  orphan controller, unreachable state, race candidate) plus two notes
+  (state-dependent fire, uncovered guard), on a well-formed `Model`.
+- Reasoning about guards, subscription filters and rule conditions with the
+  expression solver (`expr::overlap`, `expr::coverage`): nondeterminism,
+  uncovered guards, and races between exclusive conditions.
+- Subscriptions and timers in every check: races (a subscription is a race
+  party), reachability (timers and subscriptions fire), cycles (through
+  `Notify` links, not `Delay` ones), handled events.
 - Dead commands: external sources exposing a trigger nothing accepts,
   reported under the invalid-fire check.
 - The finding contract (`Check`, `Severity`, `FindingDetail`, `CycleStep`,
@@ -19,8 +25,13 @@
 - Load errors (unknown names, bad YAML, shape errors): those are
   `Diagnostic`s from parsing and resolving (definition-format.md). Analysis
   only runs on a model that loaded.
-- Evaluating guards or rule conditions. Guards are compared as text; nothing
-  is assumed about their truth.
+- Evaluating guards or rule conditions against data. The solver decides
+  whether expressions *can* hold together or leave gaps; reachability still
+  assumes every guard and condition satisfiable.
+- Constant tests (`x > 0` with a bare `x`) are load errors from the resolver
+  (`DiagnosticKind::ConstantTest`, expressions.md), not findings.
+- Timers as race parties: a timer expires only when the clock moves, which
+  the simulator and exploration handle.
 - Instance-level or interleaving semantics: races are candidates for the
   trace view (simulator.md), not proofs. Anything stronger goes through the
   P export.
@@ -31,8 +42,11 @@
 ```text
 Model ──CausalGraph::build──▶ CausalGraph
 (Model, CausalGraph) ──analyze──▶ invalid_fire, nondeterminism, cycles, events,
-                                  reachability, races, state_dependent
+                                  reachability, races, state_dependent,
+                                  uncovered_guard
                                   (each returns unsorted Vec<Finding>)
+nondeterminism, uncovered_guard, races ──conditions.rs──▶ data conditions
+        (filter and guard), event parts, types ──expr::overlap / coverage
                               ──sort_findings──▶ Vec<Finding>
 ```
 
@@ -60,18 +74,35 @@ states is not invalid; see the state-dependent note.
 
 ### Nondeterminism (error)
 
-Per machine, transitions are grouped by `(from, trigger)`, groups in order of
-first appearance. A group of two or more is ambiguous unless its guards are
-mutually exclusive, approximated syntactically:
+Per machine, transitions are grouped by `(from, trigger)` (any trigger kind:
+command, subscription or timer), groups in order of first appearance. A group
+of two or more is ambiguous unless every pair of candidates is exclusive. A
+candidate's *data condition* is its subscription `where` filter and its
+`Expr` guard joined by `and` (`conditions.rs`); it is read with
+`Model::types_for(machine, event)`, the event being the subscription's
+(command and timer guards read `event.x` as `any`). A pair is exclusive when:
 
-1. every candidate has a non-blank guard,
-2. at most one guard is `else`,
-3. guards are pairwise distinct after whitespace normalization (runs of
-   whitespace collapse to one space, ends trimmed; `x  >  0` equals `x > 0`,
-   but `x>0` does not).
+- either is `else` (it applies only when nothing else does);
+- both have data conditions and `expr::overlap` says `Exclusive`, whatever
+  their guards say otherwise (exclusive filters keep even the same `?choice`
+  apart);
+- both are `?choice`s with different labels (a scenario or player picks one).
 
-The first failing rule, in that order, is named in the message (`… has no
-guard`, `2 of them are guarded by else`, `the guard x > 0 appears 2 times`).
+Otherwise the pair may both apply. The reported reason is the first that
+holds, in this order:
+
+1. a candidate with no guard and no filter: `… has no guard`;
+2. more than one `else`: `2 of them are guarded by `else``;
+3. two candidates with the same guard and filter (parsed, so spacing does
+   not matter): `the guard `self.x > 0` appears 2 times`;
+4. the first non-exclusive pair in definition order:
+   - an `Expr` guard next to a `?choice`: `mixed guards: `self.n > 0` may
+     hold while the choice `?manual review` is offered`;
+   - otherwise `` `a` and `b` both hold when self.n = 6 `` when the solver
+     finds a witness (a gap of `coverage([not (a and b)])`, which is exact),
+     or `` `a` and `b` may both hold `` when it cannot tell (tests comparing
+     two fields, normal form past its bound).
+
 `transitions` lists every candidate of the group. Only transitions declared
 on the same state are compared: a state's own transitions shadow its
 ancestors' (statechart priority, `Model::enabled_transitions`), so a child
@@ -82,7 +113,9 @@ and an inherited transition on the same trigger never conflict.
 1. Build the transition-level causal relation: for each transition T1,
    `CausalGraph::transition_successors(T1)` gives `(T2, rule)` pairs (T1
    emits an event, a handler of that event has `rule`, which fires a trigger
-   T2 accepts). Transitions marked `bounded: true` are dropped (no edges in
+   T2 accepts; or `rule: None` when T2 subscribes to the event, a `Notify`
+   link). `Delay` links (entering a timer's source state) are not
+   successors: a timer loop is a loop in time, not a cascade. Transitions marked `bounded: true` are dropped (no edges in
    or out) and edges carrying a `bounded: true` rule are dropped. Each
    adjacency list is sorted by `(successor, rule)` and deduplicated.
 2. Strongly connected components by Tarjan's algorithm, iterative (an
@@ -105,9 +138,10 @@ same two transitions keeps the cycle.
 
 ### Unhandled event and orphan controller (warnings)
 
-- An event with at least one emitting transition and no handler is
-  unhandled (one finding per event). Events declared but neither emitted nor
-  handled are not reported.
+- An event with at least one emitting transition and no consumer (no
+  controller handler and no machine subscription) is unhandled (one finding
+  per event). An event consumed only by subscriptions is handled. Events
+  declared but neither emitted nor handled are not reported.
 - A handler (one controller's subscription to one event) whose event no
   transition emits is an orphan, one finding per handler, so two controllers
   waiting for the same dead event give two findings.
@@ -128,10 +162,13 @@ queue so each state, trigger, transition and event is processed once:
   state marks its ancestors, so this covers transitions declared on compound
   states, which apply to their descendants.
 - A trigger is *triggerable* when an external source exposes it, or a rule
-  fires it whose event is emitted by a *live* transition.
+  fires it whose event is emitted by a *live* transition, or it is a
+  subscription to an event emitted by a live transition, or it is a timer.
+  A timer fires whenever its source state is active, so a reachable source
+  state makes a timed transition live.
 - A transition is *live* when it is enabled and its trigger triggerable. A
   live transition enters its target and emits its events, which arms the
-  triggers of every rule handling them.
+  triggers of every rule handling them and every subscription to them.
 
 Guards and rule conditions are assumed satisfiable. States never marked are
 reported outermost only: a state is reported when its parent is reachable
@@ -141,25 +178,46 @@ pseudo-states are never reported.
 
 ### Race candidate (info)
 
-1. *Racers*: rules whose trigger is accepted somewhere (invalid fires are
-   errors already, and a fire nothing accepts cannot race) and whose target
-   is not a spawn.
-2. *Aliasing*: `new …` (spawn) never aliases, since no one else can hold the
-   new instance; a singleton target (`Machine`, no predicates) aliases any
-   other target on its machine; selector targets (`where` / `all … where`)
-   are assumed to alias, since predicates are not compared.
-3. *Causal order*: for every racer, the forward cone of the transitions it
-   fires (all transitions accepting its trigger) gives the set of handlers
-   downstream of it. A pair is excluded when either rule's handler is
-   downstream of the other rule, because then one fire causes the other.
-4. For every event E in model order: the forward cone of E gives each
-   handler's hop distance (transitions entered). Racers of reached handlers
-   are grouped by target machine, and every pair from different controllers
-   that may alias and is not causally ordered is a candidate.
-5. Each pair is reported once, with the origin event closest to both: the
+1. *Parties*: rules whose trigger is accepted somewhere (invalid fires are
+   errors already) and whose target is not a spawn, reached when their
+   handler is in an origin's forward cone; and subscription triggers
+   accepted somewhere, reached when their event is in the cone. Two
+   subscriptions of one machine to one event are one trigger, so one party
+   (an instance takes at most one transition per delivery).
+2. *Aliasing*: `new …` (spawn) never aliases; a singleton target
+   (`Machine`, no predicates) aliases any other target on its machine;
+   selector targets and subscriptions (every live instance whose `where`
+   holds) are assumed to alias, since instance predicates are not compared.
+3. *Causal order*: for every party, the forward cone of the transitions it
+   can make an instance take. A pair is excluded when either party's node
+   (a rule's handler, a subscription's event) is downstream of the other.
+4. *Emission order* (two subscriptions): an instance receives events in
+   emission order (per-consumer FIFO), so a pair is excluded when both
+   events have exactly the same emitting transitions, or one event is in the
+   other's forward cone.
+5. *Exclusive conditions*: when both parties react to the same event, the
+   *event part* (top-level conjuncts reading no `self.x`) of what each needs
+   of that delivery is compared with `expr::overlap` under the event's
+   payload types: a rule's `when` expression and its target filter's event
+   part; a subscription's `where` and guards, any of its transitions (`or`).
+   `Exclusive` excludes the pair: `when: event.policy == sanctioned` against
+   `when: event.policy == unsanctioned`, or a target filter `Case where
+   caseId == event.caseId and event.policy == unsanctioned`. `?choice`
+   conditions are independent decisions and never exclusive. Conditions on
+   different events are not compared. This assumes the two deliveries come
+   from one emission of the event.
+6. Rules of one controller never race (one controller's fires reach an
+   instance in order). For every event E in model order: the forward cone of
+   E gives each party's hop distance; parties are grouped by machine, and
+   every remaining pair is a candidate.
+7. Each pair is reported once, with the origin event closest to both: the
    smallest sum of the two hop distances, ties to the event first in model
-   order. `first` < `second` by rule id; `machine` is the machine both fire
-   into.
+   order. Two rules give `RaceCandidate { origin, machine, first, second }`
+   (`first < second` by rule id; replayable by the simulator); a pair with
+   a subscription gives `SubscriptionRace { origin, machine, first, second }`
+   with `RaceParty::{Rule, Subscription}` sides (rules sort before
+   subscriptions), also under the `race-candidate` check. Its message names
+   a subscription as `Checkout to receive Paid`.
 
 ### State-dependent fire (info)
 
@@ -177,7 +235,28 @@ not accepted there, in which case the fire is always dropped.
 
 In a lifecycle machine most rules get this note (final states accept
 nothing). That is by design: the note answers "where would this fire be
-silently dropped?".
+silently dropped?". Subscriptions never get it: a subscription is offered to
+every live instance and ignored in states that do not take it, by design.
+
+### Uncovered guard (info)
+
+For each `(from, trigger)` group (single transitions included) whose
+candidates all have `Expr` guards and none is `else`, `?choice` or
+unguarded (those already say what happens otherwise):
+
+- command and timer triggers: `expr::coverage` of the guards;
+- subscriptions: a delivery no `where` filter accepts is ignored, not
+  dropped. With one shared filter (or none), coverage of the guards; with
+  different filters, coverage of each `filter and guard` plus `not (filter₁
+  or filter₂ …)` (when every candidate has a filter).
+
+`Coverage::Gaps` gives readable examples. Examples made only of missing
+fields (`event.amount is missing`) are dropped: a missing value is a data
+error, not a design gap. When examples remain, the finding is
+`UncoveredGuard { state, trigger, transitions, gaps }`:
+`Order.pending drops `capture` when event.method = wire: no guard holds and
+there is no `else`` (several gaps joined by `; or when `). `Unknown` and
+`Complete` report nothing.
 
 ## `cascade check`
 
@@ -235,6 +314,11 @@ where each check fires on purpose, marked `PLANTED <check>` in the file:
 | race-candidate | Billing (capture) and FraudCheck (void) both react to `PaymentAuthorized` on the same Payment |
 | state-dependent-fire | Every non-spawning rule into a lifecycle state (11 notes) |
 
+The shop's guards are `?choices`, so the uncovered-guard note (which needs
+expression guards) does not fire there; `tests/uncovered.rs` covers it. The
+expression-aware semantics change none of the shop's or order-fulfillment's
+findings.
+
 It also shows what does *not* fire: guards made exclusive with `else`, a
 polling self-loop silenced by `bounded: true`, a transition on a compound
 state, and spawning rules. `examples/shop/expected-findings.txt` is the
@@ -247,17 +331,19 @@ and review the diff.
 
 | File | Role | Key exports |
 | --- | --- | --- |
-| `crates/cascade-core/src/analysis/mod.rs` | Contract types, orchestration, sorting | `Check`, `Severity`, `CycleStep`, `FindingDetail`, `Finding` (`Finding::new`), `analyze`, `has_errors` |
+| `crates/cascade-core/src/analysis/mod.rs` | Contract types, orchestration, sorting | `Check`, `Severity`, `CycleStep`, `RaceParty`, `FindingDetail`, `Finding` (`Finding::new`), `analyze`, `has_errors` |
 | `crates/cascade-core/src/analysis/invalid_fire.rs` | Invalid fires and dead external triggers | `check` (module-private) |
-| `crates/cascade-core/src/analysis/nondeterminism.rs` | Ambiguous transitions per state and trigger | `check`, `normalize_guard` |
+| `crates/cascade-core/src/analysis/conditions.rs` | Data conditions (filter and guard), event parts, transition types | `data_condition`, `event_part`, `transition_types`, `trigger_event` |
+| `crates/cascade-core/src/analysis/nondeterminism.rs` | Ambiguous transitions per state and trigger, via `overlap` | `check`, `group_by_source` |
+| `crates/cascade-core/src/analysis/uncovered_guard.rs` | Uncovered expression guards, via `coverage` | `check` |
 | `crates/cascade-core/src/analysis/cycles.rs` | Transition-level causal cycles | `check` |
 | `crates/cascade-core/src/analysis/scc.rs` | Iterative Tarjan SCC | `strongly_connected` |
 | `crates/cascade-core/src/analysis/events.rs` | Unhandled events and orphan handlers | `check` |
 | `crates/cascade-core/src/analysis/reachability.rs` | Cross-machine reachability fixpoint | `check`, `Reachability` |
-| `crates/cascade-core/src/analysis/races.rs` | Race candidates | `check` |
+| `crates/cascade-core/src/analysis/races.rs` | Race candidates between rules and subscriptions | `check` |
 | `crates/cascade-core/src/analysis/state_dependent.rs` | State-dependent fire notes | `check` |
 | `crates/cascade-core/src/analysis/describe.rs` | Shared message wording | `rule`, `trigger`, `state`, `list`, `count` |
-| `crates/cascade-core/src/analysis/tests/` | Per-check behaviour, pinned examples, ordering, the 20-machine performance bound | — |
+| `crates/cascade-core/src/analysis/tests/` | Per-check behaviour, pinned examples, ordering, the 20-machine performance bound; `guards.rs` (solver-based nondeterminism), `uncovered.rs`, `semantics.rs` (conditions, subscriptions and timers in races, reachability, cycles, events) | — |
 | `crates/cascade-cli/src/commands/check.rs` | `cascade check`: text and JSON reports, exit codes | `run` |
 | `crates/cascade-cli/tests/check.rs` | The binary end to end: golden text, JSON, exit codes | — |
 | `examples/shop/cascade.yaml`, `examples/shop/expected-findings.txt` | M1 acceptance example and its exact output | — |
@@ -271,7 +357,13 @@ and review the diff.
   `subjects()`.
 - `CascadeCycle` steps are in causal order and start at the cycle's first
   transition in model order; a `RaceCandidate` has `first < second` and
-  both rules fire into `machine`.
+  both rules fire into `machine`; a `SubscriptionRace` has `first <
+  second`, at least one subscription side, and both sides reach `machine`.
+- A finding the solver backs is sound where the solver is exact: a
+  nondeterminism witness (`both hold when …`) and an uncovered-guard gap are
+  real inputs. "Exclusive" answers are sound (never claimed when an input
+  makes both hold); unknown answers fall back to "may overlap" (reported)
+  for nondeterminism and to "not reported" for uncovered guards.
 - No recursion proportional to model size: SCC and cycle search are
   iterative; the fixpoint uses a work queue. Recursion depth is bounded by
   state nesting depth only.
@@ -284,8 +376,11 @@ and review the diff.
 
 ## Known limitations
 
-- Guards are compared as normalized text: `x > 0` and `x >= 1` count as
-  exclusive, and `x>0` differs from `x > 0`.
-- Race aliasing does not compare selector predicates, so two rules selecting
-  by different fields are still candidates.
-
+- Tests comparing two fields (`self.a == event.b`) are unknown to the
+  solver: two guards that differ only there are reported as "may both hold".
+- Race aliasing does not compare instance predicates, so two rules selecting
+  by different fields are still candidates; only the event part of
+  conditions and filters is compared, and only for parties on one event.
+- Two emissions of one event inside a cascade are treated as one delivery
+  when comparing conditions.
+- Reachability assumes guards, filters and conditions satisfiable.

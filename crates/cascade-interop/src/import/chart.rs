@@ -7,6 +7,8 @@
 //! decided later by [`super::lower`].
 
 use cascade_core::PaletteColor;
+use cascade_core::definition::FieldDef;
+use cascade_core::expr::{Assignment, Expr};
 
 /// A node of one chart. Index 0 is the root: the machine itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -34,8 +36,13 @@ pub(crate) enum Delay {
 pub(crate) enum TriggerSpec {
     /// A named event (`on: { FETCH: … }`, `<transition event="fetch">`).
     Event(String),
-    /// A delayed transition (`after: { 1000: … }`).
+    /// A delayed transition (`after: { 1000: … }`, a delayed `<send>` the
+    /// state cancels on exit). A positive number of milliseconds becomes a
+    /// Cascade timer; a named delay a command fired by the clock source.
     After(Delay),
+    /// A subscription to an event (Cascade's own SCXML export), with its
+    /// `where:` filter in filter context.
+    Subscription { event: String, filter: Option<Expr> },
     /// An invoked actor finished (`invoke.onDone`).
     ActorDone(String),
     /// An invoked actor failed (`invoke.onError`).
@@ -64,6 +71,15 @@ pub(crate) struct Emit {
     /// Raw event name.
     pub event: String,
     pub route: Route,
+    /// Payload assignments (`with:`), when the format carries them in
+    /// Cascade syntax.
+    pub with: Vec<Assignment>,
+}
+
+impl Emit {
+    pub fn new(event: impl Into<String>, route: Route) -> Self {
+        Self { event: event.into(), route, with: Vec::new() }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -72,6 +88,9 @@ pub(crate) struct Edge {
     /// `None` for a targetless (internal) transition.
     pub target: Option<NodeIx>,
     pub guard: Option<String>,
+    /// Field assignments (`sets:`), when the format carries them in Cascade
+    /// syntax.
+    pub sets: Vec<Assignment>,
     /// Events the transition's own actions emit.
     pub emits: Vec<Emit>,
     /// Whether a transition to the source or a descendant exits and
@@ -121,7 +140,7 @@ impl Node {
 pub(crate) struct MachineAttrs {
     pub color: Option<PaletteColor>,
     pub domain: Option<String>,
-    pub fields: Vec<String>,
+    pub fields: Vec<FieldDef>,
 }
 
 /// One machine.

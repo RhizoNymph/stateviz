@@ -53,7 +53,7 @@ use cascade_layout::{LayoutOptions, Point, Rect};
 use crate::color::machine_styles;
 use crate::emphasis::Interaction;
 use crate::play::SceneMode;
-use crate::scene::{FontWeight, HitTarget, Label, Lane, Scene, Stroke};
+use crate::scene::{FontStyle, FontWeight, HitTarget, Label, Lane, Scene, Stroke};
 use crate::view_state::ViewKind;
 use crate::views::cache::LayoutCache;
 use crate::views::decorate::{Decor, FindingIndex, scene_bounds};
@@ -209,6 +209,7 @@ pub(crate) fn machine_lane(
             font_size: theme.font_size,
             color: style.hue,
             weight: FontWeight::Bold,
+            style: FontStyle::Normal,
         },
         opacity: 1.0,
         collapsed,
@@ -238,6 +239,7 @@ fn band_lane(
             font_size: theme.small_font_size,
             color: style.hue,
             weight: FontWeight::Normal,
+            style: FontStyle::Normal,
         },
         opacity: 1.0,
         collapsed: false,

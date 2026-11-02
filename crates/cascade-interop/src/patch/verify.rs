@@ -1,78 +1,11 @@
 //! Comparing definitions while ignoring where things were written.
 
-use cascade_core::Spanned;
-use cascade_core::definition::{ControllerDef, Definition, MachineDef, StateDef};
-use cascade_core::span::SourceSpan;
+use cascade_core::definition::Definition;
+use cascade_core::edit::without_spans;
 
 /// Whether two definitions are equal apart from their source spans.
 pub(crate) fn same_definition(a: &Definition, b: &Definition) -> bool {
-    stripped(a) == stripped(b)
-}
-
-/// `def` with every span unknown.
-pub(crate) fn stripped(def: &Definition) -> Definition {
-    let mut def = def.clone();
-    if let Some(system) = &mut def.system {
-        clear(system);
-    }
-    def.machines.iter_mut().for_each(strip_machine);
-    for event in &mut def.events {
-        clear(&mut event.name);
-        event.payload.iter_mut().for_each(clear);
-        event.span = SourceSpan::unknown();
-    }
-    def.controllers.iter_mut().for_each(strip_controller);
-    for source in &mut def.external {
-        clear(&mut source.name);
-        source.triggers.iter_mut().for_each(clear);
-        source.span = SourceSpan::unknown();
-    }
-    def
-}
-
-fn clear<T>(value: &mut Spanned<T>) {
-    value.span = SourceSpan::unknown();
-}
-
-fn strip_machine(machine: &mut MachineDef) {
-    clear(&mut machine.name);
-    machine.color.iter_mut().for_each(clear);
-    machine.domain.iter_mut().for_each(clear);
-    machine.initial.iter_mut().for_each(clear);
-    machine.fields.iter_mut().for_each(clear);
-    machine.states.iter_mut().for_each(strip_state);
-    for t in &mut machine.transitions {
-        t.from.iter_mut().for_each(clear);
-        clear(&mut t.to);
-        clear(&mut t.on);
-        t.guard.iter_mut().for_each(clear);
-        t.emits.iter_mut().for_each(clear);
-        t.span = SourceSpan::unknown();
-    }
-    machine.span = SourceSpan::unknown();
-}
-
-fn strip_state(state: &mut StateDef) {
-    clear(&mut state.name);
-    clear(&mut state.kind);
-    state.initial.iter_mut().for_each(clear);
-    state.states.iter_mut().for_each(strip_state);
-    state.span = SourceSpan::unknown();
-}
-
-fn strip_controller(controller: &mut ControllerDef) {
-    clear(&mut controller.name);
-    for handler in &mut controller.on {
-        clear(&mut handler.event);
-        for rule in &mut handler.rules {
-            clear(&mut rule.fire);
-            rule.target.iter_mut().for_each(clear);
-            rule.when.iter_mut().for_each(clear);
-            rule.span = SourceSpan::unknown();
-        }
-        handler.span = SourceSpan::unknown();
-    }
-    controller.span = SourceSpan::unknown();
+    without_spans(a) == without_spans(b)
 }
 
 #[cfg(test)]

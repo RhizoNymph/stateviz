@@ -35,7 +35,9 @@
 use cascade_core::{ElementRef, Severity};
 use cascade_layout::{Point, Rect};
 
-use crate::scene::{Arrow, Badge, Dash, EdgeKind, FontWeight, HitTarget, Label, Layer, Overlay, Scene, Stroke};
+use crate::scene::{
+    Arrow, Badge, Dash, EdgeKind, FontStyle, FontWeight, HitTarget, Label, Layer, Overlay, Scene, Stroke,
+};
 use crate::views::draft::{EdgeInfo, Meta};
 use crate::views::style::Painter;
 
@@ -378,6 +380,7 @@ fn badge_overlays(
                 font_size: size,
                 color: ink,
                 weight: FontWeight::Bold,
+                style: FontStyle::Normal,
             },
             opacity,
             layer: Layer::Over,

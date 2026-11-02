@@ -97,11 +97,14 @@ struct Pair {
 }
 
 fn contested_pair(trace: &Trace, origin: EventId, first: RuleId, second: RuleId) -> Option<Pair> {
-    // Fire step → the step that delivered it.
+    // Fire step → the step that delivered it (a choice point at the target
+    // comes before its transition).
     let mut delivered: HashMap<usize, usize> = HashMap::new();
     for (i, step) in trace.steps.iter().enumerate() {
-        if matches!(step.kind, TraceStepKind::Transition { .. } | TraceStepKind::Dropped { .. })
-            && let Some(cause) = step.cause
+        if matches!(
+            step.kind,
+            TraceStepKind::Transition { .. } | TraceStepKind::Dropped { .. } | TraceStepKind::Choice { .. }
+        ) && let Some(cause) = step.cause
         {
             delivered.entry(cause.index()).or_insert(i);
         }

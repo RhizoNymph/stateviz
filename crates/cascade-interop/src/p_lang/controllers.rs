@@ -8,10 +8,12 @@
 //! spawn (`new`) selectors get TODOs, since the skeleton has one instance
 //! per machine.
 
-use cascade_core::definition::{TargetMode, TargetSpec};
-use cascade_core::model::Target;
+use cascade_core::definition::TargetMode;
 use cascade_core::{ControllerId, Model, RuleId};
 
+use cascade_core::expr::{Condition, Operand};
+
+use super::fields::{self, PKind};
 use super::names::{Names, REGISTRY_TYPE, RUNNING_STATE, WIRE_EVENT, WIRING_STATE};
 use super::writer::Writer;
 
@@ -63,12 +65,8 @@ fn write_rule(w: &mut Writer, model: &Model, names: &Names, r: RuleId) {
     let machine = model.machine(trigger.machine);
 
     w.comment(&format!("rule {}: fire {}.{}", rule.ordinal, machine.name, trigger.name));
-    let (mode, clauses) = match &rule.target {
-        Target::One { predicates } => (TargetMode::One, predicates),
-        Target::All { predicates } => (TargetMode::All, predicates),
-        Target::Spawn { assignments } => (TargetMode::Spawn, assignments),
-    };
-    let spec = TargetSpec { mode, machine: machine.name.clone(), clauses: clauses.clone() };
+    let spec = crate::yaml::target_spec(&machine.name, &rule.target);
+    let mode = spec.mode();
     w.comment(&format!("target: {spec}"));
     if let Some(condition) = &rule.condition {
         w.comment(&format!("when: {condition}"));
@@ -88,8 +86,21 @@ fn write_rule(w: &mut Writer, model: &Model, names: &Names, r: RuleId) {
         )),
     }
     let send = format!("send registry[\"{}\"], {};", names.machine(trigger.machine), names.trigger(rule.trigger));
-    if rule.condition.is_some() {
-        w.open("if ($) {");
+    if let Some(condition) = &rule.condition {
+        let payload = names.payload_kinds(model.handler(rule.handler).event);
+        let scope = |o: &Operand| -> Option<(String, &PKind)> {
+            match o {
+                Operand::Event(f) => {
+                    payload.iter().find(|p| p.cascade == *f).map(|p| (format!("payload.{}", p.ident), &p.kind))
+                }
+                Operand::SelfField(_) | Operand::Lit(_) => None,
+            }
+        };
+        let test = match condition {
+            Condition::Expr(expr) => fields::condition(expr, &scope),
+            Condition::Choice(_) => None,
+        };
+        w.open(&format!("if ({}) {{", test.as_deref().unwrap_or("$")));
         w.line(&send);
         w.close();
     } else {

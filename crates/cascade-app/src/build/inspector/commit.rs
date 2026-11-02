@@ -2,11 +2,13 @@
 
 use std::str::FromStr;
 
-use cascade_core::definition::{EventDef, MachineDef, TransitionDef, TriggerRef};
+use cascade_core::definition::{EventDef, FieldDef, MachineDef, TriggerRef};
 use cascade_core::edit::EditOp;
+use cascade_core::expr::parse_condition;
 use cascade_core::parse::grammar::parse_target;
 use cascade_core::{Definition, ElementKey, PaletteColor, SourceSpan, Spanned};
 
+use super::syntax::{parse_field_list, same_fields};
 use super::{FieldError, FieldId, FieldValue, missing, parse_kind, trigger_ref, validate};
 use crate::build::defs::{self, split_list};
 use crate::build::ops::{Planned, transition_entry};
@@ -79,24 +81,11 @@ pub fn field_op(
         }
         ElementKey::Transition { .. } => {
             let (machine, index, entry) = transition_entry(definition, key)?;
-            let mut t = entry.clone();
-            match field {
-                FieldId::TransitionFrom => {
-                    t.from = split_list(&text_value).iter().map(|p| defs::synthetic(p)).collect()
-                }
-                FieldId::TransitionTo => t.to = defs::synthetic(&text_value),
-                FieldId::TransitionTrigger => t.on = defs::synthetic(&text_value),
-                FieldId::TransitionGuard => t.guard = non_empty(&text_value).map(Spanned::synthetic),
-                FieldId::TransitionEmits => {
-                    t.emits = split_list(&text_value).iter().map(|e| defs::synthetic(e)).collect()
-                }
-                FieldId::TransitionBounded => t.bounded = toggle,
-                _ => return Err(wrong_field(field)),
-            }
-            (!same_transition(entry, &t)).then(|| {
+            let t = super::transition::edit(entry, field, &text_value, toggle)?;
+            (!super::transition::same_transition(entry, &t)).then(|| {
                 Planned::new(
                     EditOp::UpdateTransition { machine: machine.clone(), index, transition: t },
-                    format!("Edit transition {machine}: {}", field.label().to_lowercase()),
+                    format!("Edit transition {machine}: {}", field.label().trim_start_matches("+ ").to_lowercase()),
                 )
             })
         }
@@ -107,7 +96,9 @@ pub fn field_op(
                     format!("Rename event {event} to {text_value}"),
                 )
             }),
-            FieldId::EventPayload => payload_op(definition, event, split_list(&text_value)),
+            FieldId::EventPayload => {
+                payload_op(definition, event, parse_field_list(&text_value).map_err(FieldError::Invalid)?)
+            }
             _ => return Err(wrong_field(field)),
         },
         ElementKey::Controller { controller } => {
@@ -148,7 +139,14 @@ pub fn field_op(
                         None => None,
                     };
                 }
-                FieldId::RuleWhen => rule.when = non_empty(&text_value).map(Spanned::synthetic),
+                FieldId::RuleWhen => {
+                    rule.when = match non_empty(&text_value) {
+                        Some(w) => Some(Spanned::synthetic(
+                            parse_condition(&w).map_err(|e| FieldError::Invalid(e.to_string()))?,
+                        )),
+                        None => None,
+                    };
+                }
                 FieldId::RuleBounded => rule.bounded = toggle,
                 _ => return Err(wrong_field(field)),
             }
@@ -195,7 +193,7 @@ pub fn field_op(
     Ok(planned)
 }
 
-fn wrong_field(field: FieldId) -> FieldError {
+pub(super) fn wrong_field(field: FieldId) -> FieldError {
     FieldError::Invalid(format!("{} does not apply to this element", field.label()))
 }
 
@@ -241,9 +239,8 @@ fn machine_op(m: &MachineDef, field: FieldId, value: &str) -> Result<Option<Plan
             })
         }
         FieldId::MachineFields => {
-            let fields = split_list(value);
-            let current: Vec<String> = m.fields.iter().map(|f| f.value.clone()).collect();
-            (fields != current).then(|| {
+            let fields = parse_field_list(value).map_err(FieldError::Invalid)?;
+            (!same_fields(&fields, &m.fields)).then(|| {
                 Planned::new(
                     EditOp::SetMachineFields { machine: name.clone(), fields },
                     format!("Set the fields of {name}"),
@@ -257,37 +254,20 @@ fn machine_op(m: &MachineDef, field: FieldId, value: &str) -> Result<Option<Plan
 
 /// There is no "set payload" op: redeclare the event in place (or declare
 /// it for the first time).
-fn payload_op(definition: &Definition, event: &str, payload: Vec<String>) -> Option<Planned> {
+fn payload_op(definition: &Definition, event: &str, payload: Vec<FieldDef>) -> Option<Planned> {
     let declared = definition.events.iter().position(|e| e.name.value == event);
-    let new_def = EventDef {
-        name: defs::synthetic(event),
-        payload: payload.iter().map(|p| defs::synthetic(p)).collect(),
-        span: SourceSpan::unknown(),
-    };
+    let new_def = EventDef { name: defs::synthetic(event), payload, span: SourceSpan::unknown() };
     let label = format!("Set the payload of {event}");
     match declared {
-        Some(index) => {
-            let current: Vec<String> = definition.events[index].payload.iter().map(|p| p.value.clone()).collect();
-            (current != payload).then(|| {
-                Planned::new(
-                    EditOp::Batch(vec![
-                        EditOp::RemoveEventDeclaration { event: event.to_owned() },
-                        EditOp::DeclareEvent { event: new_def, index: Some(index) },
-                    ]),
-                    label,
-                )
-            })
-        }
+        Some(index) => (!same_fields(&definition.events[index].payload, &new_def.payload)).then(|| {
+            Planned::new(
+                EditOp::Batch(vec![
+                    EditOp::RemoveEventDeclaration { event: event.to_owned() },
+                    EditOp::DeclareEvent { event: new_def, index: Some(index) },
+                ]),
+                label,
+            )
+        }),
         None => Some(Planned::new(EditOp::DeclareEvent { event: new_def, index: None }, label)),
     }
-}
-
-fn same_transition(a: &TransitionDef, b: &TransitionDef) -> bool {
-    let values = |items: &[Spanned<String>]| items.iter().map(|s| s.value.clone()).collect::<Vec<_>>();
-    values(&a.from) == values(&b.from)
-        && a.to.value == b.to.value
-        && a.on.value == b.on.value
-        && a.guard.as_ref().map(|g| &g.value) == b.guard.as_ref().map(|g| &g.value)
-        && values(&a.emits) == values(&b.emits)
-        && a.bounded == b.bounded
 }

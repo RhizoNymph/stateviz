@@ -5,8 +5,8 @@ mod common;
 use cascade_core::Severity;
 use cascade_layout::{Point, Rect};
 use cascade_scene::{
-    Arrow, Badge, Border, Dash, EdgeKind, Emphasis, ExportError, FontWeight, HitTarget, Label, Lane, Layer, Overlay,
-    Rgba, Scene, SceneEdge, SceneNode, Shape, Stroke, ViewKind, ViewState, to_png, to_svg,
+    Arrow, Badge, Border, Dash, EdgeKind, Emphasis, ExportError, FontStyle, FontWeight, HitTarget, Label, Lane, Layer,
+    Overlay, Rgba, Scene, SceneEdge, SceneNode, Shape, Stroke, ViewKind, ViewState, to_png, to_svg,
 };
 use common::*;
 
@@ -28,6 +28,7 @@ fn label(text: &str, x: f32, y: f32) -> Label {
         font_size: 13.0,
         color: Rgba::hex(0x1F2328),
         weight: FontWeight::Normal,
+        style: FontStyle::Normal,
     }
 }
 

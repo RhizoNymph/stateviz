@@ -4,7 +4,7 @@
 use cascade_layout::{Point, Rect, Size};
 
 use crate::color::Rgba;
-use crate::scene::{FontWeight, HitTarget, Label, Layer, Overlay, Scene, Stroke};
+use crate::scene::{FontStyle, FontWeight, HitTarget, Label, Layer, Overlay, Scene, Stroke};
 use crate::views::style::Painter;
 
 /// Horizontal text padding inside a chip.
@@ -57,6 +57,7 @@ pub(super) fn push(
             font_size: font,
             color: style.text,
             weight: style.weight,
+            style: FontStyle::Normal,
         },
         opacity,
         layer: Layer::Over,

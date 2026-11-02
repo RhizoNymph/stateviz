@@ -131,7 +131,7 @@ fn renaming_an_event_renames_declaration_emits_and_subscriptions() {
          +      OrderSettled:",
         |d| {
             d.events[1].name = s("OrderSettled");
-            machine_mut(d, "Order").transitions[1].emits[0] = s("OrderSettled");
+            machine_mut(d, "Order").transitions[1].emits[0].event = s("OrderSettled");
             handler_mut(d, "Fulfillment", "OrderPaid").event = s("OrderSettled");
         },
     );
@@ -144,10 +144,10 @@ fn renaming_an_event_renames_declaration_emits_and_subscriptions() {
          -      - { from: [running.computing, queued], to: done, on: finish, emits: [Finished] }\n\
          +      - { from: [running.computing, queued], to: done, on: finish, emits: [Done] }\n\
          @@ 42\n\
-         -      Finished: { fire: Worker.release, when: \"worker still busy\" }\n\
-         +      Done: { fire: Worker.release, when: \"worker still busy\" }",
+         -      Finished: { fire: Worker.release, when: \"?worker still busy\" }\n\
+         +      Done: { fire: Worker.release, when: \"?worker still busy\" }",
         |d| {
-            machine_mut(d, "Job").transitions[4].emits[0] = s("Done");
+            machine_mut(d, "Job").transitions[4].emits[0].event = s("Done");
             handler_mut(d, "Scheduler", "Finished").event = s("Done");
         },
     );
@@ -158,11 +158,11 @@ fn renaming_an_event_renames_declaration_emits_and_subscriptions() {
 #[test]
 fn a_new_controller_is_a_block_like_its_siblings() {
     let text = order_fulfillment();
-    let c = controller("Audit", vec![handler("OrderCancelled", vec![rule("Shipment.start", None, Some("never"))])]);
+    let c = controller("Audit", vec![handler("OrderCancelled", vec![rule("Shipment.start", None, Some("?never"))])]);
     let out = check(
         &text,
         &EditOp::AddController { controller: c.clone(), index: None },
-        "@@ 28\n+  Audit:\n+    on:\n+      OrderCancelled:\n+        - fire: Shipment.start\n+          when: never\n+",
+        "@@ 28\n+  Audit:\n+    on:\n+      OrderCancelled:\n+        - fire: Shipment.start\n+          when: \"?never\"\n+",
         |d| d.controllers.push(c),
     );
     assert!(out.contains("event.orderId\n\n  Audit:\n    on:\n"), "{out}");
@@ -212,7 +212,7 @@ fn removing_a_controller_takes_its_comments() {
          -      PaymentAuthorized:\n\
          -        - fire: Payment.void\n\
          -          target: Payment where orderId == event.orderId\n\
-         -          when: \"risk score above threshold\"\n\
+         -          when: \"?risk score above threshold\"\n\
          -",
         |d| {
             d.controllers.remove(2);
@@ -290,7 +290,7 @@ fn handlers_are_added_and_removed_with_their_rules() {
 #[test]
 fn rules_follow_their_neighbours() {
     let text = shop();
-    let r = rule("Inventory.reserve", Some("new Inventory with orderId = event.orderId"), Some("in stock"));
+    let r = rule("Inventory.reserve", Some("new Inventory with orderId = event.orderId"), Some("?in stock"));
     let out = check(
         &text,
         &EditOp::AddRule {
@@ -302,7 +302,7 @@ fn rules_follow_their_neighbours() {
         "@@ 161\n\
          +        - fire: Inventory.reserve\n\
          +          target: new Inventory with orderId = event.orderId\n\
-         +          when: \"in stock\"",
+         +          when: \"?in stock\"",
         |d| handler_mut(d, "Billing", "PaymentAuthorized").rules.push(r),
     );
     assert_eq!(
@@ -313,11 +313,11 @@ fn rules_follow_their_neighbours() {
         text
     );
     let block = fixture("block.yaml");
-    let r = rule("Door.open_door", None, Some("never"));
+    let r = rule("Door.open_door", None, Some("?never"));
     check(
         &block,
         &EditOp::AddRule { controller: "Alarm".into(), event: "Opened".into(), rule: r.clone(), index: None },
-        "@@ 33\n+                - fire: Door.open_door\n+                  when: never",
+        "@@ 33\n+                - fire: Door.open_door\n+                  when: \"?never\"",
         |d| handler_mut(d, "Alarm", "Opened").rules.push(r),
     );
 }
@@ -330,9 +330,9 @@ fn a_single_rule_mapping_becomes_a_list_when_a_rule_is_added() {
         &text,
         &EditOp::AddRule { controller: "Scheduler".into(), event: "Finished".into(), rule: r.clone(), index: None },
         "@@ 42\n\
-         -      Finished: { fire: Worker.release, when: \"worker still busy\" }\n\
+         -      Finished: { fire: Worker.release, when: \"?worker still busy\" }\n\
          +      Finished:\n\
-         +        - { fire: Worker.release, when: \"worker still busy\" }\n\
+         +        - { fire: Worker.release, when: \"?worker still busy\" }\n\
          +        - { fire: Worker.claim }",
         |d| handler_mut(d, "Scheduler", "Finished").rules.push(r),
     );
@@ -353,20 +353,20 @@ fn rule_updates_touch_only_changed_fields() {
         },
         "@@ 169\n\
          -          target: Payment where orderId == event.orderId\n\
-         -          when: \"risk score above threshold\"\n\
+         -          when: \"?risk score above threshold\"\n\
          +          target: all Payment where orderId == event.orderId\n\
          +          bounded: true",
         |d| handler_mut(d, "FraudCheck", "PaymentAuthorized").rules[0] = r,
     );
     assert_comments_kept(&text, &out, &[]);
     let nested = fixture("nested.yaml");
-    let r = rule("Worker.claim", None, Some("always"));
+    let r = rule("Worker.claim", None, Some("?always"));
     check(
         &nested,
         &EditOp::UpdateRule { controller: "Scheduler".into(), event: "Finished".into(), index: 0, rule: r.clone() },
         "@@ 42\n\
-         -      Finished: { fire: Worker.release, when: \"worker still busy\" }\n\
-         +      Finished: { fire: Worker.claim, when: \"always\" }",
+         -      Finished: { fire: Worker.release, when: \"?worker still busy\" }\n\
+         +      Finished: { fire: Worker.claim, when: \"?always\" }",
         |d| handler_mut(d, "Scheduler", "Finished").rules[0] = r,
     );
 }
@@ -381,7 +381,7 @@ fn removing_the_last_rule_leaves_an_empty_list() {
          -      TrackingPolled:\n\
          -        - fire: Shipment.poll_tracking\n\
          -          target: Shipment where orderId == event.orderId\n\
-         -          when: \"parcel not yet delivered\"\n\
+         -          when: \"?parcel not yet delivered\"\n\
          -          bounded: true\n\
          +      TrackingPolled: []",
         |d| handler_mut(d, "Tracking", "TrackingPolled").rules.clear(),
@@ -390,7 +390,7 @@ fn removing_the_last_rule_leaves_an_empty_list() {
     check(
         &nested,
         &EditOp::RemoveRule { controller: "Scheduler".into(), event: "Finished".into(), index: 0 },
-        "@@ 42\n-      Finished: { fire: Worker.release, when: \"worker still busy\" }\n+      Finished: []",
+        "@@ 42\n-      Finished: { fire: Worker.release, when: \"?worker still busy\" }\n+      Finished: []",
         |d| handler_mut(d, "Scheduler", "Finished").rules.clear(),
     );
 }

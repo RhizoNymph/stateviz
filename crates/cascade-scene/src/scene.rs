@@ -13,6 +13,11 @@ use cascade_layout::{Point, Rect};
 use crate::color::Rgba;
 use crate::view_state::ViewKind;
 
+/// The clock drawn for timers (`◷ 30s`): a geometric-shapes character that
+/// the monospace faces the backends use (DejaVu Sans Mono and the like)
+/// carry at one advance, unlike the emoji-range stopwatch.
+pub const CLOCK_GLYPH: char = '◷';
+
 /// What a click on a scene item selects.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum HitTarget {
@@ -34,6 +39,20 @@ pub enum HitTarget {
     /// emit, a controller to a transition wires a fire, a source to a
     /// transition exposes its trigger).
     ConnectHandle { element: ElementKey },
+    /// Build mode: drag from an event tag's subscribe handle onto a
+    /// transition (its pill, or its arrow in arrow mode) to subscribe that
+    /// transition to the event: its trigger becomes `on: { event }`.
+    /// `event` is the event's name.
+    SubscribeHandle { event: String },
+}
+
+impl HitTarget {
+    /// A build-mode drag handle ([`HitTarget::ConnectHandle`] or
+    /// [`HitTarget::SubscribeHandle`]): an editing affordance that hit
+    /// testing prefers and exports leave out.
+    pub fn is_handle(&self) -> bool {
+        matches!(self, HitTarget::ConnectHandle { .. } | HitTarget::SubscribeHandle { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -91,6 +110,16 @@ pub enum FontWeight {
     Bold,
 }
 
+/// Upright or slanted text. Italic marks text that names a decision the
+/// data does not carry (a `?choice` guard or condition, `else`, a trace's
+/// choice marker).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontStyle {
+    #[default]
+    Normal,
+    Italic,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Label {
     pub text: String,
@@ -99,6 +128,7 @@ pub struct Label {
     pub font_size: f32,
     pub color: Rgba,
     pub weight: FontWeight,
+    pub style: FontStyle,
 }
 
 /// A count of findings on an element, drawn as a red-outlined circle.
@@ -153,6 +183,13 @@ pub enum EdgeKind {
     Subscribe,
     /// Controller → transition (dashed, target machine hue).
     Fire,
+    /// Event → transition through a machine subscription (solid, the
+    /// subscribing machine's hue); in the structure view's cross-lane
+    /// links, emitting transition → subscribing transition.
+    Notify,
+    /// Transition → the timer transition its target state arms (short
+    /// dashes in the machine's hue, labelled with the clock and delay).
+    Delay,
     /// A message between lifelines in the trace view.
     Message,
     /// A link into or out of a hidden machine's stub.
@@ -255,9 +292,9 @@ impl Scene {
         }
     }
 
-    /// The topmost clickable item at `p` (scene coordinates). Connect
-    /// handles win over everything (they are small, painted over their node
-    /// and straddle its edge), then nodes over edges, edges over other
+    /// The topmost clickable item at `p` (scene coordinates). Connect and
+    /// subscribe handles win over everything (they are small, painted over
+    /// their node and straddle its edge), then nodes over edges, edges over other
     /// overlays, overlays over lanes. `tolerance` is the pick distance for
     /// edges in scene units.
     pub fn hit_test(&self, p: Point, tolerance: f32) -> Option<&HitTarget> {
@@ -287,10 +324,11 @@ impl Scene {
         self.lanes.iter().rev().find(|l| clickable(&l.target) && l.rect.contains(p)).map(|l| &l.target)
     }
 
-    /// A connect handle at `p`, else the topmost clickable node there.
+    /// A connect or subscribe handle at `p`, else the topmost clickable
+    /// node there.
     fn handle_or_node_at(&self, p: Point) -> Option<&HitTarget> {
         if let Some(handle) = self.overlays.iter().rev().find_map(|o| match o {
-            Overlay::Rect { rect, target: t @ HitTarget::ConnectHandle { .. }, .. } if rect.contains(p) => Some(t),
+            Overlay::Rect { rect, target: t, .. } if t.is_handle() && rect.contains(p) => Some(t),
             _ => None,
         }) {
             return Some(handle);

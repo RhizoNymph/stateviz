@@ -57,6 +57,10 @@ pub enum Command {
     PlayStep,
     /// Play mode: deliver until the queue is empty.
     PlayRun,
+    /// Play mode: advance the clock to the next armed timer.
+    PlayAdvance,
+    /// Play mode: open or close the Explore panel.
+    ToggleExplore,
 }
 
 /// Where a binding applies.
@@ -124,6 +128,8 @@ pub const KEYMAP: &[Binding] = &[
     canvas("backspace", Command::DeleteSelection),
     canvas("space", Command::PlayStep),
     canvas("r", Command::PlayRun),
+    canvas("t", Command::PlayAdvance),
+    canvas("e", Command::ToggleExplore),
     global("ctrl-f", Command::FocusSearch),
     global("cmd-f", Command::FocusSearch),
     global("ctrl-shift-c", Command::CopyLink),
@@ -190,6 +196,8 @@ pub const ALL_COMMANDS: &[Command] = &[
     Command::NewFile,
     Command::PlayStep,
     Command::PlayRun,
+    Command::PlayAdvance,
+    Command::ToggleExplore,
 ];
 
 /// The first key bound to `command`, for button hints.
@@ -220,6 +228,8 @@ pub enum HostEffect {
     NewFile,
     PlayStep,
     PlayRun,
+    PlayAdvance,
+    ToggleExplore,
 }
 
 /// What a command did.
@@ -284,6 +294,8 @@ pub fn reduce(command: Command, state: &mut ViewState, depth: &mut Option<u32>) 
         Command::NewFile => Outcome::Host(HostEffect::NewFile),
         Command::PlayStep => Outcome::Host(HostEffect::PlayStep),
         Command::PlayRun => Outcome::Host(HostEffect::PlayRun),
+        Command::PlayAdvance => Outcome::Host(HostEffect::PlayAdvance),
+        Command::ToggleExplore => Outcome::Host(HostEffect::ToggleExplore),
     }
 }
 
@@ -692,6 +704,32 @@ mod tests {
         ] {
             assert_eq!(reduce(command, &mut state, &mut depth), Outcome::Host(effect));
         }
+        assert_eq!(state, ViewState::default());
+    }
+
+    #[test]
+    fn t_advances_the_play_clock() {
+        let find = |keys: &str| KEYMAP.iter().find(|b| b.keys == keys);
+        let binding = find("t").expect("t is bound");
+        assert_eq!(binding.command, Command::PlayAdvance);
+        assert_eq!(binding.scope, Scope::Canvas, "a plain key: inert while typing");
+        assert_eq!(KEYMAP.iter().filter(|b| b.keys == "t").count(), 1);
+        let mut state = ViewState::default();
+        let mut depth = None;
+        assert_eq!(reduce(Command::PlayAdvance, &mut state, &mut depth), Outcome::Host(HostEffect::PlayAdvance));
+        assert_eq!(state, ViewState::default());
+    }
+
+    #[test]
+    fn e_toggles_the_explore_panel() {
+        let binding = KEYMAP.iter().find(|b| b.keys == "e").expect("e is bound");
+        assert_eq!(binding.command, Command::ToggleExplore);
+        assert_eq!(binding.scope, Scope::Canvas, "a plain key: inert while typing");
+        assert_eq!(KEYMAP.iter().filter(|b| b.keys == "e").count(), 1);
+        assert_eq!(key_hint(Command::ToggleExplore), Some("e"));
+        let mut state = ViewState::default();
+        let mut depth = None;
+        assert_eq!(reduce(Command::ToggleExplore, &mut state, &mut depth), Outcome::Host(HostEffect::ToggleExplore));
         assert_eq!(state, ViewState::default());
     }
 }

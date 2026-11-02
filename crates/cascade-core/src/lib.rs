@@ -18,6 +18,7 @@ pub mod definition;
 pub mod diff;
 pub mod edit;
 pub mod error;
+pub mod expr;
 pub mod ids;
 pub mod key;
 mod load;
@@ -27,7 +28,7 @@ pub mod resolve;
 pub mod search;
 pub mod span;
 
-pub use analysis::{Check, Finding, FindingDetail, Severity, analyze};
+pub use analysis::{Check, Finding, FindingDetail, RaceParty, Severity, analyze};
 pub use causal::{CausalEdge, CausalEdgeKind, CausalGraph, CausalNode, Cone, Direction, EdgeIx, NodeIx};
 pub use color::PaletteColor;
 pub use definition::Definition;

@@ -231,8 +231,9 @@ mod tests {
                 .map(|(from, to)| TransitionDef {
                     from: vec![Spanned::synthetic((*from).to_owned())],
                     to: Spanned::synthetic((*to).to_owned()),
-                    on: Spanned::synthetic("go".to_owned()),
+                    trigger: crate::definition::TriggerSpec::command("go"),
                     guard: None,
+                    sets: Vec::new(),
                     emits: Vec::new(),
                     bounded: false,
                     span: SourceSpan::unknown(),

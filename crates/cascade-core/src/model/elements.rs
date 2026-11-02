@@ -4,7 +4,7 @@
 //! filled in by the resolver so consumers never recompute them.
 
 use crate::color::PaletteColor;
-use crate::definition::FieldClause;
+use crate::expr::{Assignment, Condition, Duration, Expr, FieldDecl, Guard};
 use crate::ids::{ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId};
 use crate::span::SourceSpan;
 
@@ -17,8 +17,9 @@ pub struct Machine {
     /// The state an instance starts in (may be compound; enter it via
     /// [`Model::default_entry`](crate::Model::default_entry)).
     pub initial: StateId,
-    /// Declared instance fields; empty means "not declared, not checked".
-    pub fields: Vec<String>,
+    /// Declared instance fields (untyped ones are `any`); empty means "not
+    /// declared, not checked".
+    pub fields: Vec<FieldDecl>,
     /// Every state of the machine in pre-order (parents before children),
     /// siblings in definition order.
     pub states: Vec<StateId>,
@@ -84,8 +85,14 @@ pub struct Transition {
     pub from: StateId,
     pub to: StateId,
     pub trigger: TriggerId,
-    pub guard: Option<String>,
-    pub emits: Vec<EventId>,
+    pub guard: Option<Guard>,
+    /// A subscription's `where:` filter (only on subscription triggers):
+    /// the transition is enabled for a delivery only when it holds.
+    pub filter: Option<Expr>,
+    /// Field assignments made when the transition is taken.
+    pub sets: Vec<Assignment>,
+    /// Emitted events in order, each event at most once.
+    pub emits: Vec<Emit>,
     pub bounded: bool,
     /// Distinguishes transitions that share `(from, to, trigger)`; 0 for the
     /// first in definition order. Part of the transition's stable key.
@@ -93,10 +100,46 @@ pub struct Transition {
     pub span: SourceSpan,
 }
 
+/// One emitted event, with its payload assignments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Emit {
+    pub event: EventId,
+    pub with: Vec<Assignment>,
+}
+
+/// What fires a trigger.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TriggerKind {
+    /// Fired by controller rules and external sources.
+    Command,
+    /// A subscription: delivering `event` offers this trigger to every live
+    /// instance of the machine. Named after the event.
+    Event(EventId),
+    /// Fires `delay` after the instance enters the transition's source
+    /// state. Named `after-<delay>`.
+    Timer(Duration),
+}
+
+impl TriggerKind {
+    pub const fn is_command(self) -> bool {
+        matches!(self, TriggerKind::Command)
+    }
+
+    /// `command`, `subscription` or `timer`.
+    pub const fn describe(self) -> &'static str {
+        match self {
+            TriggerKind::Command => "command",
+            TriggerKind::Event(_) => "subscription",
+            TriggerKind::Timer(_) => "timer",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Trigger {
     pub machine: MachineId,
     pub name: String,
+    pub kind: TriggerKind,
     /// Transitions that take this trigger. Empty when the trigger is fired or
     /// exposed but no transition accepts it (an invalid fire).
     pub accepted_by: Vec<TransitionId>,
@@ -112,11 +155,14 @@ pub struct Trigger {
 pub struct Event {
     pub name: String,
     /// Declared payload fields; empty when undeclared.
-    pub payload: Vec<String>,
+    pub payload: Vec<FieldDecl>,
     /// Whether the event appears under `events:`.
     pub declared: bool,
     pub emitted_by: Vec<TransitionId>,
     pub handlers: Vec<HandlerId>,
+    /// Subscription triggers on this event, in model order (one per
+    /// subscribing machine).
+    pub subscribers: Vec<TriggerId>,
     /// Span of the declaration, or of the first mention when undeclared.
     pub span: SourceSpan,
 }
@@ -141,13 +187,22 @@ pub struct Handler {
 /// trigger's machine.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
-    /// Exactly one instance matching every predicate. No predicates means
-    /// "the one instance" (a singleton machine).
-    One { predicates: Vec<FieldClause> },
-    /// Every instance matching every predicate (fan-out).
-    All { predicates: Vec<FieldClause> },
+    /// Exactly one instance for which the filter holds. No filter means "the
+    /// one instance" (a singleton machine).
+    One { filter: Option<Expr> },
+    /// Every instance for which the filter holds (fan-out).
+    All { filter: Option<Expr> },
     /// A newly spawned instance with these field values.
-    Spawn { assignments: Vec<FieldClause> },
+    Spawn { assignments: Vec<Assignment> },
+}
+
+impl Target {
+    pub fn filter(&self) -> Option<&Expr> {
+        match self {
+            Target::One { filter } | Target::All { filter } => filter.as_ref(),
+            Target::Spawn { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -157,8 +212,8 @@ pub struct Rule {
     pub event: EventId,
     pub trigger: TriggerId,
     pub target: Target,
-    /// Free-text condition (`when:`), displayed but never evaluated.
-    pub condition: Option<String>,
+    /// `when:`: the rule applies only when the condition holds.
+    pub condition: Option<Condition>,
     pub bounded: bool,
     /// Position within the handler; part of the rule's stable key.
     pub ordinal: u32,

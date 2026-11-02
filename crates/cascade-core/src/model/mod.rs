@@ -9,10 +9,12 @@ mod elements;
 use std::collections::HashMap;
 
 pub use elements::{
-    Controller, Event, ExternalSource, Handler, Machine, Rule, State, StateKind, Target, Transition, Trigger,
+    Controller, Emit, Event, ExternalSource, Handler, Machine, Rule, State, StateKind, Target, Transition, Trigger,
+    TriggerKind,
 };
 
 use crate::definition::Definition;
+use crate::expr::Types;
 use crate::ids::{ControllerId, EventId, ExternalId, HandlerId, MachineId, RuleId, StateId, TransitionId, TriggerId};
 use crate::key::{ElementKey, ElementRef};
 use crate::span::SourceSpan;
@@ -137,6 +139,31 @@ impl Model {
             .map(|s| accepted.iter().copied().filter(|&t| self.transition(t).from == s).collect::<Vec<_>>())
             .find(|candidates| !candidates.is_empty())
             .unwrap_or_default()
+    }
+
+    /// `machine`'s subscription trigger on `event`, if it subscribes.
+    pub fn subscription_trigger(&self, machine: MachineId, event: EventId) -> Option<TriggerId> {
+        self.event(event).subscribers.iter().copied().find(|&t| self.trigger(t).machine == machine)
+    }
+
+    // --- Expression types -------------------------------------------------
+
+    /// How expressions on `machine` read fields: `self.x` from the machine's
+    /// declared fields and `event.x` from `event`'s declared payload (all
+    /// `any` without an event).
+    pub fn types_for(&self, machine: MachineId, event: Option<EventId>) -> Types {
+        let payload = event.map_or(&[][..], |e| &self.event(e).payload[..]);
+        Types::new(&self.machine(machine).fields, payload)
+    }
+
+    /// How a controller's `when:` reads `event.x` (no `self`).
+    pub fn event_types(&self, event: EventId) -> Types {
+        Types::new(&[], &self.event(event).payload)
+    }
+
+    /// The machine field names, declared order.
+    pub fn field_names(&self, machine: MachineId) -> Vec<&str> {
+        self.machine(machine).fields.iter().map(|f| f.name.as_str()).collect()
     }
 
     // --- Presentation helpers ---------------------------------------------

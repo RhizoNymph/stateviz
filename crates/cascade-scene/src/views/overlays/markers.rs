@@ -10,15 +10,18 @@
 //!   entering the state instead, reading "arrived here". A hidden machine's
 //!   instances sit on its stub.
 //!
-//! Chips sit on the node's top edge, left to right in marker order.
+//! Chips sit on the node's top edge, left to right in marker order. An
+//! instance's armed timers follow its chip as hollow clock chips with the
+//! time left (`◷ 25s`, `◷ due`): every timer on a state (structure view),
+//! only the timer a pill fires on that pill (causal view).
 
 use std::collections::HashMap;
 
 use cascade_core::{ElementRef, Model, StateId, TransitionId};
 use cascade_layout::Point;
 
-use crate::play::PlayMarker;
-use crate::scene::{FontWeight, HitTarget, Scene, Stroke};
+use crate::play::{PlayMarker, PlayTimer};
+use crate::scene::{CLOCK_GLYPH, FontWeight, HitTarget, Scene, Stroke};
 use crate::views::overlays::PlayDecor;
 use crate::views::overlays::chip::{self, ChipStyle};
 
@@ -49,7 +52,13 @@ struct Pending<'m> {
     fill: Fill,
 }
 
-pub(super) fn draw(decor: &PlayDecor<'_>, scene: &mut Scene, markers: &[PlayMarker], place: Placement) {
+pub(super) fn draw(
+    decor: &PlayDecor<'_>,
+    scene: &mut Scene,
+    markers: &[PlayMarker],
+    timers: &[PlayTimer],
+    place: Placement,
+) {
     let model = decor.model;
     let mut index: HashMap<&HitTarget, usize> = HashMap::new();
     for (i, node) in scene.nodes.iter().enumerate() {
@@ -117,8 +126,50 @@ pub(super) fn draw(decor: &PlayDecor<'_>, scene: &mut Scene, markers: &[PlayMark
             let at = Point::new(x, rect.top() - size.height * RISE);
             chip::push(scene, painter, at, &p.marker.instance, &look, target.clone(), opacity);
             x += size.width + CHIP_GAP;
+            for text in timer_texts(model, timers, &p.marker.instance, &target, place) {
+                let clock = ChipStyle {
+                    fill: painter.theme.background,
+                    stroke: Stroke::solid(style.hue, 1.0),
+                    text: painter.theme.text,
+                    weight: FontWeight::Normal,
+                };
+                let size = chip::size(painter, &text);
+                let at = Point::new(x, rect.top() - size.height * RISE);
+                chip::push(scene, painter, at, &text, &clock, target.clone(), opacity);
+                x += size.width + CHIP_GAP;
+            }
         }
     }
+}
+
+/// The clock chips of `instance`'s timers on the node with `target`: all
+/// of them on a state, only the pill's own timer on a pill.
+fn timer_texts(
+    model: &Model,
+    timers: &[PlayTimer],
+    instance: &str,
+    target: &HitTarget,
+    place: Placement,
+) -> Vec<String> {
+    let pill_trigger = match (place, target) {
+        (Placement::Transitions, HitTarget::Element(key)) => match model.resolve_key(key) {
+            Some(ElementRef::Transition(t)) => Some(model.transition(t).trigger),
+            _ => return Vec::new(),
+        },
+        (Placement::Transitions, _) => return Vec::new(),
+        (Placement::States, _) => None,
+    };
+    timers
+        .iter()
+        .filter(|t| t.instance == instance)
+        .filter(|t| match pill_trigger {
+            Some(trigger) => model.resolve_key(&t.trigger) == Some(ElementRef::Trigger(trigger)),
+            None => true,
+        })
+        .map(|t| {
+            if t.remaining.is_zero() { format!("{CLOCK_GLYPH} due") } else { format!("{CLOCK_GLYPH} {}", t.remaining) }
+        })
+        .collect()
 }
 
 /// The node drawn for `state`: itself, else its nearest drawn ancestor.

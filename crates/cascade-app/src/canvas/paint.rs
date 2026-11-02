@@ -10,8 +10,8 @@
 use cascade_core::ElementKey;
 use cascade_layout::{Point, Rect};
 use cascade_scene::{
-    Arrow, Badge, Border, Dash, FontWeight, HitTarget, Label, Lane, Layer, MonoMeasure, Overlay, Scene, SceneEdge,
-    SceneNode, Shape, Stroke, TextMeasure, Theme, Viewport,
+    Arrow, Badge, Border, Dash, FontStyle, FontWeight, HitTarget, Label, Lane, Layer, MonoMeasure, Overlay, Scene,
+    SceneEdge, SceneNode, Shape, Stroke, TextMeasure, Theme, Viewport,
 };
 use gpui::{
     App, BorderStyle, Bounds, ContentMask, Corners, Hsla, PathBuilder, Pixels, SharedString, TextRun, Window, fill,
@@ -382,7 +382,7 @@ impl Painter<'_> {
         let width = self.measure.width(&text, font_px);
         let line = self.measure.line_height(font_px);
         let origin = ScreenPoint::new(c.x - width / 2.0, c.y - line / 2.0);
-        self.text(&text, origin, font_px, line, color, FontWeight::Bold, window, cx);
+        self.text(&text, origin, font_px, line, color, (FontWeight::Bold, FontStyle::Normal), window, cx);
     }
 
     // --- Text --------------------------------------------------------------
@@ -398,7 +398,8 @@ impl Painter<'_> {
         if !self.on_canvas(ScreenRect::new(origin.x, origin.y, width, line)) {
             return;
         }
-        self.text(&label.text, origin, font_px, line, hsla(label.color, opacity), label.weight, window, cx);
+        let face = (label.weight, label.style);
+        self.text(&label.text, origin, font_px, line, hsla(label.color, opacity), face, window, cx);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -409,17 +410,13 @@ impl Painter<'_> {
         font_px: f32,
         line_height: f32,
         color: Hsla,
-        weight: FontWeight,
+        (weight, style): (FontWeight, FontStyle),
         window: &mut Window,
         cx: &mut App,
     ) {
-        let mut run_font = font(self.mono.clone());
-        if weight == FontWeight::Bold {
-            run_font = run_font.bold();
-        }
         let run = TextRun {
             len: text.len(),
-            font: run_font,
+            font: run_font(self.mono.clone(), weight, style),
             color,
             background_color: None,
             underline: None,
@@ -435,9 +432,32 @@ impl Painter<'_> {
     }
 }
 
+/// The monospace `family` in the scene label's weight and style.
+fn run_font(family: SharedString, weight: FontWeight, style: FontStyle) -> gpui::Font {
+    let mut run_font = font(family);
+    if weight == FontWeight::Bold {
+        run_font = run_font.bold();
+    }
+    if style == FontStyle::Italic {
+        run_font = run_font.italic();
+    }
+    run_font
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn labels_keep_their_weight_and_style() {
+        let family = SharedString::from("Mono");
+        let plain = run_font(family.clone(), FontWeight::Normal, FontStyle::Normal);
+        assert_eq!((plain.weight, plain.style), (gpui::FontWeight::NORMAL, gpui::FontStyle::Normal));
+        let italic = run_font(family.clone(), FontWeight::Normal, FontStyle::Italic);
+        assert_eq!((italic.weight, italic.style), (gpui::FontWeight::NORMAL, gpui::FontStyle::Italic));
+        let both = run_font(family, FontWeight::Bold, FontStyle::Italic);
+        assert_eq!((both.weight, both.style), (gpui::FontWeight::BOLD, gpui::FontStyle::Italic));
+    }
 
     #[test]
     fn bounds_conversion_never_negative() {

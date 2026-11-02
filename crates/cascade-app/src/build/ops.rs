@@ -200,9 +200,9 @@ fn delete_event(definition: &Definition, event: &str) -> Option<Planned> {
     let mut ops = Vec::new();
     for machine in &definition.machines {
         for (index, transition) in machine.transitions.iter().enumerate() {
-            if transition.emits.iter().any(|e| e.value == event) {
+            if transition.emits.iter().any(|e| e.event.value == event) {
                 let mut updated = transition.clone();
-                updated.emits.retain(|e| e.value != event);
+                updated.emits.retain(|e| e.event.value != event);
                 ops.push(EditOp::UpdateTransition { machine: machine.name.value.clone(), index, transition: updated });
             }
         }
@@ -376,7 +376,7 @@ external:
             EditOp::UpdateTransition { machine, index, transition } => {
                 assert_eq!((machine.as_str(), *index), ("Order", 1));
                 assert!(transition.emits.is_empty());
-                assert_eq!(transition.on.value, "pay");
+                assert_eq!(transition.trigger.name(), "pay");
             }
             other => panic!("unexpected {other:?}"),
         }

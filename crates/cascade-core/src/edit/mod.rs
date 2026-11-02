@@ -41,8 +41,8 @@ pub use spans::without_spans;
 
 use crate::color::PaletteColor;
 use crate::definition::{
-    ControllerDef, Definition, EventDef, ExternalDef, HandlerDef, MachineDef, RuleDef, StateDef, StateKindDef,
-    TransitionDef, TriggerRef,
+    ControllerDef, Definition, EventDef, ExternalDef, FieldDef, HandlerDef, MachineDef, RuleDef, StateDef,
+    StateKindDef, TransitionDef, TriggerRef,
 };
 use crate::error::LoadError;
 use crate::key::ElementKey;
@@ -81,9 +81,10 @@ pub enum EditOp {
         machine: String,
         initial: Option<String>,
     },
+    /// Replace the declared fields (list form when none has a type).
     SetMachineFields {
         machine: String,
-        fields: Vec<String>,
+        fields: Vec<FieldDef>,
     },
 
     // --- States -----------------------------------------------------------
@@ -122,7 +123,8 @@ pub enum EditOp {
         transition: TransitionDef,
         index: Index,
     },
-    /// Replace the whole entry (from, to, trigger, guard, emits, bounded).
+    /// Replace the whole entry (from, to, trigger, guard, sets, emits,
+    /// bounded).
     UpdateTransition {
         machine: String,
         index: usize,
@@ -143,7 +145,9 @@ pub enum EditOp {
     RemoveEventDeclaration {
         event: String,
     },
-    /// Renames the event everywhere: declarations, emits, subscriptions.
+    /// Renames the event everywhere: declarations, emits, controller
+    /// subscriptions and machine subscriptions (`on: { event }`, whose
+    /// trigger is named after the event).
     RenameEvent {
         from: String,
         to: String,

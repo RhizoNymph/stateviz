@@ -9,6 +9,9 @@
 //! | `Fire` while items are queued | the same with `timing: immediate` |
 //! | `Step { choice: None }` / `Some(n)` | `- step` / `- { step: n }` |
 //! | `RunUntilQuiet` | `- run` |
+//! | `Step { consumer: Some(c) }` | `- { step: n, consumer: c }` (head: `n` = 0) |
+//! | `Advance { by }` | `- { wait: 30s }` / `- wait` (`timing: immediate` while items are queued) |
+//! | `Choose { option }` | `- { choose: option }` |
 //! | items still queued at the end | `end: pause` |
 //!
 //! Replaying the scenario ([`PlaySession::from_scenario`]) gives back the
@@ -45,8 +48,23 @@ pub(super) fn to_scenario(session: &PlaySession, name: &str) -> Result<Scenario,
             PlayAction::RemoveInstance { name } => {
                 directives.push(Directive::Remove { name: Spanned::synthetic(name.clone()), span });
             }
-            PlayAction::Step { choice } => directives.push(Directive::Deliver { choice: *choice, span }),
+            PlayAction::Step { choice, consumer } => directives.push(Directive::Deliver {
+                choice: *choice,
+                consumer: consumer.as_ref().map(|c| Spanned::synthetic(c.clone())),
+                span,
+            }),
             PlayAction::RunUntilQuiet => directives.push(Directive::Run { span }),
+            PlayAction::Advance { by } => {
+                let quiet = session.quiet_before.get(i).copied().unwrap_or(true);
+                directives.push(Directive::Wait {
+                    by: by.map(Spanned::synthetic),
+                    timing: if quiet { StepTiming::AfterQuiescence } else { StepTiming::Immediate },
+                    span,
+                });
+            }
+            PlayAction::Choose { option } => {
+                directives.push(Directive::Choose { option: Spanned::synthetic(option.clone()), span });
+            }
             PlayAction::Fire { source, trigger, target, payload } => {
                 let quiet = session.quiet_before.get(i).copied().unwrap_or(true);
                 scenario.steps.push(Step {

@@ -8,6 +8,7 @@ use saphyr::{LoadableYamlNode, MarkedYamlOwned};
 
 use cascade_core::definition::TriggerRef;
 use cascade_core::error::Expected;
+use cascade_core::expr::parse_duration;
 use cascade_core::parse::grammar::parse_trigger_ref;
 use cascade_core::span::{SourceSpan, Spanned};
 
@@ -119,7 +120,10 @@ fn parse_entry(number: usize, item: &MarkedYamlOwned, diags: &mut Diags) -> Opti
     let span = span_of(item);
     if as_mapping(item).is_none() {
         match scalar_text(item).as_deref() {
-            Some("step") => return Some(Entry::Directive(Directive::Deliver { choice: None, span })),
+            Some("step") => return Some(Entry::Directive(Directive::Deliver { choice: None, consumer: None, span })),
+            Some("wait") => {
+                return Some(Entry::Directive(Directive::Wait { by: None, timing: StepTiming::default(), span }));
+            }
             Some("run") => return Some(Entry::Directive(Directive::Run { span })),
             // Anything else is a misplaced mapping, reported below.
             _ => {}
@@ -130,6 +134,12 @@ fn parse_entry(number: usize, item: &MarkedYamlOwned, diags: &mut Diags) -> Opti
     let has = |key: &str| mapping.iter().any(|(k, _)| scalar_text(k).as_deref() == Some(key));
     if has("step") {
         parse_deliver(mapping, &context, span, diags).map(Entry::Directive)
+    } else if has("wait") {
+        parse_wait(mapping, &context, span, diags).map(Entry::Directive)
+    } else if has("choose") {
+        let fields = diags.fields(mapping, &context, &["choose"]);
+        let option = fields.get("choose").and_then(|n| diags.string(n, &format!("{context} choose")))?;
+        Some(Entry::Directive(Directive::Choose { option, span }))
     } else if has("create") {
         parse_create(mapping, &context, span, diags).map(Entry::Directive)
     } else if has("remove") {
@@ -141,9 +151,11 @@ fn parse_entry(number: usize, item: &MarkedYamlOwned, diags: &mut Diags) -> Opti
     }
 }
 
-/// `{ step: n }`: `n` is a whole number, 0 for the head.
+/// `{ step: n, consumer: c }`: `n` is a whole number, 0 for the head;
+/// `consumer` is optional.
 fn parse_deliver(mapping: &Mapping, context: &str, span: SourceSpan, diags: &mut Diags) -> Option<Directive> {
-    let fields = diags.fields(mapping, context, &["step"]);
+    let fields = diags.fields(mapping, context, &["step", "consumer"]);
+    let consumer = fields.get("consumer").and_then(|n| diags.name(n, &format!("{context} consumer")));
     let node = fields.get("step")?;
     let text = match scalar_text(node) {
         Some(text) => text,
@@ -154,10 +166,44 @@ fn parse_deliver(mapping: &Mapping, context: &str, span: SourceSpan, diags: &mut
         }
     };
     match text.parse::<u32>() {
-        Ok(choice) => Some(Directive::Deliver { choice: Some(choice), span }),
+        Ok(choice) => Some(Directive::Deliver { choice: Some(choice), consumer, span }),
         Err(_) => {
             diags.push(ScenarioErrorKind::InvalidQueuePosition { text }, span_of(node));
             None
+        }
+    }
+}
+
+/// `{ wait: 30s, timing: t }`; `{ wait: ~ }` waits for the next deadline.
+fn parse_wait(mapping: &Mapping, context: &str, span: SourceSpan, diags: &mut Diags) -> Option<Directive> {
+    let fields = diags.fields(mapping, context, &["wait", "timing"]);
+    let timing = fields
+        .get("timing")
+        .and_then(|n| diags.string(n, &format!("{context} timing")))
+        .map(|text| timing_of(text, diags))
+        .unwrap_or_default();
+    let node = fields.get("wait")?;
+    if is_null(node) {
+        return Some(Directive::Wait { by: None, timing, span });
+    }
+    let text = diags.string(node, &format!("{context} wait"))?;
+    match parse_duration(&text.value) {
+        Ok(by) => Some(Directive::Wait { by: Some(Spanned::new(by, text.span)), timing, span }),
+        Err(err) => {
+            diags.push(ScenarioErrorKind::InvalidDuration { text: text.value, message: err.message }, text.span);
+            None
+        }
+    }
+}
+
+/// `immediate` or `after-quiescence`.
+fn timing_of(text: Spanned<String>, diags: &mut Diags) -> StepTiming {
+    match text.value.as_str() {
+        "immediate" => StepTiming::Immediate,
+        "after-quiescence" | "after_quiescence" => StepTiming::AfterQuiescence,
+        _ => {
+            diags.push(ScenarioErrorKind::UnknownTiming { text: text.value }, text.span);
+            StepTiming::default()
         }
     }
 }
@@ -213,17 +259,11 @@ fn parse_step(context: &str, mapping: &Mapping, span: SourceSpan, diags: &mut Di
         .and_then(|text| trigger_ref(text, diags));
     let target = fields.get("target").and_then(|n| diags.name(n, &format!("{context} target")));
     let payload = fields.get("payload").map(|n| value_map(n, &format!("{context} payload"), diags)).unwrap_or_default();
-    let timing = match fields.get("timing").and_then(|n| diags.string(n, &format!("{context} timing"))) {
-        None => StepTiming::default(),
-        Some(text) => match text.value.as_str() {
-            "immediate" => StepTiming::Immediate,
-            "after-quiescence" | "after_quiescence" => StepTiming::AfterQuiescence,
-            _ => {
-                diags.push(ScenarioErrorKind::UnknownTiming { text: text.value }, text.span);
-                StepTiming::default()
-            }
-        },
-    };
+    let timing = fields
+        .get("timing")
+        .and_then(|n| diags.string(n, &format!("{context} timing")))
+        .map(|text| timing_of(text, diags))
+        .unwrap_or_default();
 
     Some(Step { source: source?, fire: fire?, target, payload, timing, span, before: Vec::new() })
 }

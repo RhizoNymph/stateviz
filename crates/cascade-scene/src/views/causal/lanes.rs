@@ -22,7 +22,7 @@ use cascade_core::{CausalNode, ElementRef, EventId, MachineId, Model};
 use cascade_layout::{Insets, Point, Rect};
 
 use crate::emphasis::Interaction;
-use crate::scene::{FontWeight, HitTarget, Label, Lane, Scene, Stroke};
+use crate::scene::{FontStyle, FontWeight, HitTarget, Label, Lane, Scene, Stroke};
 use crate::views::SceneInput;
 use crate::views::draft::{DraftGraph, DraftGroup};
 use crate::views::structure::machine_lane;
@@ -50,7 +50,7 @@ impl LaneRules {
     pub(super) fn new(model: &Model) -> Self {
         let mut emitter: Vec<Option<MachineId>> = vec![None; model.event_count()];
         for (_, t) in model.transitions() {
-            for &ev in &t.emits {
+            for ev in t.emits.iter().map(|e| e.event) {
                 if let Some(slot) = emitter.get_mut(ev.index())
                     && slot.is_none()
                 {
@@ -152,6 +152,7 @@ fn unattached_lane(painter: &Painter<'_>, rect: Rect) -> Lane {
             font_size: theme.font_size,
             color: theme.text_muted,
             weight: FontWeight::Bold,
+            style: FontStyle::Normal,
         },
         opacity: 1.0,
         collapsed: false,

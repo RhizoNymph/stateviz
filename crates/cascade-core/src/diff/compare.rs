@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::color::PaletteColor;
+use crate::expr::{Assignment, Condition, Expr, FieldDecl, Guard};
 use crate::ids::TriggerId;
 use crate::key::{ElementKey, ElementRef};
 use crate::model::{Model, StateKind, Target};
@@ -15,22 +16,25 @@ pub(super) enum Attributes {
         color: Option<PaletteColor>,
         domain: Option<String>,
         initial: String,
-        fields: Vec<String>,
+        fields: Vec<FieldDecl>,
     },
     State(StateShape),
     Transition {
-        guard: Option<String>,
-        emits: Vec<String>,
+        guard: Option<Guard>,
+        filter: Option<Expr>,
+        sets: Vec<Assignment>,
+        /// Emitted event names with their `with` assignments.
+        emits: Vec<(String, Vec<Assignment>)>,
         bounded: bool,
     },
     Event {
-        payload: Vec<String>,
+        payload: Vec<FieldDecl>,
         declared: bool,
     },
     Rule {
         fire: String,
         target: Target,
-        condition: Option<String>,
+        condition: Option<Condition>,
         bounded: bool,
     },
     External {
@@ -75,7 +79,9 @@ fn attributes(model: &Model, element: ElementRef) -> Attributes {
             let t = model.transition(id);
             Attributes::Transition {
                 guard: t.guard.clone(),
-                emits: t.emits.iter().map(|&e| model.event(e).name.clone()).collect(),
+                filter: t.filter.clone(),
+                sets: t.sets.clone(),
+                emits: t.emits.iter().map(|e| (model.event(e.event).name.clone(), e.with.clone())).collect(),
                 bounded: t.bounded,
             }
         }

@@ -9,7 +9,10 @@
 //! - `[*] --> x` inside each composite marks its initial child; the
 //!   machine's initial state (a path) is lifted to its top-level ancestor.
 //!   Final states get `x --> [*]` inside their parent composite.
-//! - Transitions are labelled `trigger [guard]`.
+//! - Transitions are labelled `trigger [guard]`: a command by its name, a
+//!   timer `after 30s`, a subscription `on Event` (with `where <filter>`
+//!   when it has one); the guard is its canonical text
+//!   (`capture [event.amount > 0]`, `retry [?card declined]`).
 //!
 //! Limits:
 //!
@@ -26,7 +29,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use cascade_core::model::StateKind;
+use cascade_core::model::{StateKind, TriggerKind};
 use cascade_core::{Model, StateId, TransitionId};
 
 use super::escape;
@@ -138,7 +141,15 @@ impl Writer<'_> {
         let transition = model.transition(t);
         let from = lift(model, transition.from, container);
         let to = lift(model, transition.to, container);
-        let mut label = model.trigger(transition.trigger).name.clone();
+        let trigger = model.trigger(transition.trigger);
+        let mut label = match trigger.kind {
+            TriggerKind::Command => trigger.name.clone(),
+            TriggerKind::Timer(delay) => format!("after {delay}"),
+            TriggerKind::Event(event) => format!("on {}", model.event(event).name),
+        };
+        if let Some(filter) = &transition.filter {
+            let _ = write!(label, " where {}", filter.display_filter());
+        }
         if let Some(guard) = &transition.guard {
             let _ = write!(label, " [{guard}]");
         }

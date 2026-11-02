@@ -11,17 +11,25 @@ use super::engine::{self, Effect, InverseMode, push_unique};
 use super::keys::{self, event_key};
 use super::lookup::{self, name_taken, not_found};
 use super::{EditError, EditOp, Index, validate};
-use crate::definition::{Definition, EventDef};
+use crate::definition::{Definition, EventDef, TriggerSpec};
 use crate::span::{SourceSpan, Spanned};
 
 /// Every event the definition mentions, declared ones first, then in order
-/// of first mention: transition emits by machine, then subscriptions by
-/// controller.
+/// of first mention: per machine, each transition's subscription and emits;
+/// then subscriptions by controller.
 fn known_events(def: &Definition) -> Vec<String> {
     let mut out: Vec<String> = def.events.iter().map(|e| e.name.value.clone()).collect();
-    let emitted = def.machines.iter().flat_map(|m| m.transitions.iter().flat_map(|t| t.emits.iter()));
+    let in_transitions = def.machines.iter().flat_map(|m| {
+        m.transitions.iter().flat_map(|t| {
+            let subscribed = match &t.trigger {
+                TriggerSpec::Event { event, .. } => Some(event),
+                TriggerSpec::Command(_) | TriggerSpec::After(_) => None,
+            };
+            subscribed.into_iter().chain(t.emits.iter().map(|e| &e.event))
+        })
+    });
     let handled = def.controllers.iter().flat_map(|c| c.on.iter().map(|h| &h.event));
-    for name in emitted.chain(handled) {
+    for name in in_transitions.chain(handled) {
         if !out.contains(&name.value) {
             out.push(name.value.clone());
         }
@@ -77,8 +85,10 @@ pub(super) fn remove_declaration(def: &mut Definition, event: &str, mode: Invers
     Ok(Effect::new(engine::sequence(inverse), vec![event_key(event)]))
 }
 
-/// Renames the event in its declaration, every `emits:` and every
-/// subscription.
+/// Renames the event in its declaration, every `emits:`, every controller
+/// subscription and every machine subscription (`on: { event }`). A
+/// subscription's trigger is named after its event, so those transitions'
+/// keys change.
 pub(super) fn rename(def: &mut Definition, from: &str, to: &str) -> Result<Effect, EditError> {
     validate::name(to)?;
     let known = known_events(def);
@@ -100,11 +110,18 @@ pub(super) fn rename(def: &mut Definition, from: &str, to: &str) -> Result<Effec
     for m in &mut def.machines {
         let mut entries = Vec::new();
         for (i, t) in m.transitions.iter_mut().enumerate() {
-            for emit in t.emits.iter_mut().filter(|e| e.value == from) {
-                lookup::set_value(emit, to.to_owned());
+            for emit in t.emits.iter_mut().filter(|e| e.event.value == from) {
+                lookup::set_value(&mut emit.event, to.to_owned());
+                entries.push(i);
+            }
+            if let TriggerSpec::Event { event, .. } = &mut t.trigger
+                && event.value == from
+            {
+                lookup::set_value(event, to.to_owned());
                 entries.push(i);
             }
         }
+        entries.dedup();
         push_unique(&mut touched, keys::entries_keys(m, &entries));
     }
     for c in &mut def.controllers {

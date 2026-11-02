@@ -9,6 +9,7 @@
 pub mod actions;
 pub mod building;
 mod canvas_events;
+mod exploring;
 mod operations;
 pub mod playing;
 mod scene;
@@ -321,6 +322,8 @@ impl Render for Workspace {
             AppMode::Build => Some(self.render_inspector(cx).into_any_element()),
             AppMode::Play => Some(self.render_play_panel(cx).into_any_element()),
         };
+        let explore_panel = (self.mode == AppMode::Play && self.play.explore.open)
+            .then(|| self.render_explore_panel(cx).into_any_element());
         actions::register(root, cx)
             .child(self.render_toolbar(window, cx))
             .children(self.render_build_bar(cx))
@@ -333,6 +336,7 @@ impl Render for Workspace {
                     .min_h_0()
                     .child(self.render_sidebar(cx))
                     .child(self.render_canvas_area(window, cx))
+                    .children(explore_panel)
                     .children(side_panel),
             )
             .child(self.render_status_bar(cx))

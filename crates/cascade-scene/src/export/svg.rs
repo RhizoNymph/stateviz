@@ -17,8 +17,8 @@ use cascade_layout::{Insets, Point, Rect};
 use crate::color::{Rgba, Theme};
 use crate::export::ExportError;
 use crate::scene::{
-    Arrow, Badge, Border, Dash, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneEdge, SceneNode, Shape,
-    Stroke,
+    Arrow, Badge, Border, Dash, FontStyle, FontWeight, HitTarget, Label, Layer, Overlay, Scene, SceneEdge, SceneNode,
+    Shape, Stroke,
 };
 
 /// Space around the scene's bounds.
@@ -100,7 +100,8 @@ impl SvgWriter<'_> {
                     )?;
                 }
                 // Connect handles are an editing affordance, not part of
-                // the picture: exports leave them out.
+                // the picture: exports leave them out. (Subscribe handles
+                // stay: they mark where a tag's subscriptions leave.)
                 Overlay::Rect { target: HitTarget::ConnectHandle { .. }, .. } => {}
                 Overlay::Rect { rect, fill, stroke: s, radius, opacity: o, layer: l, .. } if *l == layer => {
                     let attrs = format!(
@@ -212,6 +213,7 @@ impl SvgWriter<'_> {
             font_size: size,
             color: ink,
             weight: FontWeight::Bold,
+            style: FontStyle::Normal,
         };
         format!(
             r#"<g class="badge"><circle cx="{}" cy="{}" r="{}" {} {}/>{}</g>"#,
@@ -329,8 +331,12 @@ fn text(label: &Label, extra: &str) -> String {
         FontWeight::Bold => r#" font-weight="bold""#,
         FontWeight::Normal => "",
     };
+    let style = match label.style {
+        FontStyle::Italic => r#" font-style="italic""#,
+        FontStyle::Normal => "",
+    };
     format!(
-        r#"<text x="{}" y="{}" font-size="{}" {}{weight}{extra} xml:space="preserve">{}</text>"#,
+        r#"<text x="{}" y="{}" font-size="{}" {}{weight}{style}{extra} xml:space="preserve">{}</text>"#,
         num(label.origin.x),
         num(label.origin.y + label.font_size * BASELINE),
         num(label.font_size),

@@ -41,6 +41,6 @@ impl PlayDecor<'_> {
     pub fn apply(&self, scene: &mut Scene, nodes: &[Meta], edges: &[EdgeInfo], play: &PlayOverlay, place: Placement) {
         queue::active(self, scene, nodes, edges, &play.active);
         queue::pending(self, scene, nodes, edges, &play.pending);
-        markers::draw(self, scene, &play.markers, place);
+        markers::draw(self, scene, &play.markers, &play.timers, place);
     }
 }

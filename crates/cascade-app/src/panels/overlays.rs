@@ -129,7 +129,13 @@ impl Workspace {
             .collect();
         let race = self.view.race.and_then(|r| {
             let loaded = self.doc.loaded()?;
-            race_finding(&loaded.findings, r).map(|f| (r, f.message.clone()))
+            race_finding(&loaded.findings, r).map(|f| {
+                let message = match cascade_sim::race_replay_note(&f.detail) {
+                    Some(note) => format!("{} (shown as queued: {note})", f.message),
+                    None => f.message.clone(),
+                };
+                (r, message)
+            })
         });
         let state = match self.trace_request().map(|r| (self.trace_run.request() == Some(&r), r)) {
             None => Some(("Pick a scenario to simulate.".to_owned(), false)),

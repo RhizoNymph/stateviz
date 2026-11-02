@@ -1,0 +1,12 @@
+# The bank takes longer than 30 minutes: the checkout expires and cancels the
+# order. The late approval is ignored by the expired checkout, but the Saga
+# still reserves stock for a cancelled order (a compensation the model lacks).
+scenario: timeout
+instances:
+  o1: { machine: Order, fields: { orderId: "1", amount: "50" } }
+  p1: { machine: Payment, fields: { orderId: "1", amount: "50" } }
+  s1: { machine: Stock, fields: { orderId: "1" } }
+steps:
+  - { source: Customer, fire: Order.place, target: o1 }
+  - { wait: 30m }
+  - { source: Bank, fire: Payment.respond, target: p1 }

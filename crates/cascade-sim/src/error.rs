@@ -79,8 +79,14 @@ pub enum ScenarioErrorKind {
     InvalidQueuePosition { text: String },
     #[error("unknown end `{text}`; expected `drain` or `pause`")]
     UnknownEnd { text: String },
+    #[error("`{text}` is not a duration: {message}")]
+    InvalidDuration { text: String, message: String },
 
     // --- Against the model --------------------------------------------------
+    /// A declared instance field or a step payload value that does not fit
+    /// the field's declared type.
+    #[error("`{value}` is not a valid `{field}`: expected {expected}")]
+    InvalidValue { field: String, value: String, expected: String },
     #[error("instance `{name}` is declared more than once")]
     DuplicateInstance { name: String },
     #[error("unknown machine `{name}`")]
@@ -120,6 +126,20 @@ pub enum ScenarioErrorKind {
     QueueEmpty,
     #[error("there is no queue item at position {position}; {pending} pending (the head is 0)")]
     NoPendingItem { position: u32, pending: usize },
+    /// `wait` without a duration (or `Advance { by: None }`) with no timer
+    /// armed.
+    #[error("no timer is armed, so there is no next deadline to wait for")]
+    NoTimerArmed,
+    /// A per-consumer step named someone who is not (or no longer) among the
+    /// queue item's remaining consumers.
+    #[error("`{consumer}` is not a remaining consumer of `{item}` (remaining: {})", consumers.join(", "))]
+    UnknownConsumer { consumer: String, item: String, consumers: Vec<String> },
+    /// A `choose` decision no choice point took by the end of a batch run.
+    #[error("no choice point took the decision `{option}`")]
+    UnusedChoice { option: String },
+    /// Kept from the contract stubs; nothing returns it any more.
+    #[error("{what} is not supported yet")]
+    Unsupported { what: String },
 }
 
 /// The simulator could not run a scenario, or a play session could not
@@ -161,4 +181,12 @@ pub enum SimError {
     /// A play session was asked to switch to a branch it does not have.
     #[error("there is no branch {index}; the timeline has {count} branches")]
     NoSuchBranch { index: usize, count: usize },
+    /// Exploration could not replay the path it found to an outcome (a bug
+    /// in exploration, never expected).
+    #[error("exploration could not rebuild the witness of an outcome at move {at}")]
+    WitnessLost { at: usize },
+    /// The host cancelled a watched exploration
+    /// ([`ExploreProgress::cancel`](crate::ExploreProgress::cancel)).
+    #[error("exploration cancelled after {states} states")]
+    ExploreCancelled { states: usize },
 }

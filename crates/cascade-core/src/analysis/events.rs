@@ -1,9 +1,9 @@
 //! Unhandled event and orphan controller (warnings): the two ends of an
 //! event that do not meet.
 //!
-//! - An event emitted by at least one transition with no subscribed handler
-//!   is unhandled. Events that are declared but neither emitted nor handled
-//!   are not reported.
+//! - An event emitted by at least one transition with no consumer (no
+//!   controller handler and no machine subscription) is unhandled. Events
+//!   that are declared but neither emitted nor handled are not reported.
 //! - Each handler subscribed to an event no transition emits is an orphan,
 //!   reported per handler, so two controllers waiting on the same dead event
 //!   give two findings.
@@ -21,7 +21,7 @@ pub(super) fn check(model: &Model) -> Vec<Finding> {
 fn unhandled_events(model: &Model) -> Vec<Finding> {
     model
         .events()
-        .filter(|(_, e)| !e.emitted_by.is_empty() && e.handlers.is_empty())
+        .filter(|(_, e)| !e.emitted_by.is_empty() && e.handlers.is_empty() && e.subscribers.is_empty())
         .map(|(event, e)| {
             let emitters = match e.emitted_by.as_slice() {
                 [only] => model.transition_label(*only),

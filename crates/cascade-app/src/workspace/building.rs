@@ -19,7 +19,7 @@ use gpui::{AppContext as _, Context, Entity, Subscription, Window};
 use super::Workspace;
 use crate::build::connect;
 use crate::build::disk::{self, create_new};
-use crate::build::inspector::{self, FieldId, FieldInput, FieldValue, Inspection, InspectorAction};
+use crate::build::inspector::{self, FieldId, FieldInput, FieldValue, Inspection, InspectorAction, TriggerKindTag};
 use crate::build::ops::{self, Planned, StateTarget};
 use crate::build::pipeline::{self, Commit};
 use crate::build::undo::{Direction, History};
@@ -39,12 +39,24 @@ pub struct BuildUi {
     /// "Comments were not preserved" was shown this session.
     pub warned_rewrite: bool,
     pub inspector: Option<InspectorUi>,
+    /// A trigger kind picked in the inspector but not committed yet: the
+    /// transition it belongs to and the kind.
+    pub trigger_draft: Option<(ElementKey, TriggerKindTag)>,
+    /// A drop that can make several edits: the user picks one.
+    pub connect_menu: Option<ConnectMenu>,
+}
+
+/// The edits a connect drop offers, shown in the build bar.
+pub struct ConnectMenu {
+    pub offers: Vec<Planned>,
 }
 
 /// The inspector for one element of one model generation.
 pub struct InspectorUi {
     pub key: ElementKey,
     pub generation: u64,
+    /// The trigger kind draft it was built with.
+    pub draft: Option<TriggerKindTag>,
     pub inspection: Result<Inspection, String>,
     /// Text fields, in `inspection.fields` order.
     pub inputs: Vec<(FieldId, Entity<TextInput>)>,
@@ -221,9 +233,45 @@ impl Workspace {
         }
     }
 
+    /// Connect `from` to `to`: one offer commits at once; several open the
+    /// build bar's menu.
     pub(crate) fn connect_keys(&mut self, from: &ElementKey, to: &ElementKey, cx: &mut Context<Self>) {
-        let (from, to) = (from.clone(), to.clone());
-        self.plan(cx, move |d, _| connect::connect(d, &from, &to));
+        self.build.connect_menu = None;
+        let loaded = match self.editable() {
+            Ok(loaded) => loaded,
+            Err(message) => return self.edit_failed(message, cx),
+        };
+        match connect::offers(loaded.model.definition(), from, to) {
+            Ok(mut offers) if offers.len() == 1 => {
+                let planned = offers.remove(0);
+                self.commit(planned, cx);
+            }
+            Ok(offers) => {
+                self.set_status(format!("{} ways to connect: pick one in the Build bar", offers.len()), false);
+                self.build.connect_menu = Some(ConnectMenu { offers });
+                cx.notify();
+            }
+            Err(error) => self.edit_failed(capitalize(&error.to_string()), cx),
+        }
+    }
+
+    /// Commit offer `index` of the open connect menu.
+    pub(crate) fn pick_connect_offer(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(menu) = self.build.connect_menu.take() else {
+            return;
+        };
+        match menu.offers.into_iter().nth(index) {
+            Some(planned) => {
+                self.commit(planned, cx);
+            }
+            None => cx.notify(),
+        }
+    }
+
+    pub(crate) fn cancel_connect_menu(&mut self, cx: &mut Context<Self>) {
+        self.build.connect_menu = None;
+        self.set_status("Connect cancelled", false);
+        cx.notify();
     }
 
     // --- New file --------------------------------------------------------------
@@ -270,15 +318,20 @@ impl Workspace {
     pub(crate) fn sync_inspector(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = self.view.selection.first().cloned();
         let generation = self.doc.generation();
-        let current = self.build.inspector.as_ref().map(|i| (&i.key, i.generation));
-        if current == key.as_ref().map(|k| (k, generation)) {
+        let draft = match (&self.build.trigger_draft, &key) {
+            (Some((draft_key, kind)), Some(key)) if draft_key == key => Some(*kind),
+            _ => None,
+        };
+        let current = self.build.inspector.as_ref().map(|i| (&i.key, i.generation, i.draft));
+        if current == key.as_ref().map(|k| (k, generation, draft)) {
             return;
         }
         let (Some(key), Some(loaded)) = (key, self.doc.loaded().cloned()) else {
             self.build.inspector = None;
             return;
         };
-        let inspection = inspector::inspect(loaded.model.definition(), &key).map_err(|e| capitalize(&e.to_string()));
+        let inspection =
+            inspector::inspect_with(loaded.model.definition(), &key, draft).map_err(|e| capitalize(&e.to_string()));
         let mut inputs = Vec::new();
         let mut subscriptions = Vec::new();
         if let Ok(inspection) = &inspection {
@@ -302,6 +355,7 @@ impl Workspace {
         self.build.inspector = Some(InspectorUi {
             key,
             generation,
+            draft,
             inspection,
             inputs,
             errors: HashMap::new(),
@@ -320,10 +374,17 @@ impl Workspace {
         match event {
             InputEvent::Changed => {
                 let text = input.read(cx).text().to_owned();
+                let loaded = self.doc.loaded().cloned();
                 if let Some(ui) = &mut self.build.inspector {
-                    match inspector::validate(id, &text) {
+                    // Grammar first, then the resolver's verdict on the
+                    // edited definition (types, unknown fields, …).
+                    let verdict = match &loaded {
+                        Some(loaded) => inspector::check(loaded.model.definition(), &ui.key, id, &text),
+                        None => inspector::validate(id, &text),
+                    };
+                    match verdict {
                         Ok(()) => ui.errors.remove(&id),
-                        Err(message) => ui.errors.insert(id, message),
+                        Err(message) => ui.errors.insert(id, capitalize(&message)),
                     };
                 }
                 cx.notify();
@@ -342,11 +403,20 @@ impl Workspace {
         }
     }
 
-    /// Commit one inspector field.
+    /// Commit one inspector field. The trigger kind selector only picks
+    /// which fields to show (a draft); entering the event, delay or name
+    /// commits.
     pub(crate) fn commit_field(&mut self, id: FieldId, value: FieldValue, cx: &mut Context<Self>) {
         let Some(key) = self.build.inspector.as_ref().map(|i| i.key.clone()) else {
             return;
         };
+        if id == FieldId::TransitionKind {
+            if let FieldValue::Text(kind) = &value {
+                self.build.trigger_draft = TriggerKindTag::parse(kind).map(|kind| (key, kind));
+            }
+            cx.notify();
+            return;
+        }
         let loaded = match self.editable() {
             Ok(loaded) => loaded,
             Err(message) => return self.edit_failed(message, cx),
