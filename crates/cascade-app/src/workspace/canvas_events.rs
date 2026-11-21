@@ -84,11 +84,15 @@ impl Workspace {
         )
         .size_full();
 
-        let cursor = match &self.canvas.gesture {
-            Gesture::Panning { .. } | Gesture::Dragging { .. } => CursorStyle::ClosedHand,
-            Gesture::Connecting { .. } => CursorStyle::Crosshair,
-            _ if self.canvas.hover.is_some() => CursorStyle::PointingHand,
-            _ => CursorStyle::Arrow,
+        let cursor = if self.canvas.middle_pan_at.is_some() {
+            CursorStyle::ClosedHand
+        } else {
+            match &self.canvas.gesture {
+                Gesture::Panning { .. } | Gesture::Dragging { .. } => CursorStyle::ClosedHand,
+                Gesture::Connecting { .. } => CursorStyle::Crosshair,
+                _ if self.canvas.hover.is_some() => CursorStyle::PointingHand,
+                _ => CursorStyle::Arrow,
+            }
         };
         div()
             .relative()
@@ -105,9 +109,12 @@ impl Workspace {
                     .size_full()
                     .cursor(cursor)
                     .on_mouse_down(MouseButton::Left, cx.listener(Self::canvas_mouse_down))
+                    .on_mouse_down(MouseButton::Middle, cx.listener(Self::canvas_middle_down))
                     .on_mouse_move(cx.listener(Self::canvas_mouse_move))
                     .on_mouse_up(MouseButton::Left, cx.listener(Self::canvas_mouse_up))
                     .on_mouse_up_out(MouseButton::Left, cx.listener(Self::canvas_mouse_up))
+                    .on_mouse_up(MouseButton::Middle, cx.listener(Self::canvas_middle_up))
+                    .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::canvas_middle_up))
                     .on_scroll_wheel(cx.listener(Self::canvas_scroll))
                     .on_pinch(cx.listener(Self::canvas_pinch))
                     .child(surface),
@@ -166,6 +173,16 @@ impl Workspace {
         cx.notify();
     }
 
+    fn canvas_middle_down(&mut self, event: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.canvas.middle_pan_at = Some(screen_point(event.position));
+        cx.notify();
+    }
+
+    fn canvas_middle_up(&mut self, _event: &MouseUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.canvas.middle_pan_at = None;
+        cx.notify();
+    }
+
     /// The element a connect drag would drop on at `at`.
     fn drop_at(&self, at: ScreenPoint) -> Option<ElementKey> {
         let (vp, canvas) = (self.effective_viewport()?, self.canvas.bounds?);
@@ -207,6 +224,15 @@ impl Workspace {
 
     fn canvas_mouse_move(&mut self, event: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let at = screen_point(event.position);
+        if event.pressed_button == Some(MouseButton::Middle) {
+            if let Some(previous) = self.canvas.middle_pan_at.replace(at) {
+                if let Some(vp) = self.effective_viewport() {
+                    self.view.viewport = Some(viewport::pan_by(vp, at.x - previous.x, at.y - previous.y));
+                    cx.notify();
+                }
+            }
+            return;
+        }
         if self.canvas.gesture.is_active() {
             if !event.dragging() {
                 // The button was released somewhere we did not see.
@@ -265,9 +291,9 @@ impl Workspace {
         let delta = event.delta.pixel_delta(px(SCROLL_LINE_PX));
         let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
         self.view.viewport = Some(if event.modifiers.control || event.modifiers.platform {
-            viewport::zoom_about(vp, canvas, screen_point(event.position), viewport::wheel_zoom_factor(dy))
-        } else if event.modifiers.shift && dx == 0.0 {
-            viewport::pan_by(vp, dy, 0.0)
+            viewport::pan_by(vp, 0.0, dy)
+        } else if dx == 0.0 {
+            viewport::zoom_about(vp, canvas, screen_point(event.position), viewport::wheel_zoom_factor(-dy))
         } else {
             viewport::pan_by(vp, dx, dy)
         });
