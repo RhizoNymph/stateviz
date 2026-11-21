@@ -35,7 +35,7 @@ use crate::mode::AppMode;
 use crate::settings::{self, AppSettings};
 use crate::theme::{ActiveChrome, Chrome, ThemeChoice, chrome, scene_theme};
 use crate::trace::TraceRun;
-use crate::viewport::ScreenRect;
+use crate::viewport::{ScreenPoint, ScreenRect};
 use crate::watch::FileWatcher;
 
 use self::building::BuildUi;
@@ -69,6 +69,8 @@ pub struct CanvasState {
     pub bounds: Option<ScreenRect>,
     pub gesture: Gesture,
     pub hover: Option<HitTarget>,
+    /// Last pointer position while the middle mouse button pans the view.
+    pub middle_pan_at: Option<ScreenPoint>,
 }
 
 /// The search box and its results.
@@ -101,6 +103,8 @@ pub struct Workspace {
     pub(crate) trace_run: TraceRun,
     pub(crate) diff_run: DiffRun,
     pub(crate) canvas: CanvasState,
+    /// Whether the machine and findings sidebar is visible.
+    pub(crate) sidebar_open: bool,
     pub(crate) search: SearchState,
     pub(crate) diff_base: Entity<TextInput>,
     pub(crate) diff_head: Entity<TextInput>,
@@ -200,6 +204,7 @@ impl Workspace {
             trace_run: TraceRun::Idle,
             diff_run: DiffRun::Off,
             canvas: CanvasState::default(),
+            sidebar_open: true,
             search: SearchState { input: search_input, hits: Vec::new(), cursor: 0, open: false },
             diff_base,
             diff_head,

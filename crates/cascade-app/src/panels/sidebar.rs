@@ -21,17 +21,45 @@ pub fn severity_color(severity: Severity, colors: Chrome) -> gpui::Hsla {
 impl Workspace {
     pub(crate) fn render_sidebar(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
         let colors = chrome(cx);
-        div()
+        let toggle_label = if self.sidebar_open { "‹" } else { "›" };
+        let toggle = div()
+            .id("toggle-sidebar")
             .flex()
-            .flex_col()
+            .items_center()
+            .justify_center()
+            .w(px(24.))
+            .h(px(34.))
             .flex_none()
-            .w(px(SIDEBAR_WIDTH))
-            .h_full()
+            .cursor_pointer()
+            .hover(move |s| s.bg(colors.hover))
+            .text_color(colors.muted)
             .border_r_1()
             .border_color(colors.border)
-            .bg(colors.panel)
-            .child(self.render_legend(colors, cx))
-            .child(self.render_findings(colors, cx))
+            .on_click(cx.listener(|ws, _, _, cx| {
+                ws.sidebar_open = !ws.sidebar_open;
+                cx.notify();
+            }))
+            .child(toggle_label);
+        div()
+            .flex()
+            .flex_none()
+            .h_full()
+            .when(self.sidebar_open, |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_none()
+                        .w(px(SIDEBAR_WIDTH))
+                        .h_full()
+                        .border_r_1()
+                        .border_color(colors.border)
+                        .bg(colors.panel)
+                        .child(self.render_legend(colors, cx))
+                        .child(self.render_findings(colors, cx)),
+                )
+            })
+            .child(toggle)
     }
 
     fn render_legend(&mut self, colors: Chrome, cx: &mut Context<Self>) -> impl IntoElement {
